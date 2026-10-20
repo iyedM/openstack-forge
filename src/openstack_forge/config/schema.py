@@ -3,17 +3,23 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from collections.abc import Iterable, Mapping
+from importlib import resources
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError, ValidationError
 
 from openstack_forge.config.errors import ConfigError, ValidationIssue
 
-# Resolves to <repo>/schemas/cluster.schema.json from a source checkout or editable install.
-DEFAULT_SCHEMA_PATH = Path(__file__).resolve().parents[3] / "schemas" / "cluster.schema.json"
+if TYPE_CHECKING:  # importlib.resources.abc only exists from Python 3.11.
+    from importlib.resources.abc import Traversable
+
+# The schema ships as package data so that regular (non-editable) installs can validate.
+SCHEMA_PACKAGE = "openstack_forge.config"
+SCHEMA_RESOURCE = "schemas/cluster.schema.json"
 
 # Type names as a YAML author sees them, keyed by the Python type PyYAML produces.
 _YAML_TYPE_NAMES: dict[type, str] = {
@@ -28,19 +34,28 @@ _YAML_TYPE_NAMES: dict[type, str] = {
 _JSON_TO_YAML_TYPE = {"object": "mapping", "array": "list"}
 
 
-def load_schema(path: Path = DEFAULT_SCHEMA_PATH) -> dict[str, Any]:
-    """Load the cluster JSON Schema and check that it is itself a valid schema."""
+def schema_resource() -> Traversable:
+    """Return the bundled cluster schema as an importlib.resources Traversable."""
+    package = resources.files(SCHEMA_PACKAGE)
+    for part in SCHEMA_RESOURCE.split("/"):
+        package = package.joinpath(part)
+    return package
+
+
+def load_schema(path: Path | None = None) -> dict[str, Any]:
+    """Load the cluster JSON Schema (the bundled one by default) and check that it is valid."""
+    source = schema_resource() if path is None else path
     try:
-        schema = json.loads(path.read_text(encoding="utf-8"))
+        schema = json.loads(source.read_text(encoding="utf-8"))
     except OSError as exc:
         reason = exc.strerror or exc.__class__.__name__
-        raise ConfigError(f"Cannot read configuration schema {path}: {reason}") from exc
+        raise ConfigError(f"Cannot read configuration schema {source}: {reason}") from exc
     except json.JSONDecodeError as exc:
-        raise ConfigError(f"Configuration schema {path} is not valid JSON: {exc}") from exc
+        raise ConfigError(f"Configuration schema {source} is not valid JSON: {exc}") from exc
     try:
         Draft202012Validator.check_schema(schema)
     except SchemaError as exc:
-        raise ConfigError(f"Configuration schema {path} is invalid: {exc.message}") from exc
+        raise ConfigError(f"Configuration schema {source} is invalid: {exc.message}") from exc
     return schema
 
 
@@ -77,10 +92,14 @@ def _issues_from_error(error: ValidationError) -> list[ValidationIssue]:
 
     if error.validator == "required":
         missing = [field for field in error.validator_value if field not in error.instance]
-        return [
-            ValidationIssue(format_location([*path, field]), "required field is missing")
-            for field in missing
-        ]
+        message = f"required field is missing{_role_context(error)}"
+        return [ValidationIssue(format_location([*path, field]), message) for field in missing]
+    if error.validator == "not" and set(error.validator_value) == {"required"}:
+        # {"not": {"required": [...]}} is how the schema forbids a field.
+        fields = error.validator_value["required"]
+        forbidden = [field for field in fields if field in error.instance]
+        message = f"field is not allowed{_role_context(error) or ' here'}"
+        return [ValidationIssue(format_location([*path, field]), message) for field in forbidden]
     if error.validator == "additionalProperties" and error.validator_value is False:
         allowed = list(error.schema.get("properties", {}))
         unknown = [key for key in error.instance if key not in allowed]
@@ -107,6 +126,11 @@ def _describe(error: ValidationError) -> str:
         return f"{value!r} has an invalid format" + (f"; expected {hint}" if hint else "")
     if validator == "type":
         return _describe_type_error(expected, value)
+    if validator == "minimum":
+        return f"must be at least {expected}, got {value!r}"
+    if validator == "uniqueItems":
+        repeated = [item for item, count in Counter(map(repr, value)).items() if count > 1]
+        return f"contains duplicate entries: {', '.join(repeated)}"
     if validator == "minLength":
         return "must not be empty" if expected == 1 else f"must be at least {expected} characters"
     if validator == "minItems":
@@ -114,6 +138,13 @@ def _describe(error: ValidationError) -> str:
     if validator == "minProperties":
         return f"must define at least {expected} entry(ies)"
     return error.message
+
+
+def _role_context(error: ValidationError) -> str:
+    """Name the node role when an error comes from a role-conditional (if/then/else) rule."""
+    conditional = any(part in ("then", "else") for part in error.absolute_schema_path)
+    role = error.instance.get("role") if isinstance(error.instance, Mapping) else None
+    return f" for role {role!r}" if conditional and isinstance(role, str) else ""
 
 
 def _describe_type_error(expected: str | list[str], value: Any) -> str:

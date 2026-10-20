@@ -1,8 +1,8 @@
 # Structurally valid but inconsistent: see the comment on each offending line.
 cluster:
   name: "inconsistent"
-  ubuntu_version: "22.04"
-  openstack_release: "2024.2"
+  ubuntu_version: "24.04"
+  openstack_release: "2025.1"
   topology: "private-cloud"
 
 networks:
@@ -15,15 +15,33 @@ networks:
     gateway: "192.0.2.129"
     interface: "eth1"
   tenant:
-    subnet: "203.0.113.5/24"       # host bits set
-    gateway: "203.0.113.1"
+    subnet: "198.51.100.5/24"      # host bits set
+    gateway: "198.51.100.1"
     interface: "eth2"
+  provider:
+    subnet: "203.0.113.0/24"
+    gateway: "203.0.113.1"
+    interface: "eth3"
+    floating_ip_range:
+      start: "203.0.113.100"
+      end: "203.0.113.199"
 
 nodes:
   - role: controller
     hostname: "ctl-01"
     fqdn: "ctl-02.cluster.test"    # does not match hostname
     management_ip: "203.0.113.10"  # outside the management subnet
+    vcpus: 8
+    ram_gb: 32
     interfaces:
       management: "eth0"
-      provider: "eth3"             # no network named "provider"
+      external: "eth4"             # no network named "external"
+
+  - role: compute
+    hostname: "cmp-01"
+    fqdn: "cmp-01.cluster.test"
+    management_ip: "192.0.2.21"
+    vcpus: 16
+    ram_gb: 64
+    interfaces:
+      management: "eth0"

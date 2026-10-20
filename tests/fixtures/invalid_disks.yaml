@@ -1,0 +1,60 @@
+# Disk rules: see the comment on each offending line.
+cluster:
+  name: "bad-disks"
+  ubuntu_version: "24.04"
+  openstack_release: "2025.1"
+  topology: "private-cloud"
+
+networks:
+  management:
+    subnet: "192.0.2.0/24"
+    gateway: "192.0.2.1"
+    interface: "eth0"
+  provider:
+    subnet: "203.0.113.0/24"
+    gateway: "203.0.113.1"
+    interface: "eth1"
+    floating_ip_range:
+      start: "203.0.113.100"
+      end: "203.0.113.199"
+
+nodes:
+  - role: controller
+    hostname: "ctl-01"
+    fqdn: "ctl-01.cluster.test"
+    management_ip: "192.0.2.11"
+    vcpus: 4
+    ram_gb: 16
+    disks: ["/dev/sdb"]           # disks only allowed on object nodes
+    interfaces:
+      management: "eth0"
+
+  - role: compute
+    hostname: "cmp-01"
+    fqdn: "cmp-01.cluster.test"
+    management_ip: "192.0.2.21"
+    vcpus: 4
+    ram_gb: 16
+    disk: "/dev/sdb"              # disk only allowed on block nodes
+    interfaces:
+      management: "eth0"
+
+  - role: block
+    hostname: "blk-01"
+    fqdn: "blk-01.cluster.test"
+    management_ip: "192.0.2.31"
+    vcpus: 4
+    ram_gb: 16
+    # missing the required "disk"
+    interfaces:
+      management: "eth0"
+
+  - role: object
+    hostname: "obj-01"
+    fqdn: "obj-01.cluster.test"
+    management_ip: "192.0.2.32"
+    vcpus: 4
+    ram_gb: 16
+    disks: ["/dev/sdb", "sdc", "/dev/sdb"]  # relative path and a duplicate
+    interfaces:
+      management: "eth0"

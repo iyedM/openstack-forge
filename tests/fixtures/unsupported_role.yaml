@@ -1,8 +1,8 @@
-# "database" is not one of the supported node roles.
+# "storage" was a role before milestone 2; it is now split into "block" and "object".
 cluster:
   name: "bad-role"
-  ubuntu_version: "22.04"
-  openstack_release: "2024.2"
+  ubuntu_version: "24.04"
+  openstack_release: "2025.1"
   topology: "private-cloud"
 
 networks:
@@ -10,18 +10,38 @@ networks:
     subnet: "192.0.2.0/24"
     gateway: "192.0.2.1"
     interface: "eth0"
+  provider:
+    subnet: "203.0.113.0/24"
+    gateway: "203.0.113.1"
+    interface: "eth1"
+    floating_ip_range:
+      start: "203.0.113.100"
+      end: "203.0.113.199"
 
 nodes:
   - role: controller
     hostname: "ctl-01"
     fqdn: "ctl-01.cluster.test"
     management_ip: "192.0.2.11"
+    vcpus: 4
+    ram_gb: 16
     interfaces:
       management: "eth0"
 
-  - role: database
-    hostname: "db-01"
-    fqdn: "db-01.cluster.test"
-    management_ip: "192.0.2.41"
+  - role: compute
+    hostname: "cmp-01"
+    fqdn: "cmp-01.cluster.test"
+    management_ip: "192.0.2.21"
+    vcpus: 4
+    ram_gb: 16
+    interfaces:
+      management: "eth0"
+
+  - role: storage
+    hostname: "sto-01"
+    fqdn: "sto-01.cluster.test"
+    management_ip: "192.0.2.31"
+    vcpus: 4
+    ram_gb: 16
     interfaces:
       management: "eth0"

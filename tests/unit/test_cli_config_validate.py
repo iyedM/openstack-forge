@@ -18,7 +18,8 @@ def test_example_configuration_is_valid(capsys: pytest.CaptureFixture[str]) -> N
     captured = capsys.readouterr()
     assert exit_code == 0
     assert "Configuration is valid" in captured.out
-    assert "cluster 'forge-demo': 4 node(s), 2 network(s)" in captured.out
+    assert "cluster 'forge-demo': 5 node(s), 3 network(s)" in captured.out
+    assert "OpenStack 2025.1 (Epoxy) on Ubuntu 24.04, from cloud-archive:epoxy" in captured.out
     assert captured.err == ""
 
 
@@ -46,10 +47,16 @@ def test_default_path_is_cluster_yaml(
         ("duplicate_yaml_key.yaml", "duplicate key 'management'"),
         ("missing_required_fields.yaml", "cluster.openstack_release: required field is missing"),
         ("invalid_ip_address.yaml", "'192.0.2.300' is not a valid IPv4 address"),
-        ("unsupported_role.yaml", "nodes[1].role: unsupported value 'database'"),
+        ("unsupported_role.yaml", "nodes[2].role: unsupported value 'storage'"),
         ("duplicate_nodes.yaml", "duplicate hostname 'CMP-01'"),
-        ("inconsistent_network.yaml", "refers to undefined network 'provider'"),
+        ("inconsistent_network.yaml", "refers to undefined network 'external'"),
         ("wrong_types.yaml", "nodes: expected list, got mapping"),
+        ("unsupported_release.yaml", "unsupported Ubuntu release '22.04'; supported: 24.04"),
+        ("invalid_role_counts.yaml", "requires at least 1 'compute' node; found 0"),
+        ("invalid_resources.yaml", "nodes[0].vcpus: must be at least 1, got 0"),
+        ("invalid_disks.yaml", "nodes[1].disk: field is not allowed for role 'compute'"),
+        ("provider_range_conflicts.yaml", "includes the gateway 192.0.2.1"),
+        ("provider_range_invalid.yaml", "start 203.0.113.199 is after end 203.0.113.100"),
     ],
 )
 def test_invalid_fixtures_fail_with_clear_message(
@@ -69,7 +76,7 @@ def test_validation_errors_are_listed_with_a_count(
     err = capsys.readouterr().err
     assert err.startswith("Configuration is invalid:")
     assert "  - nodes[0].management_ip: required field is missing" in err
-    assert err.rstrip().endswith("Found 2 error(s).")
+    assert err.rstrip().endswith("Found 4 error(s).")
 
 
 def test_installed_command_exit_codes(fixture_path) -> None:
@@ -87,7 +94,7 @@ def test_installed_command_exit_codes(fixture_path) -> None:
 
     invalid = run(fixture_path("unsupported_role.yaml"))
     assert invalid.returncode == 1
-    assert "unsupported value 'database'" in invalid.stderr
+    assert "unsupported value 'storage'" in invalid.stderr
 
 
 def test_other_commands_remain_stubs(capsys: pytest.CaptureFixture[str]) -> None:

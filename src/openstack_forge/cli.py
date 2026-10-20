@@ -7,7 +7,7 @@ import sys
 from collections.abc import Callable, Sequence
 
 from openstack_forge import __version__
-from openstack_forge.config import ConfigError, ConfigValidationError, load_config
+from openstack_forge.config import ConfigError, ConfigValidationError, find_release, load_config
 
 Handler = Callable[[argparse.Namespace], int]
 
@@ -42,11 +42,18 @@ def _config_validate(args: argparse.Namespace) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
+    cluster = config["cluster"]
+    release = find_release(cluster["ubuntu_version"], cluster["openstack_release"])
     print(f"Configuration is valid: {path}")
     print(
-        f"  cluster '{config['cluster']['name']}': "
+        f"  cluster '{cluster['name']}': "
         f"{len(config['nodes'])} node(s), {len(config['networks'])} network(s)"
     )
+    if release is not None:
+        print(
+            f"  OpenStack {release.openstack_release} ({release.codename.capitalize()}) "
+            f"on Ubuntu {release.ubuntu_version}, from {release.cloud_archive}"
+        )
     return 0
 
 

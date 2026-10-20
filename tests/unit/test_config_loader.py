@@ -12,7 +12,7 @@ from openstack_forge.config import ConfigFileError, ConfigSyntaxError, load_conf
 def test_loads_valid_yaml_as_mapping(fixture_path) -> None:
     data = load_config_file(fixture_path("valid_cluster.yaml"))
     assert data["cluster"]["name"] == "fixture-cluster"
-    assert len(data["nodes"]) == 3
+    assert len(data["nodes"]) == 4
 
 
 def test_missing_file_reports_path(tmp_path: Path) -> None:

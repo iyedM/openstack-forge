@@ -1,11 +1,12 @@
 # OpenStack Forge - Example cluster definition
 # This file is documentation-only and intentionally uses fictional values.
-# It is an initial draft and must be validated against the project's future configuration model.
+# Check it with: openstack-forge config validate examples/cluster.example.yaml
+# The full set of rules is documented in docs/configuration/README.md.
 
 cluster:
   name: "forge-demo"
-  ubuntu_version: "22.04"
-  openstack_release: "2024.2"
+  ubuntu_version: "24.04"       # the only supported Ubuntu release
+  openstack_release: "2025.1"   # Epoxy, installed from the cloud-archive:epoxy repository
   topology: "private-cloud"
 
 networks:
@@ -19,40 +20,83 @@ networks:
     subnet: "10.10.50.0/24"
     gateway: "10.10.50.1"
     interface: "ens4"
+  # External network that instances reach through floating IPs.
+  provider:
+    subnet: "10.10.60.0/24"
+    gateway: "10.10.60.1"
+    interface: "ens5"
+    floating_ip_range:
+      start: "10.10.60.100"
+      end: "10.10.60.199"
+    # Optional: addresses handed out by a DHCP server on this network; must not
+    # overlap the floating IP range.
+    dhcp_range:
+      start: "10.10.60.200"
+      end: "10.10.60.250"
 
+# Roles: exactly one controller, at least one compute, at most one block and one object node.
+# vcpus and ram_gb declare the expected hardware so later checks can compare it with reality.
 nodes:
   - role: controller
     hostname: "forge-controller-01"
     fqdn: "forge-controller-01.example.internal"
     management_ip: "10.10.40.11"
+    vcpus: 8
+    ram_gb: 32
     interfaces:
       management: "ens3"
       storage: "ens4"
+      provider: "ens5"
     tags: ["control-plane", "identity", "network"]
 
   - role: compute
     hostname: "forge-compute-01"
     fqdn: "forge-compute-01.example.internal"
     management_ip: "10.10.40.21"
+    vcpus: 16
+    ram_gb: 64
     interfaces:
       management: "ens3"
       storage: "ens4"
+      provider: "ens5"
     tags: ["compute"]
 
   - role: compute
     hostname: "forge-compute-02"
     fqdn: "forge-compute-02.example.internal"
     management_ip: "10.10.40.22"
+    vcpus: 16
+    ram_gb: 64
     interfaces:
       management: "ens3"
       storage: "ens4"
+      provider: "ens5"
     tags: ["compute"]
 
-  - role: storage
-    hostname: "forge-storage-01"
-    fqdn: "forge-storage-01.example.internal"
+  # Block storage (Cinder) node: exactly one data disk.
+  - role: block
+    hostname: "forge-block-01"
+    fqdn: "forge-block-01.example.internal"
     management_ip: "10.10.40.31"
+    vcpus: 4
+    ram_gb: 16
+    disk: "/dev/sdb"
     interfaces:
       management: "ens3"
       storage: "ens4"
-    tags: ["ceph", "storage"]
+    tags: ["cinder"]
+
+  # Object storage (Swift) node: one or more data disks.
+  - role: object
+    hostname: "forge-object-01"
+    fqdn: "forge-object-01.example.internal"
+    management_ip: "10.10.40.32"
+    vcpus: 4
+    ram_gb: 16
+    disks:
+      - "/dev/sdb"
+      - "/dev/sdc"
+    interfaces:
+      management: "ens3"
+      storage: "ens4"
+    tags: ["swift"]

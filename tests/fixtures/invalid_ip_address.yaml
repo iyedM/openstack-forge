@@ -1,8 +1,8 @@
-# Invalid IPv4 addresses in a node, a gateway and a DNS entry.
+# Invalid IPv4 addresses in a gateway, a DNS entry, a floating range bound and a node.
 cluster:
   name: "bad-ips"
-  ubuntu_version: "22.04"
-  openstack_release: "2024.2"
+  ubuntu_version: "24.04"
+  openstack_release: "2025.1"
   topology: "private-cloud"
 
 networks:
@@ -12,11 +12,29 @@ networks:
     dns:
       - "192.0.2.256"
     interface: "eth0"
+  provider:
+    subnet: "203.0.113.0/24"
+    gateway: "203.0.113.1"
+    interface: "eth1"
+    floating_ip_range:
+      start: "203.0.113.x"
+      end: "203.0.113.199"
 
 nodes:
   - role: controller
     hostname: "ctl-01"
     fqdn: "ctl-01.cluster.test"
     management_ip: "192.0.2.300"
+    vcpus: 4
+    ram_gb: 16
+    interfaces:
+      management: "eth0"
+
+  - role: compute
+    hostname: "cmp-01"
+    fqdn: "cmp-01.cluster.test"
+    management_ip: "192.0.2.21"
+    vcpus: 4
+    ram_gb: 16
     interfaces:
       management: "eth0"

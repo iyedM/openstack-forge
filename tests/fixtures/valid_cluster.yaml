@@ -1,9 +1,9 @@
-# Minimal valid cluster used as the baseline for tests.
+# Valid cluster used as the baseline for tests: every role, every optional section.
 # Uses RFC 5737 documentation addresses and the reserved .test domain.
 cluster:
   name: "fixture-cluster"
-  ubuntu_version: "22.04"
-  openstack_release: "2024.2"
+  ubuntu_version: "24.04"
+  openstack_release: "2025.1"
   topology: "private-cloud"
 
 networks:
@@ -17,29 +17,61 @@ networks:
     subnet: "198.51.100.0/24"
     gateway: "198.51.100.1"
     interface: "eth1"
+  provider:
+    subnet: "203.0.113.0/24"
+    gateway: "203.0.113.1"
+    interface: "eth2"
+    floating_ip_range:
+      start: "203.0.113.100"
+      end: "203.0.113.199"
+    dhcp_range:
+      start: "203.0.113.200"
+      end: "203.0.113.250"
 
 nodes:
   - role: controller
     hostname: "ctl-01"
     fqdn: "ctl-01.cluster.test"
     management_ip: "192.0.2.11"
+    vcpus: 8
+    ram_gb: 32
     interfaces:
       management: "eth0"
       storage: "eth1"
+      provider: "eth2"
     tags: ["control-plane"]
 
   - role: compute
     hostname: "cmp-01"
     fqdn: "cmp-01.cluster.test"
     management_ip: "192.0.2.21"
+    vcpus: 16
+    ram_gb: 64
+    interfaces:
+      management: "eth0"
+      storage: "eth1"
+      provider: "eth2"
+
+  - role: block
+    hostname: "blk-01"
+    fqdn: "blk-01.cluster.test"
+    management_ip: "192.0.2.31"
+    vcpus: 4
+    ram_gb: 16
+    disk: "/dev/sdb"
     interfaces:
       management: "eth0"
       storage: "eth1"
 
-  - role: storage
-    hostname: "sto-01"
-    fqdn: "sto-01.cluster.test"
-    management_ip: "192.0.2.31"
+  - role: object
+    hostname: "obj-01"
+    fqdn: "obj-01.cluster.test"
+    management_ip: "192.0.2.32"
+    vcpus: 4
+    ram_gb: 16
+    disks:
+      - "/dev/sdb"
+      - "/dev/disk/by-id/wwn-0x5000c500a1b2c3d4"
     interfaces:
       management: "eth0"
       storage: "eth1"

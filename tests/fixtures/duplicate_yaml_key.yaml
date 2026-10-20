@@ -1,8 +1,8 @@
 # The "management" network is defined twice; plain YAML loaders would silently keep the second.
 cluster:
   name: "dup-key"
-  ubuntu_version: "22.04"
-  openstack_release: "2024.2"
+  ubuntu_version: "24.04"
+  openstack_release: "2025.1"
   topology: "private-cloud"
 
 networks:
@@ -14,11 +14,3 @@ networks:
     subnet: "198.51.100.0/24"
     gateway: "198.51.100.1"
     interface: "eth1"
-
-nodes:
-  - role: controller
-    hostname: "ctl-01"
-    fqdn: "ctl-01.cluster.test"
-    management_ip: "192.0.2.11"
-    interfaces:
-      management: "eth0"

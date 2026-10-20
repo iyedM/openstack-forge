@@ -1,8 +1,8 @@
-# nodes[1] reuses the hostname, FQDN and management IP of nodes[0].
+# nodes[2] reuses the hostname (in another case), FQDN and management IP of nodes[1].
 cluster:
   name: "dup-nodes"
-  ubuntu_version: "22.04"
-  openstack_release: "2024.2"
+  ubuntu_version: "24.04"
+  openstack_release: "2025.1"
   topology: "private-cloud"
 
 networks:
@@ -10,12 +10,30 @@ networks:
     subnet: "192.0.2.0/24"
     gateway: "192.0.2.1"
     interface: "eth0"
+  provider:
+    subnet: "203.0.113.0/24"
+    gateway: "203.0.113.1"
+    interface: "eth1"
+    floating_ip_range:
+      start: "203.0.113.100"
+      end: "203.0.113.199"
 
 nodes:
+  - role: controller
+    hostname: "ctl-01"
+    fqdn: "ctl-01.cluster.test"
+    management_ip: "192.0.2.11"
+    vcpus: 4
+    ram_gb: 16
+    interfaces:
+      management: "eth0"
+
   - role: compute
     hostname: "cmp-01"
     fqdn: "cmp-01.cluster.test"
     management_ip: "192.0.2.21"
+    vcpus: 4
+    ram_gb: 16
     interfaces:
       management: "eth0"
 
@@ -23,5 +41,7 @@ nodes:
     hostname: "CMP-01"
     fqdn: "cmp-01.cluster.test"
     management_ip: "192.0.2.21"
+    vcpus: 4
+    ram_gb: 16
     interfaces:
       management: "eth0"

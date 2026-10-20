@@ -1,0 +1,41 @@
+# Provider ranges that are reversed or leave the subnet.
+cluster:
+  name: "range-bounds"
+  ubuntu_version: "24.04"
+  openstack_release: "2025.1"
+  topology: "private-cloud"
+
+networks:
+  management:
+    subnet: "192.0.2.0/24"
+    gateway: "192.0.2.1"
+    interface: "eth0"
+  provider:
+    subnet: "203.0.113.0/24"
+    gateway: "203.0.113.1"
+    interface: "eth1"
+    floating_ip_range:            # start after end
+      start: "203.0.113.199"
+      end: "203.0.113.100"
+    dhcp_range:                   # end outside the subnet
+      start: "203.0.113.250"
+      end: "203.0.114.10"
+
+nodes:
+  - role: controller
+    hostname: "ctl-01"
+    fqdn: "ctl-01.cluster.test"
+    management_ip: "192.0.2.11"
+    vcpus: 4
+    ram_gb: 16
+    interfaces:
+      management: "eth0"
+
+  - role: compute
+    hostname: "cmp-01"
+    fqdn: "cmp-01.cluster.test"
+    management_ip: "192.0.2.21"
+    vcpus: 4
+    ram_gb: 16
+    interfaces:
+      management: "eth0"

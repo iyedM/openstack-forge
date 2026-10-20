@@ -1,0 +1,41 @@
+# The provider network shares the management subnet (allowed); its ranges conflict.
+cluster:
+  name: "range-conflicts"
+  ubuntu_version: "24.04"
+  openstack_release: "2025.1"
+  topology: "private-cloud"
+
+networks:
+  management:
+    subnet: "192.0.2.0/24"
+    gateway: "192.0.2.1"
+    interface: "eth0"
+  provider:
+    subnet: "192.0.2.0/24"
+    gateway: "192.0.2.1"
+    interface: "eth0"
+    floating_ip_range:            # includes the gateway and both node addresses
+      start: "192.0.2.1"
+      end: "192.0.2.30"
+    dhcp_range:                   # overlaps the floating IP range
+      start: "192.0.2.25"
+      end: "192.0.2.60"
+
+nodes:
+  - role: controller
+    hostname: "ctl-01"
+    fqdn: "ctl-01.cluster.test"
+    management_ip: "192.0.2.11"
+    vcpus: 4
+    ram_gb: 16
+    interfaces:
+      management: "eth0"
+
+  - role: compute
+    hostname: "cmp-01"
+    fqdn: "cmp-01.cluster.test"
+    management_ip: "192.0.2.21"
+    vcpus: 4
+    ram_gb: 16
+    interfaces:
+      management: "eth0"

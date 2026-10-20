@@ -49,8 +49,7 @@ The repository is organized to keep project concerns separate:
 - `ansible/` - Ansible inventories, playbooks, and role documentation.
 - `docs/` - architecture, installation, configuration, security, and troubleshooting docs.
 - `examples/` - example deployment configuration.
-- `schemas/` - JSON schema for configuration validation.
-- `src/openstack_forge/` - Python package with CLI, validation, orchestration, and diagnostics modules.
+- `src/openstack_forge/` - Python package with CLI, validation, orchestration, and diagnostics modules. The configuration JSON Schema lives in `src/openstack_forge/config/schemas/`.
 - `tests/` - unit, integration, acceptance, and fixtures placeholders.
 
 ## Development setup

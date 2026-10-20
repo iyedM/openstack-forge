@@ -1,8 +1,8 @@
 # Unquoted version is parsed as a number; an unknown field is present; nodes is not a list.
 cluster:
   name: "wrong-types"
-  ubuntu_version: 22.04
-  openstack_release: "2024.2"
+  ubuntu_version: 24.04
+  openstack_release: "2025.1"
   topology: "private-cloud"
   region: "eu-west"
 
@@ -11,6 +11,13 @@ networks:
     subnet: "192.0.2.0/24"
     gateway: "192.0.2.1"
     interface: "eth0"
+  provider:
+    subnet: "203.0.113.0/24"
+    gateway: "203.0.113.1"
+    interface: "eth1"
+    floating_ip_range:
+      start: "203.0.113.100"
+      end: "203.0.113.199"
 
 nodes:
   role: controller
