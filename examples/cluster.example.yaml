@@ -1,0 +1,58 @@
+# OpenStack Forge - Example cluster definition
+# This file is documentation-only and intentionally uses fictional values.
+# It is an initial draft and must be validated against the project's future configuration model.
+
+cluster:
+  name: "forge-demo"
+  ubuntu_version: "22.04"
+  openstack_release: "2024.2"
+  topology: "private-cloud"
+
+networks:
+  management:
+    subnet: "10.10.40.0/24"
+    gateway: "10.10.40.1"
+    dns:
+      - "10.10.40.10"
+    interface: "ens3"
+  storage:
+    subnet: "10.10.50.0/24"
+    gateway: "10.10.50.1"
+    interface: "ens4"
+
+nodes:
+  - role: controller
+    hostname: "forge-controller-01"
+    fqdn: "forge-controller-01.example.internal"
+    management_ip: "10.10.40.11"
+    interfaces:
+      management: "ens3"
+      storage: "ens4"
+    tags: ["control-plane", "identity", "network"]
+
+  - role: compute
+    hostname: "forge-compute-01"
+    fqdn: "forge-compute-01.example.internal"
+    management_ip: "10.10.40.21"
+    interfaces:
+      management: "ens3"
+      storage: "ens4"
+    tags: ["compute"]
+
+  - role: compute
+    hostname: "forge-compute-02"
+    fqdn: "forge-compute-02.example.internal"
+    management_ip: "10.10.40.22"
+    interfaces:
+      management: "ens3"
+      storage: "ens4"
+    tags: ["compute"]
+
+  - role: storage
+    hostname: "forge-storage-01"
+    fqdn: "forge-storage-01.example.internal"
+    management_ip: "10.10.40.31"
+    interfaces:
+      management: "ens3"
+      storage: "ens4"
+    tags: ["ceph", "storage"]

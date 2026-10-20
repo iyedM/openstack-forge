@@ -1,0 +1,37 @@
+name: Feature request
+about: Suggest an idea for this project.
+title: ""
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or opportunity
+      description: What problem are you trying to solve or what capability would help you?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the desired behavior or workflow.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Mention any alternatives or workarounds you considered.
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Add supporting examples, diagrams, or reference materials.

@@ -1,0 +1,43 @@
+name: Bug report
+about: Report a problem with the project.
+title: ""
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug description
+      description: Describe the bug and what you expected to happen.
+      placeholder: The CLI fails when running ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: List the exact steps to reproduce the behavior.
+      placeholder: |
+        1. Run `openstack-forge ...`
+        2. Observe the error
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include relevant environment details such as Python version and OS.
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Add logs, screenshots, or notes if helpful.

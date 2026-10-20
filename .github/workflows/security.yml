@@ -1,0 +1,39 @@
+name: Security
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  dependency-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install project and dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Run pip-audit
+        run: |
+          python -m pip install pip-audit
+          python -m pip_audit
+
+      - name: Check for known vulnerable patterns
+        run: |
+          python -m pip install safety
+          python -m safety check --full-report || true
+
+      - name: Note about future hardening
+        run: echo "Security automation is intentionally minimal at this stage and should be expanded before production use."
+
+      - name: Note about action SHAs
+        run: echo "Note: GitHub Actions should be SHA-pinned after verifying the relevant commit hashes for each action."
