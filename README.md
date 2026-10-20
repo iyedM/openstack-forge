@@ -36,11 +36,11 @@ The project is intentionally designed around a few clear layers:
 The CLI currently provides a scaffold for the following commands:
 
 - `openstack-forge init` - initialize a new deployment workspace.
-- `openstack-forge config validate` - validate a cluster YAML file against the schema.
+- `openstack-forge config validate [PATH]` - validate a cluster YAML file against the schema and semantic rules (implemented).
 - `openstack-forge doctor` - perform environment diagnostics and preflight checks.
 - `openstack-forge plan` - produce a deployment plan without making changes.
 
-The actual implementation of these workflows is intentionally deferred.
+Apart from `config validate`, the implementation of these workflows is intentionally deferred.
 
 ## Repository structure
 

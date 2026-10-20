@@ -25,6 +25,11 @@ classifiers = [
   "Topic :: System :: Systems Administration",
 ]
 
+dependencies = [
+  "jsonschema>=4.23",
+  "PyYAML>=6.0",
+]
+
 [project.scripts]
 openstack-forge = "openstack_forge.cli:main"
 
@@ -33,8 +38,6 @@ dev = [
   "pytest>=8.0",
   "ruff>=0.6",
   "pre-commit>=3.7",
-  "jsonschema>=4.23",
-  "PyYAML>=6.0",
 ]
 
 [tool.setuptools]

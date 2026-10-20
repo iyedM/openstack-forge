@@ -1,0 +1,22 @@
+# Invalid IPv4 addresses in a node, a gateway and a DNS entry.
+cluster:
+  name: "bad-ips"
+  ubuntu_version: "22.04"
+  openstack_release: "2024.2"
+  topology: "private-cloud"
+
+networks:
+  management:
+    subnet: "192.0.2.0/24"
+    gateway: "192.0.2.1.5"
+    dns:
+      - "192.0.2.256"
+    interface: "eth0"
+
+nodes:
+  - role: controller
+    hostname: "ctl-01"
+    fqdn: "ctl-01.cluster.test"
+    management_ip: "192.0.2.300"
+    interfaces:
+      management: "eth0"

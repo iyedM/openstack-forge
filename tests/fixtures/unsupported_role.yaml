@@ -1,0 +1,27 @@
+# "database" is not one of the supported node roles.
+cluster:
+  name: "bad-role"
+  ubuntu_version: "22.04"
+  openstack_release: "2024.2"
+  topology: "private-cloud"
+
+networks:
+  management:
+    subnet: "192.0.2.0/24"
+    gateway: "192.0.2.1"
+    interface: "eth0"
+
+nodes:
+  - role: controller
+    hostname: "ctl-01"
+    fqdn: "ctl-01.cluster.test"
+    management_ip: "192.0.2.11"
+    interfaces:
+      management: "eth0"
+
+  - role: database
+    hostname: "db-01"
+    fqdn: "db-01.cluster.test"
+    management_ip: "192.0.2.41"
+    interfaces:
+      management: "eth0"

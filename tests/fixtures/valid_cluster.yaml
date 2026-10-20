@@ -1,0 +1,45 @@
+# Minimal valid cluster used as the baseline for tests.
+# Uses RFC 5737 documentation addresses and the reserved .test domain.
+cluster:
+  name: "fixture-cluster"
+  ubuntu_version: "22.04"
+  openstack_release: "2024.2"
+  topology: "private-cloud"
+
+networks:
+  management:
+    subnet: "192.0.2.0/24"
+    gateway: "192.0.2.1"
+    dns:
+      - "192.0.2.53"
+    interface: "eth0"
+  storage:
+    subnet: "198.51.100.0/24"
+    gateway: "198.51.100.1"
+    interface: "eth1"
+
+nodes:
+  - role: controller
+    hostname: "ctl-01"
+    fqdn: "ctl-01.cluster.test"
+    management_ip: "192.0.2.11"
+    interfaces:
+      management: "eth0"
+      storage: "eth1"
+    tags: ["control-plane"]
+
+  - role: compute
+    hostname: "cmp-01"
+    fqdn: "cmp-01.cluster.test"
+    management_ip: "192.0.2.21"
+    interfaces:
+      management: "eth0"
+      storage: "eth1"
+
+  - role: storage
+    hostname: "sto-01"
+    fqdn: "sto-01.cluster.test"
+    management_ip: "192.0.2.31"
+    interfaces:
+      management: "eth0"
+      storage: "eth1"

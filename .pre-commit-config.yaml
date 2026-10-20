@@ -5,6 +5,8 @@ repos:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: check-yaml
+        # Some fixtures are intentionally malformed to exercise config validation errors.
+        exclude: ^tests/fixtures/
       - id: check-json
       - id: mixed-line-ending
 

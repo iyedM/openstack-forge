@@ -1,0 +1,29 @@
+# Structurally valid but inconsistent: see the comment on each offending line.
+cluster:
+  name: "inconsistent"
+  ubuntu_version: "22.04"
+  openstack_release: "2024.2"
+  topology: "private-cloud"
+
+networks:
+  management:
+    subnet: "192.0.2.0/24"
+    gateway: "198.51.100.1"        # gateway outside the subnet
+    interface: "eth0"
+  storage:
+    subnet: "192.0.2.128/25"       # overlaps the management subnet
+    gateway: "192.0.2.129"
+    interface: "eth1"
+  tenant:
+    subnet: "203.0.113.5/24"       # host bits set
+    gateway: "203.0.113.1"
+    interface: "eth2"
+
+nodes:
+  - role: controller
+    hostname: "ctl-01"
+    fqdn: "ctl-02.cluster.test"    # does not match hostname
+    management_ip: "203.0.113.10"  # outside the management subnet
+    interfaces:
+      management: "eth0"
+      provider: "eth3"             # no network named "provider"

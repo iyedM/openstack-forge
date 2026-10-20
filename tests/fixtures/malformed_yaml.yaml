@@ -1,0 +1,8 @@
+# Unclosed flow sequence on the tags line.
+cluster:
+  name: "broken"
+nodes:
+  - role: controller
+    hostname: "ctl-01"
+    tags: ["control-plane", "identity"
+    management_ip: "192.0.2.11"

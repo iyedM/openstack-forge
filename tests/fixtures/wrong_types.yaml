@@ -1,0 +1,16 @@
+# Unquoted version is parsed as a number; an unknown field is present; nodes is not a list.
+cluster:
+  name: "wrong-types"
+  ubuntu_version: 22.04
+  openstack_release: "2024.2"
+  topology: "private-cloud"
+  region: "eu-west"
+
+networks:
+  management:
+    subnet: "192.0.2.0/24"
+    gateway: "192.0.2.1"
+    interface: "eth0"
+
+nodes:
+  role: controller

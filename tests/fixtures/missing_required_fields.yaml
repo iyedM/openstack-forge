@@ -1,0 +1,18 @@
+# cluster.openstack_release and nodes[0].management_ip are missing.
+cluster:
+  name: "missing-fields"
+  ubuntu_version: "22.04"
+  topology: "private-cloud"
+
+networks:
+  management:
+    subnet: "192.0.2.0/24"
+    gateway: "192.0.2.1"
+    interface: "eth0"
+
+nodes:
+  - role: controller
+    hostname: "ctl-01"
+    fqdn: "ctl-01.cluster.test"
+    interfaces:
+      management: "eth0"
