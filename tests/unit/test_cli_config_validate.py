@@ -98,6 +98,6 @@ def test_installed_command_exit_codes(fixture_path) -> None:
 
 
 def test_other_commands_remain_stubs(capsys: pytest.CaptureFixture[str]) -> None:
-    for command in ("init", "doctor", "plan"):
+    for command in ("init",):
         assert main([command]) == 0
         assert "not implemented yet" in capsys.readouterr().out

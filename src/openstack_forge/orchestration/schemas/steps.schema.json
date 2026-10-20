@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/schemas/openstack-forge-step-catalog.schema.json",
+  "title": "OpenStack Forge step catalog",
+  "description": "Ordered deployment steps shown by 'openstack-forge plan'. Steps describe what would change; they contain no commands or file contents. Unique ids, existing dependencies and the absence of cycles are checked by openstack_forge.orchestration.catalog.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["openstack_release", "steps", "notes"],
+  "properties": {
+    "openstack_release": {
+      "type": "string",
+      "description": "the OpenStack release the steps and documentation links refer to, such as \"2025.1\"",
+      "pattern": "^[0-9]{4}\\.[12]$"
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/step" }
+    },
+    "notes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/note" }
+    }
+  },
+  "$defs": {
+    "step_id": {
+      "type": "string",
+      "description": "lowercase words separated by single hyphens, such as \"time-sync\"",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "doc_url": {
+      "type": "string",
+      "description": "a page under https://docs.openstack.org/",
+      "pattern": "^https://docs\\.openstack\\.org/\\S*$"
+    },
+    "role": {
+      "type": "string",
+      "enum": ["controller", "compute", "block", "object"]
+    },
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "roles",
+        "depends_on",
+        "files_modified",
+        "verification",
+        "doc_url",
+        "status"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/step_id" },
+        "title": { "type": "string", "minLength": 1 },
+        "roles": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/role" }
+        },
+        "depends_on": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/step_id" }
+        },
+        "files_modified": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "description": "an absolute path without spaces, such as \"/etc/hosts\"",
+            "pattern": "^/\\S*$"
+          }
+        },
+        "verification": { "type": "string", "minLength": 1 },
+        "doc_url": { "$ref": "#/$defs/doc_url" },
+        "status": { "type": "string", "enum": ["verified", "unverified"] }
+      }
+    },
+    "note": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "text", "doc_url"],
+      "properties": {
+        "id": { "$ref": "#/$defs/step_id" },
+        "title": { "type": "string", "minLength": 1 },
+        "text": { "type": "string", "minLength": 1 },
+        "doc_url": { "$ref": "#/$defs/doc_url" }
+      }
+    }
+  }
+}

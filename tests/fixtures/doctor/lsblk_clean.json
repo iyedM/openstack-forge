@@ -1,0 +1,56 @@
+{
+  "blockdevices": [
+    {
+      "name": "sda",
+      "path": "/dev/sda",
+      "type": "disk",
+      "size": 107374182400,
+      "fstype": null,
+      "pttype": "gpt",
+      "mountpoints": [null],
+      "wwn": null,
+      "children": [
+        {
+          "name": "sda1",
+          "path": "/dev/sda1",
+          "type": "part",
+          "size": 1073741824,
+          "fstype": "vfat",
+          "pttype": "gpt",
+          "mountpoints": ["/boot/efi"],
+          "wwn": null
+        },
+        {
+          "name": "sda2",
+          "path": "/dev/sda2",
+          "type": "part",
+          "size": 106300440576,
+          "fstype": "ext4",
+          "pttype": "gpt",
+          "mountpoints": ["/"],
+          "wwn": null
+        }
+      ]
+    },
+    {
+      "name": "sdb",
+      "path": "/dev/sdb",
+      "type": "disk",
+      "size": 536870912000,
+      "fstype": null,
+      "pttype": null,
+      "mountpoints": [null],
+      "wwn": "0x5000c50000000001"
+    },
+    {
+      "name": "sdc",
+      "path": "/dev/sdc",
+      "type": "disk",
+      "size": 536870912000,
+      "fstype": null,
+      "pttype": null,
+      "mountpoints": [null],
+      "wwn": "0x5000c500a1b2c3d4"
+    }
+  ]
+}

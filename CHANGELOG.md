@@ -25,6 +25,33 @@ All notable changes to this project will be documented in this file.
 - Required per-node `vcpus` and `ram_gb`; role-dependent `disk` (block) and `disks`
   (object) device paths.
 - Packaging test that builds a wheel and validates the example from it.
+- Read-only local `openstack-forge doctor --config cluster.yaml [--node HOSTNAME] [--json]`
+  command (`openstack_forge.diagnostics`) reusing the configuration validator.
+- Local node identification by `--node`, local hostname matching `nodes[].hostname`, or
+  local IPv4 matching `nodes[].management_ip`, with actionable errors when ambiguous or
+  not found.
+- Injectable `CommandRunner` abstraction (`SubprocessRunner` with `shell=False` and
+  timeouts) and separate pure parsers for `/etc/os-release`, `nproc`, `/proc/meminfo`,
+  `/proc/cpuinfo`, `systemd-detect-virt`, `lsblk -J -b`, and `ip -j addr`.
+- Pure diagnostic checks for OS version, vCPUs, RAM (with documented 10% kernel-reserved
+  tolerance), virtualization environment (`systemd-detect-virt`), compute CPU
+  virtualization flags (`vmx`/`svm`, warning that Nova will need `virt_type=qemu` when
+  absent), block and object storage disk readiness, network interfaces and management IP
+  assignment, and shared management/provider interface bridge migration warnings.
+- Recorded command outputs under `tests/fixtures/doctor/`, unit tests with a fake
+  `CommandRunner`, and check documentation in `docs/doctor/README.md`.
+- Read-only `openstack-forge plan --config cluster.yaml [--node HOSTNAME] [--json]`
+  command (`openstack_forge.orchestration`). It reuses the configuration validator, orders
+  the steps for every node with dependencies resolved across nodes ("waits for <step> on
+  <node>"), flags unverified steps and counts them in the summary. It runs no command and
+  uses no network.
+- Deployment step catalog shipped as package data
+  (`src/openstack_forge/orchestration/data/steps.json`) with its own JSON Schema, checked
+  for unique ids, existing dependencies and cycles. Initial steps, all **unverified**:
+  `/etc/hosts`, chrony, `cloud-archive:epoxy` with `python3-openstackclient`, MariaDB,
+  RabbitMQ, Memcached and etcd. Network configuration is recorded as an open decision
+  (the guide edits `/etc/network/interfaces`; Ubuntu 24.04 uses netplan).
+- `docs/plan/README.md`, including when a step may be marked verified.
 
 ### Changed
 

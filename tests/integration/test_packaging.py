@@ -16,7 +16,11 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SCHEMA_IN_WHEEL = "openstack_forge/config/schemas/cluster.schema.json"
+DATA_FILES_IN_WHEEL = (
+    "openstack_forge/config/schemas/cluster.schema.json",
+    "openstack_forge/orchestration/data/steps.json",
+    "openstack_forge/orchestration/schemas/steps.schema.json",
+)
 
 
 @pytest.fixture(scope="module")
@@ -57,12 +61,22 @@ def wheel(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return built
 
 
-def test_wheel_contains_schema(wheel: Path) -> None:
+@pytest.mark.parametrize("data_file", DATA_FILES_IN_WHEEL)
+def test_wheel_contains_data_file(wheel: Path, data_file: str) -> None:
     with zipfile.ZipFile(wheel) as archive:
-        assert SCHEMA_IN_WHEEL in archive.namelist()
+        assert data_file in archive.namelist()
 
 
-def test_installed_wheel_validates_example(wheel: Path, tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        (["config", "validate"], "Configuration is valid"),
+        (["plan", "--config"], "Summary: 19 step(s) on 5 node(s)"),
+    ],
+)
+def test_installed_wheel_runs_command(
+    wheel: Path, tmp_path: Path, command: list[str], expected: str
+) -> None:
     site = tmp_path / "site"
     with zipfile.ZipFile(wheel) as archive:
         archive.extractall(site)
@@ -73,10 +87,16 @@ def test_installed_wheel_validates_example(wheel: Path, tmp_path: Path) -> None:
         "import sys, openstack_forge.config.schema as s; "
         "print(s.__file__); "
         "from openstack_forge.cli import main; "
-        "sys.exit(main(['config', 'validate', sys.argv[1]]))"
+        "sys.exit(main(sys.argv[1:]))"
     )
     result = subprocess.run(
-        [sys.executable, "-c", script, str(REPO_ROOT / "examples" / "cluster.example.yaml")],
+        [
+            sys.executable,
+            "-c",
+            script,
+            *command,
+            str(REPO_ROOT / "examples" / "cluster.example.yaml"),
+        ],
         capture_output=True,
         text=True,
         check=False,
@@ -86,4 +106,4 @@ def test_installed_wheel_validates_example(wheel: Path, tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     imported_from, *output = result.stdout.splitlines()
     assert Path(imported_from).is_relative_to(site)
-    assert "Configuration is valid" in "\n".join(output)
+    assert expected in "\n".join(output)

@@ -12,6 +12,7 @@ from openstack_forge.config import load_config_file, load_schema
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURES_DIR = REPO_ROOT / "tests" / "fixtures"
+DOCTOR_FIXTURES_DIR = FIXTURES_DIR / "doctor"
 
 
 @pytest.fixture
@@ -24,6 +25,18 @@ def fixture_path() -> Callable[[str], Path]:
         return path
 
     return resolve
+
+
+@pytest.fixture
+def doctor_fixture_text() -> Callable[[str], str]:
+    """Return a function that reads a recorded command output inside tests/fixtures/doctor."""
+
+    def read(name: str) -> str:
+        path = DOCTOR_FIXTURES_DIR / name
+        assert path.is_file(), f"missing doctor fixture: {path}"
+        return path.read_text(encoding="utf-8")
+
+    return read
 
 
 @pytest.fixture

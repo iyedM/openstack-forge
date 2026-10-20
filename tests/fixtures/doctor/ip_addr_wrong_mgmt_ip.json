@@ -1,0 +1,37 @@
+[
+  {
+    "ifindex": 2,
+    "ifname": "eth0",
+    "flags": ["BROADCAST", "MULTICAST", "UP", "LOWER_UP"],
+    "operstate": "UP",
+    "addr_info": [
+      {
+        "family": "inet",
+        "local": "192.0.2.99",
+        "prefixlen": 24,
+        "scope": "global"
+      }
+    ]
+  },
+  {
+    "ifindex": 3,
+    "ifname": "eth1",
+    "flags": ["BROADCAST", "MULTICAST", "UP", "LOWER_UP"],
+    "operstate": "UP",
+    "addr_info": [
+      {
+        "family": "inet",
+        "local": "198.51.100.11",
+        "prefixlen": 24,
+        "scope": "global"
+      }
+    ]
+  },
+  {
+    "ifindex": 4,
+    "ifname": "eth2",
+    "flags": ["BROADCAST", "MULTICAST", "UP", "LOWER_UP"],
+    "operstate": "UP",
+    "addr_info": []
+  }
+]

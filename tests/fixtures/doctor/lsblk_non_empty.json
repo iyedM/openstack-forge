@@ -1,0 +1,154 @@
+{
+  "blockdevices": [
+    {
+      "name": "sda",
+      "path": "/dev/sda",
+      "type": "disk",
+      "size": 107374182400,
+      "fstype": null,
+      "pttype": "gpt",
+      "mountpoints": [null],
+      "wwn": null,
+      "children": [
+        {
+          "name": "sda1",
+          "path": "/dev/sda1",
+          "type": "part",
+          "size": 107374182400,
+          "fstype": "LVM2_member",
+          "pttype": "gpt",
+          "mountpoints": [null],
+          "wwn": null,
+          "children": [
+            {
+              "name": "ubuntu--vg-ubuntu--lv",
+              "path": "/dev/mapper/ubuntu--vg-ubuntu--lv",
+              "type": "lvm",
+              "size": 107374182400,
+              "fstype": "ext4",
+              "pttype": null,
+              "mountpoints": ["/"],
+              "wwn": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "sdb",
+      "path": "/dev/sdb",
+      "type": "disk",
+      "size": 536870912000,
+      "fstype": null,
+      "pttype": "gpt",
+      "mountpoints": [null],
+      "wwn": null,
+      "children": [
+        {
+          "name": "sdb1",
+          "path": "/dev/sdb1",
+          "type": "part",
+          "size": 536870912000,
+          "fstype": null,
+          "pttype": "gpt",
+          "mountpoints": [null],
+          "wwn": null
+        }
+      ]
+    },
+    {
+      "name": "sdc",
+      "path": "/dev/sdc",
+      "type": "disk",
+      "size": 536870912000,
+      "fstype": "xfs",
+      "pttype": null,
+      "mountpoints": [null],
+      "wwn": "0x5000c500a1b2c3d4"
+    },
+    {
+      "name": "sdd",
+      "path": "/dev/sdd",
+      "type": "disk",
+      "size": 536870912000,
+      "fstype": null,
+      "pttype": null,
+      "mountpoints": ["/srv/data"],
+      "wwn": null
+    },
+    {
+      "name": "sde",
+      "path": "/dev/sde",
+      "type": "disk",
+      "size": 536870912000,
+      "fstype": "LVM2_member",
+      "pttype": null,
+      "mountpoints": [null],
+      "wwn": null,
+      "children": [
+        {
+          "name": "cinder--volumes-pool0",
+          "path": "/dev/mapper/cinder--volumes-pool0",
+          "type": "lvm",
+          "size": 536870912000,
+          "fstype": null,
+          "pttype": null,
+          "mountpoints": [null],
+          "wwn": null
+        }
+      ]
+    },
+    {
+      "name": "sdf",
+      "path": "/dev/sdf",
+      "type": "disk",
+      "size": 536870912000,
+      "fstype": "linux_raid_member",
+      "pttype": null,
+      "mountpoints": [null],
+      "wwn": null,
+      "children": [
+        {
+          "name": "md0",
+          "path": "/dev/md0",
+          "type": "raid1",
+          "size": 536870912000,
+          "fstype": null,
+          "pttype": null,
+          "mountpoints": [null],
+          "wwn": null
+        }
+      ]
+    },
+    {
+      "name": "sdg",
+      "path": "/dev/sdg",
+      "type": "disk",
+      "size": 536870912000,
+      "fstype": null,
+      "pttype": "dos",
+      "mountpoints": [null],
+      "wwn": null
+    },
+    {
+      "name": "sdh",
+      "path": "/dev/sdh",
+      "type": "disk",
+      "size": 536870912000,
+      "fstype": null,
+      "pttype": "gpt",
+      "mountpoints": [null],
+      "wwn": null
+    },
+    {
+      "name": "loop0",
+      "path": "/dev/loop0",
+      "type": "loop",
+      "size": 67108864,
+      "fstype": "squashfs",
+      "pttype": null,
+      "mountpoints": ["/snap/core22/1"],
+      "wwn": null
+    }
+  ]
+}

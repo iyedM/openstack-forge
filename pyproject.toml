@@ -51,6 +51,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "openstack_forge.config" = ["schemas/*.json"]
+"openstack_forge.orchestration" = ["data/*.json", "schemas/*.json"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

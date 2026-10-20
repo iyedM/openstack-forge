@@ -1,0 +1,83 @@
+{
+  "openstack_release": "2025.1",
+  "steps": [
+    {
+      "id": "hosts-file",
+      "title": "Configure name resolution for all cluster nodes in /etc/hosts",
+      "roles": ["controller", "compute", "block", "object"],
+      "depends_on": [],
+      "files_modified": ["/etc/hosts"],
+      "verification": "Every cluster node's hostname resolves to its management IP address on this node.",
+      "doc_url": "https://docs.openstack.org/install-guide/environment-networking.html",
+      "status": "unverified"
+    },
+    {
+      "id": "time-sync",
+      "title": "Configure time synchronization with chrony",
+      "roles": ["controller", "compute", "block", "object"],
+      "depends_on": ["hosts-file"],
+      "files_modified": ["/etc/chrony/chrony.conf"],
+      "verification": "chrony reports a synchronized time source on this node.",
+      "doc_url": "https://docs.openstack.org/install-guide/environment-ntp.html",
+      "status": "unverified"
+    },
+    {
+      "id": "openstack-packages",
+      "title": "Enable the cloud-archive:epoxy repository and install python3-openstackclient",
+      "roles": ["controller", "compute", "block", "object"],
+      "depends_on": ["time-sync"],
+      "files_modified": [],
+      "verification": "The cloud-archive:epoxy repository is enabled and python3-openstackclient is installed on this node.",
+      "doc_url": "https://docs.openstack.org/install-guide/environment-packages-ubuntu.html",
+      "status": "unverified"
+    },
+    {
+      "id": "mariadb",
+      "title": "Install and configure MariaDB",
+      "roles": ["controller"],
+      "depends_on": ["openstack-packages"],
+      "files_modified": ["/etc/mysql/mariadb.conf.d/99-openstack.cnf"],
+      "verification": "The MariaDB service is running on the controller.",
+      "doc_url": "https://docs.openstack.org/install-guide/environment-sql-database-ubuntu.html",
+      "status": "unverified"
+    },
+    {
+      "id": "rabbitmq",
+      "title": "Install and configure RabbitMQ",
+      "roles": ["controller"],
+      "depends_on": ["openstack-packages"],
+      "files_modified": [],
+      "verification": "The RabbitMQ service is running on the controller.",
+      "doc_url": "https://docs.openstack.org/install-guide/environment-messaging-ubuntu.html",
+      "status": "unverified"
+    },
+    {
+      "id": "memcached",
+      "title": "Install and configure Memcached",
+      "roles": ["controller"],
+      "depends_on": ["openstack-packages"],
+      "files_modified": ["/etc/memcached.conf"],
+      "verification": "The Memcached service is running on the controller.",
+      "doc_url": "https://docs.openstack.org/install-guide/environment-memcached-ubuntu.html",
+      "status": "unverified"
+    },
+    {
+      "id": "etcd",
+      "title": "Install and configure etcd",
+      "roles": ["controller"],
+      "depends_on": ["openstack-packages"],
+      "files_modified": ["/etc/default/etcd"],
+      "verification": "The etcd service is running on the controller.",
+      "doc_url": "https://docs.openstack.org/install-guide/environment-etcd-ubuntu.html",
+      "status": "unverified"
+    }
+  ],
+  "notes": [
+    {
+      "id": "network-configuration",
+      "title": "Host network configuration is an open decision",
+      "text": "The official installation guide configures network interfaces on Ubuntu by editing /etc/network/interfaces, but Ubuntu 24.04 configures networking with netplan. How OpenStack Forge will handle network configuration has not been decided, so the catalog contains no network configuration step.",
+      "doc_url": "https://docs.openstack.org/install-guide/environment-networking-controller.html"
+    }
+  ]
+}

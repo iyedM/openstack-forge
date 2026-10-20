@@ -84,8 +84,8 @@ A non-empty list. Every node has:
 | `interfaces` | Mapping of network name to interface name, at least one entry. |
 | `tags` | Optional list of strings. |
 
-`vcpus` and `ram_gb` are declarations, not measurements. Nothing reads the real
-hardware yet; a future `doctor` command is expected to compare them with each host.
+`vcpus` and `ram_gb` are declarations of expected host capacity; `openstack-forge doctor`
+compares them against the local machine (see [`docs/doctor/README.md`](../doctor/README.md)).
 
 Disks depend on the role:
 

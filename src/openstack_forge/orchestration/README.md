@@ -1,11 +1,18 @@
 # Orchestration package
 
-This package is reserved for workflow orchestration and deployment planning logic.
+Read-only deployment planning. Nothing here runs commands, connects to hosts or changes
+any system.
 
-## Intended scope
+## Modules
 
-- Sequence deployment tasks in a safe, reviewable way.
-- Model cluster-level operations before execution.
-- Support future integration with Ansible playbooks.
+- `catalog.py` - loads the bundled step catalog and validates it against its JSON Schema
+  (structure) and its own rules (unique ids, existing dependencies, no cycles).
+- `plan.py` - `build_plan()` orders the catalog steps for each node of a validated
+  configuration, resolving dependencies across nodes; `format_plan_text()` and
+  `format_plan_json()` render it.
+- `errors.py` - `OrchestrationError`, `CatalogError` and `PlanError`.
+- `data/steps.json` - the step catalog, shipped as package data.
+- `schemas/steps.schema.json` - the catalog's JSON Schema, shipped as package data.
 
-No actual infrastructure changes are performed here.
+See [`docs/plan`](../../../docs/plan/README.md) for the plan format and for when a step
+may be marked as verified.

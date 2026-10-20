@@ -37,10 +37,10 @@ The CLI currently provides a scaffold for the following commands:
 
 - `openstack-forge init` - initialize a new deployment workspace.
 - `openstack-forge config validate [PATH]` - validate a cluster YAML file against the schema and semantic rules (implemented).
-- `openstack-forge doctor` - perform environment diagnostics and preflight checks.
-- `openstack-forge plan` - produce a deployment plan without making changes.
+- `openstack-forge doctor --config PATH [--node HOSTNAME] [--json]` - run read-only local host preflight checks against the cluster configuration (implemented; see [`docs/doctor/README.md`](docs/doctor/README.md)).
+- `openstack-forge plan --config PATH [--node HOSTNAME] [--json]` - show the ordered deployment steps each node would go through, without running anything (implemented, read-only; every step is currently unverified; see [`docs/plan/README.md`](docs/plan/README.md)).
 
-Apart from `config validate`, the implementation of these workflows is intentionally deferred.
+Apart from `config validate`, `doctor` and `plan`, the implementation of these workflows is intentionally deferred. Nothing applies a plan yet.
 
 ## Repository structure
 

@@ -1,0 +1,44 @@
+[
+  {
+    "ifindex": 1,
+    "ifname": "lo",
+    "flags": ["LOOPBACK", "UP", "LOWER_UP"],
+    "operstate": "UNKNOWN",
+    "addr_info": [
+      {
+        "family": "inet",
+        "local": "127.0.0.1",
+        "prefixlen": 8,
+        "scope": "host"
+      }
+    ]
+  },
+  {
+    "ifindex": 2,
+    "ifname": "eth0",
+    "flags": ["BROADCAST", "MULTICAST", "UP", "LOWER_UP"],
+    "operstate": "UP",
+    "addr_info": [
+      {
+        "family": "inet",
+        "local": "192.0.2.32",
+        "prefixlen": 24,
+        "scope": "global"
+      }
+    ]
+  },
+  {
+    "ifindex": 3,
+    "ifname": "eth1",
+    "flags": ["BROADCAST", "MULTICAST", "UP", "LOWER_UP"],
+    "operstate": "UP",
+    "addr_info": [
+      {
+        "family": "inet",
+        "local": "198.51.100.32",
+        "prefixlen": 24,
+        "scope": "global"
+      }
+    ]
+  }
+]
