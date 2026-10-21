@@ -276,10 +276,16 @@ def ini_set_many(
     target: str | PurePosixPath,
     settings: Iterable[tuple[str, str, str]],
     *,
+    comment_out: Iterable[tuple[str, str]] = (),
+    prefix: str = DISABLED_LINE_PREFIX,
     dry_run: bool = False,
     new_file_mode: int = DEFAULT_FILE_MODE,
 ) -> FileChange:
     """Apply ``(section, key, value)`` settings in order, in a single edit of ``target``.
+
+    When ``comment_out`` is given, each ``(section, key)`` pair has its active occurrences
+    in ``[section]`` commented out with ``prefix`` before ``settings`` are applied, in the
+    same single atomic write and unified diff.
 
     Each setting follows the rules of :func:`ini_set`. All settings are validated before
     anything is read or written. The result has one combined redacted diff; a file that
@@ -287,15 +293,102 @@ def ini_set_many(
     that changes gets one ``<file>.orig`` backup of its content before this call; when
     every key already has its value, nothing is written. The parent directory must exist.
     """
-    edit = _ini_set_many_editor(settings)
+    edit = _ini_set_many_editor(settings, comment_out=comment_out, prefix=prefix)
     return _edit_file(root, target, edit, dry_run=dry_run, new_file_mode=new_file_mode)
+
+
+def ini_comment_out_keys(
+    root: Path,
+    target: str | PurePosixPath,
+    keys: Iterable[tuple[str, str]],
+    *,
+    prefix: str = DISABLED_LINE_PREFIX,
+    dry_run: bool = False,
+    new_file_mode: int = DEFAULT_FILE_MODE,
+) -> FileChange:
+    """Comment out active ``key`` lines inside ``[section]`` for each ``(section, key)``.
+
+    Lines already commented out (starting with ``#`` or ``;``) are not touched, so repeated
+    calls are idempotent. A missing target file is left absent.
+    """
+    editors = _build_comment_out_key_editors(keys, prefix=prefix)
+    if not editors:
+        raise ValueError("ini_comment_out_keys needs at least one (section, key) pair")
+
+    def edit(lines: list[str], display: str) -> list[str]:
+        for editor in editors:
+            lines = editor(lines, display)
+        return lines
+
+    return _edit_file(
+        root,
+        target,
+        edit,
+        dry_run=dry_run,
+        new_file_mode=new_file_mode,
+        create_if_missing=False,
+    )
+
+
+def _build_comment_out_key_editors(
+    keys: Iterable[tuple[str, str]],
+    *,
+    prefix: str = DISABLED_LINE_PREFIX,
+) -> list[Callable[[list[str], str], list[str]]]:
+    _validate_comment_prefix(prefix)
+    editors: list[Callable[[list[str], str], list[str]]] = []
+    for item in keys:
+        if not isinstance(item, tuple) or len(item) != 2:
+            raise ValueError(f"Each entry must be a (section, key) tuple: {item!r}")
+        if not all(isinstance(part, str) for part in item):
+            raise ValueError(f"Section and key must be strings: {item!r}")
+        editors.append(_ini_comment_out_key_editor(*item, prefix=prefix))
+    return editors
+
+
+def _ini_comment_out_key_editor(
+    section: str,
+    key: str,
+    *,
+    prefix: str = DISABLED_LINE_PREFIX,
+) -> Callable[[list[str], str], list[str]]:
+    """Pure line editor commenting out active ``key`` lines in ``[section]``."""
+    _validate_comment_prefix(prefix)
+    _require_single_line("section", section)
+    _require_single_line("key", key)
+    if "]" in section or "[" in section:
+        raise ValueError(f"Invalid section name {section!r}")
+    if key != key.strip() or "=" in key or key[:1] in ("#", ";", "["):
+        raise ValueError(f"Invalid key {key!r}")
+
+    def edit(lines: list[str], display: str) -> list[str]:
+        spans = _section_spans(lines, section)
+        if not spans:
+            return lines
+        active = {
+            index
+            for start, stop in spans
+            for index in range(start, stop)
+            if _active_key(lines[index]) == key
+        }
+        if not active:
+            return lines
+        for index in sorted(active):
+            _refuse_continuation(lines, index, display, key)
+        return [f"{prefix}{line}" if index in active else line for index, line in enumerate(lines)]
+
+    return edit
 
 
 def _ini_set_many_editor(
     settings: Iterable[tuple[str, str, str]],
+    *,
+    comment_out: Iterable[tuple[str, str]] = (),
+    prefix: str = DISABLED_LINE_PREFIX,
 ) -> Callable[[list[str], str], list[str]]:
-    """Compose :func:`_ini_set_editor` for every setting, applied in order."""
-    editors = []
+    """Compose comment-out editors and :func:`_ini_set_editor` for every setting."""
+    comment_editors = _build_comment_out_key_editors(comment_out, prefix=prefix)
+    editors: list[Callable[[list[str], str], list[str]]] = []
     for setting in settings:
         if not isinstance(setting, tuple) or len(setting) != 3:
             raise ValueError(f"Each setting must be a (section, key, value) tuple: {setting!r}")
@@ -304,9 +397,10 @@ def _ini_set_many_editor(
         editors.append(_ini_set_editor(*setting))
     if not editors:
         raise ValueError("ini_set_many needs at least one setting")
+    all_editors = [*comment_editors, *editors]
 
     def edit(lines: list[str], display: str) -> list[str]:
-        for editor in editors:
+        for editor in all_editors:
             lines = editor(lines, display)
         return lines
 

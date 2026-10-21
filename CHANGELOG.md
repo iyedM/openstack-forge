@@ -367,6 +367,53 @@ All notable changes to this project will be documented in this file.
   `nova-manage.api-db-sync`, `nova-manage.cell-v2-map-cell0`,
   `nova-manage.cell-v2-list-cells` (`mutates=False`), `nova-manage.cell-v2-create-cell1`,
   and `nova-manage.db-sync`, with `NOVA_MANAGE_FAILURE_HINT`.
+- `ini_comment_out_keys(text, keys, *, prefix=DISABLED_LINE_PREFIX)` and the `comment_out`
+  keyword parameter on `ini_set_many()` in `openstack_forge.execution.files` to comment out
+  active `(section, key)` lines (used by `neutron-compute` to disable the active
+  `[database] connection = sqlite:////var/lib/neutron/neutron.sqlite` line shipped in
+  Ubuntu's `/etc/neutron/neutron.conf` in a single atomic write and `.orig` backup).
+- `"interface_name"` parameter type in `openstack_forge.execution.commands` (`PARAM_TYPES`)
+  and five reviewed Neutron / Open vSwitch command specs in `DEFAULT_REGISTRY`:
+  `neutron-db-manage.upgrade-head`, `ovs-vsctl.add-br`, `ovs-vsctl.add-port`,
+  `ovs-vsctl.br-exists` (`mutates=False`, `allowed_exit_codes={0, 2}`), and
+  `ovs-vsctl.list-ports` (`mutates=False`), with `NEUTRON_DB_MANAGE_FAILURE_HINT` and
+  `OVS_VSCTL_FAILURE_HINT`.
+- `neutron-controller` step (`openstack_forge.execution.neutron`, controller only; depends
+  on `mariadb`, `rabbitmq`, `memcached`, `keystone`, and `nova-controller`) in the catalog
+  and `IMPLEMENTED_STEPS`. **Unverified and never run on a real host.** Following
+  `https://docs.openstack.org/neutron/2025.1/install/controller-install-ubuntu.html` and
+  `controller-install-option2-ubuntu.html` (with Open vSwitch in place of the removed
+  Linuxbridge agent; see `https://docs.openstack.org/neutron/2025.1/admin/deploy-ovs-selfservice.html`
+  and `ovn/openvswitch_to_ovn_migration.html`): requires `ADMIN_PASS`, `RABBIT_PASS`,
+  `NEUTRON_DBPASS`, `NEUTRON_PASS`, `NOVA_PASS`, and `METADATA_SECRET` in `SecretStore`,
+  provisions the `neutron` MariaDB database and `'neutron'@'localhost'` + `'neutron'@'%'`
+  grants over `stdin`, converges the `neutron` Keystone user (`admin` role in `service`) and
+  `neutron` (`network`) service with three `RegionOne` endpoints at
+  `http://controller:9696`, installs `neutron-server`, `neutron-plugin-ml2`,
+  `neutron-openvswitch-agent`, `neutron-l3-agent`, `neutron-dhcp-agent`, and
+  `neutron-metadata-agent`, edits all seven configuration files (`/etc/neutron/neutron.conf`,
+  `/etc/neutron/plugins/ml2/ml2_conf.ini`,
+  `/etc/neutron/plugins/ml2/openvswitch_agent.ini`, `/etc/neutron/l3_agent.ini`,
+  `/etc/neutron/dhcp_agent.ini`, `/etc/neutron/metadata_agent.ini`, and the `[neutron]`
+  section of `/etc/nova/nova.conf`), restarts `openvswitch-switch`, idempotently creates
+  `br-provider` and attaches the controller's provider interface via `ovs-vsctl --may-exist`,
+  runs `/usr/bin/neutron-db-manage --config-file /etc/neutron/neutron.conf --config-file
+  /etc/neutron/plugins/ml2/ml2_conf.ini upgrade head`, and restarts `nova-api`,
+  `neutron-server`, `neutron-openvswitch-agent`, `neutron-dhcp-agent`,
+  `neutron-metadata-agent`, and `neutron-l3-agent`.
+- `neutron-compute` step (`openstack_forge.execution.neutron`, compute nodes only; depends on
+  `openstack-packages`, `nova-compute`, and `neutron-controller`) in the catalog and
+  `IMPLEMENTED_STEPS`. **Unverified and never run on a real host.** Following
+  `https://docs.openstack.org/neutron/2025.1/install/compute-install-ubuntu.html` and
+  `compute-install-option2-ubuntu.html` (with Open vSwitch): requires only `RABBIT_PASS` and
+  `NEUTRON_PASS` in `SecretStore` (least-privilege: `ADMIN_PASS`, `NEUTRON_DBPASS`,
+  `NOVA_PASS`, and `METADATA_SECRET` are never required on compute nodes), installs
+  `neutron-openvswitch-agent`, comments out `[database] connection` and sets `[DEFAULT]
+  transport_url` and `[oslo_concurrency] lock_path` in `/etc/neutron/neutron.conf`, edits
+  `/etc/neutron/plugins/ml2/openvswitch_agent.ini` and the `[neutron]` section of
+  `/etc/nova/nova.conf`, restarts `openvswitch-switch`, idempotently creates `br-provider`
+  and attaches the compute node's provider interface via `ovs-vsctl --may-exist`, and
+  restarts `nova-compute` and `neutron-openvswitch-agent`.
 
 ### Changed
 
@@ -426,12 +473,13 @@ All notable changes to this project will be documented in this file.
 - Replaced the development machine's local RFC 1918 IP in `memcached`/`etcd`
   modules, tests, `_service_fakes.py` and `docs/engine/README.md` with the RFC 5737
   documentation address `192.0.2.170`.
-- `IMPLEMENTED_STEPS` pin deliberately updated to all thirteen catalog steps (adds `rabbitmq`,
-  `keystone`, `glance`, `placement`, `nova-controller`, and `nova-compute`), and the
-  `DEFAULT_REGISTRY` test deliberately pins thirty-eight reviewed commands (adds the five
-  `/usr/sbin/rabbitmqctl`, two `/usr/bin/mariadb`, four `/usr/bin/keystone-manage`, eleven
-  `/usr/bin/openstack`, `glance-manage.db-sync`, `placement-manage.db-sync`, and five
-  `/usr/bin/nova-manage` specs).
+- `IMPLEMENTED_STEPS` pin deliberately updated to all fifteen catalog steps (adds `rabbitmq`,
+  `keystone`, `glance`, `placement`, `nova-controller`, `nova-compute`,
+  `neutron-controller`, and `neutron-compute`), and the `DEFAULT_REGISTRY` test deliberately
+  pins forty-three reviewed commands (adds the five `/usr/sbin/rabbitmqctl`, two
+  `/usr/bin/mariadb`, four `/usr/bin/keystone-manage`, eleven `/usr/bin/openstack`,
+  `glance-manage.db-sync`, `placement-manage.db-sync`, five `/usr/bin/nova-manage`,
+  `neutron-db-manage.upgrade-head`, and four `/usr/bin/ovs-vsctl` specs).
 - `keystone-manage.bootstrap` now delivers `ADMIN_PASS` via
   `env_params={"password": "OS_BOOTSTRAP_PASSWORD"}` instead of `--bootstrap-password
   {password}` in `argv` (confirmed in `/usr/lib/python3/dist-packages/keystone/cmd/cli.py`),

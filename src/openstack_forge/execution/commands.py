@@ -187,6 +187,11 @@ PARAM_TYPES: Mapping[str, ParamType] = {
             'an HTTP(S) endpoint URL such as "http://controller:9292" or "http://controller:8774/v2.1"',
             extra_check=_is_valid_endpoint_url,
         ),
+        ParamType(
+            "interface_name",
+            re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,14}"),
+            'a Linux network interface or bridge name (1-15 chars) such as "ens5" or "br-provider"',
+        ),
     )
 }
 
@@ -516,6 +521,11 @@ NOVA_MANAGE_MAP_CELL0 = "nova-manage.cell-v2-map-cell0"
 NOVA_MANAGE_LIST_CELLS = "nova-manage.cell-v2-list-cells"
 NOVA_MANAGE_CREATE_CELL1 = "nova-manage.cell-v2-create-cell1"
 NOVA_MANAGE_DB_SYNC = "nova-manage.db-sync"
+NEUTRON_DB_MANAGE_UPGRADE_HEAD = "neutron-db-manage.upgrade-head"
+OVS_VSCTL_ADD_BR = "ovs-vsctl.add-br"
+OVS_VSCTL_ADD_PORT = "ovs-vsctl.add-port"
+OVS_VSCTL_BR_EXISTS = "ovs-vsctl.br-exists"
+OVS_VSCTL_LIST_PORTS = "ovs-vsctl.list-ports"
 
 # Fixed literal admin authentication flags for /usr/bin/openstack (package
 # "python3-openstackclient", verified with `dpkg -S /usr/bin/openstack`).
@@ -617,6 +627,22 @@ NOVA_MANAGE_FAILURE_HINT = (
     "'active', that 'controller' resolves in /etc/hosts ('hosts-file' step), and that "
     "/etc/nova/nova.conf has the expected [api_database] connection, [database] connection, "
     "and [DEFAULT] transport_url. OpenStack Forge does not attempt any automatic recovery."
+)
+
+NEUTRON_DB_MANAGE_FAILURE_HINT = (
+    "neutron-db-manage reads /etc/neutron/neutron.conf and "
+    "/etc/neutron/plugins/ml2/ml2_conf.ini and connects to the MariaDB 'neutron' database "
+    "at 'controller': check that 'systemctl is-active mariadb' is 'active', that "
+    "'controller' resolves in /etc/hosts ('hosts-file' step), and that "
+    "/etc/neutron/neutron.conf has the expected [database] connection. OpenStack Forge "
+    "does not attempt any automatic recovery."
+)
+
+OVS_VSCTL_FAILURE_HINT = (
+    "ovs-vsctl connects to the local Open vSwitch database server (ovsdb-server) over its "
+    "Unix socket: check that 'systemctl is-active openvswitch-switch' is 'active' and that "
+    "the provider network interface exists on this host (see 'journalctl -u "
+    "openvswitch-switch'). OpenStack Forge does not attempt any automatic recovery."
 )
 
 SYSTEM_COMMANDS: tuple[CommandSpec, ...] = (
@@ -1278,6 +1304,89 @@ SYSTEM_COMMANDS: tuple[CommandSpec, ...] = (
         mutates=True,
         description="Populate or upgrade the Nova cell SQL database schema",
         failure_hint=NOVA_MANAGE_FAILURE_HINT,
+    ),
+    CommandSpec(
+        NEUTRON_DB_MANAGE_UPGRADE_HEAD,
+        # /usr/bin/neutron-db-manage (package "python3-neutron", verified with `dpkg -S`).
+        # Guide (https://docs.openstack.org/neutron/2025.1/install/controller-install-ubuntu.html):
+        # 'su -s /bin/sh -c "neutron-db-manage --config-file /etc/neutron/neutron.conf
+        #  --config-file /etc/neutron/plugins/ml2/ml2_conf.ini upgrade head" neutron'.
+        # Verified in `/usr/lib/python3/dist-packages/neutron/db/migration/cli.py`:
+        # `add_command_parsers()` registers `upgrade` (`--revision` positional `head`).
+        # CommandSpec forbids `su` and `sudo`; `/usr/bin/neutron-db-manage` is invoked
+        # directly as root after `/etc/neutron/neutron.conf` and
+        # `/etc/neutron/plugins/ml2/ml2_conf.ini` are configured.
+        (
+            "/usr/bin/neutron-db-manage",
+            "--config-file",
+            "/etc/neutron/neutron.conf",
+            "--config-file",
+            "/etc/neutron/plugins/ml2/ml2_conf.ini",
+            "upgrade",
+            "head",
+        ),
+        timeout=300,
+        mutates=True,
+        description="Populate or upgrade the Neutron SQL database schema to head",
+        failure_hint=NEUTRON_DB_MANAGE_FAILURE_HINT,
+    ),
+    CommandSpec(
+        OVS_VSCTL_ADD_BR,
+        # /usr/bin/ovs-vsctl (package "openvswitch-switch", verified with `dpkg -S`).
+        # Guide (https://docs.openstack.org/neutron/2025.1/install/controller-install-option2-ubuntu.html):
+        # "ovs-vsctl add-br br-provider".
+        # ovs-vsctl(8), "Bridge Commands": "[--may-exist] add-br bridge  Creates a new bridge
+        # named bridge. Without --may-exist, attempting to create a bridge that exists is an
+        # error." Passing `--may-exist` makes `add-br` idempotent on re-runs.
+        ("/usr/bin/ovs-vsctl", "--may-exist", "add-br", "{bridge}"),
+        {"bridge": "interface_name"},
+        timeout=30,
+        mutates=True,
+        description="Create an Open vSwitch bridge if it does not already exist",
+        failure_hint=OVS_VSCTL_FAILURE_HINT,
+    ),
+    CommandSpec(
+        OVS_VSCTL_ADD_PORT,
+        # /usr/bin/ovs-vsctl (package "openvswitch-switch").
+        # Guide (https://docs.openstack.org/neutron/2025.1/install/controller-install-option2-ubuntu.html):
+        # "ovs-vsctl add-port br-provider PROVIDER_INTERFACE_NAME".
+        # ovs-vsctl(8), "Port Commands": "[--may-exist] add-port bridge port  Creates on
+        # bridge a new port named port from the network device of the same name. Without
+        # --may-exist, attempting to create a port that exists is an error."
+        ("/usr/bin/ovs-vsctl", "--may-exist", "add-port", "{bridge}", "{interface}"),
+        {"bridge": "interface_name", "interface": "interface_name"},
+        timeout=30,
+        mutates=True,
+        description="Attach a network interface port to an Open vSwitch bridge",
+        failure_hint=OVS_VSCTL_FAILURE_HINT,
+    ),
+    CommandSpec(
+        OVS_VSCTL_BR_EXISTS,
+        # /usr/bin/ovs-vsctl (package "openvswitch-switch").
+        # ovs-vsctl(8), "Bridge Commands": "br-exists bridge  Tests whether bridge exists as
+        # a real or fake bridge. If so, ovs-vsctl exits successfully with exit code 0. If
+        # bridge does not exist, ovs-vsctl exits with code 2."
+        # Exit code 1 indicates a usage/configuration/connection error.
+        ("/usr/bin/ovs-vsctl", "br-exists", "{bridge}"),
+        {"bridge": "interface_name"},
+        timeout=30,
+        allowed_exit_codes=frozenset({0, 2}),
+        mutates=False,
+        description="Check whether an Open vSwitch bridge exists (read-only)",
+        failure_hint=OVS_VSCTL_FAILURE_HINT,
+    ),
+    CommandSpec(
+        OVS_VSCTL_LIST_PORTS,
+        # /usr/bin/ovs-vsctl (package "openvswitch-switch").
+        # ovs-vsctl(8), "Port Commands": "list-ports bridge  Lists all of the ports within
+        # bridge on standard output, one per line. The local port bridge is not included in
+        # the list."
+        ("/usr/bin/ovs-vsctl", "list-ports", "{bridge}"),
+        {"bridge": "interface_name"},
+        timeout=30,
+        mutates=False,
+        description="List ports attached to an Open vSwitch bridge (read-only)",
+        failure_hint=OVS_VSCTL_FAILURE_HINT,
     ),
 )
 

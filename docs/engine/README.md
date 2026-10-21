@@ -2,12 +2,13 @@
 
 `openstack_forge.execution` contains the confined file-editing primitives, redaction helper,
 secrets store, state store, step engine, an allowlisted command layer, a reusable MariaDB
-SQL provisioning brick, a reusable `/usr/bin/openstack` CLI provisioning brick, and thirteen
+SQL provisioning brick, a reusable `/usr/bin/openstack` CLI provisioning brick, and fifteen
 implemented deployment steps: `hosts-file`, `time-sync-controller`, `time-sync-other`,
 `openstack-packages`, `mariadb`, `rabbitmq`, `memcached`, `etcd`, `keystone`, `glance`,
-`placement`, `nova-controller`, and `nova-compute`.
+`placement`, `nova-controller`, `nova-compute`, `neutron-controller`, and
+`neutron-compute`.
 
-**All thirteen steps are marked `unverified` in the step catalog, and none has ever run on a
+**All fifteen steps are marked `unverified` in the step catalog, and none has ever run on a
 real host.** Every other catalog step is rejected as "not implemented" by
 `openstack-forge apply`. `hosts-file` is pure Python file operations confined to the target
 root. [`time-sync-controller`](#step-time-sync-controller-openstack_forgeexecutionchrony),
@@ -21,12 +22,14 @@ root. [`time-sync-controller`](#step-time-sync-controller-openstack_forgeexecuti
 [`glance`](#step-glance-openstack_forgeexecutionglance),
 [`placement`](#step-placement-openstack_forgeexecutionplacement),
 [`nova-controller`](#step-nova-controller-openstack_forgeexecutionnova),
-and [`nova-compute`](#step-nova-compute-openstack_forgeexecutionnova)
+[`nova-compute`](#step-nova-compute-openstack_forgeexecutionnova),
+[`neutron-controller`](#step-neutron-controller-openstack_forgeexecutionneutron),
+and [`neutron-compute`](#step-neutron-compute-openstack_forgeexecutionneutron)
 run system commands (`apt-get`, `add-apt-repository`, `apt-cache`, `systemctl`,
 `dpkg-query`, `rabbitmqctl`, `mariadb`, `keystone-manage`, `openstack`, `glance-manage`,
-`placement-manage`, `nova-manage`), only through the
+`placement-manage`, `nova-manage`, `neutron-db-manage`, `ovs-vsctl`), only through the
 [command execution layer](#command-execution-layer), whose registry contains exactly
-thirty-eight reviewed commands. Nothing uses `sudo` or `su`.
+forty-three reviewed commands. Nothing uses `sudo` or `su`.
 
 **Network:** OpenStack Forge's Python code opens no network connection. Some of the
 commands it runs do: `apt-get update`, `apt-get install` and `add-apt-repository` download
@@ -129,22 +132,24 @@ separate writes, a crash between them would leave the old lines disabled and no 
 for memcached that means no `-l` line at all, i.e. listening on every interface. The file
 must already exist (a missing file is left absent), and re-running it writes nothing.
 
-### `ini_set_many`
+### `ini_set_many` and `ini_comment_out_keys`
 
-`ini_set_many(root, target, settings, *, dry_run=False, new_file_mode=0o644)` applies
-`(section, key, value)` triples in order, each with the rules of `ini_set`, in a **single**
-edit of the file. Calling `ini_set` once per key is wrong for a file that does not exist
-yet: the first call creates it with one key, and the second call then backs up that
-one-key file as `<file>.orig`; in dry-run mode, separate calls also do not see each
-other's edits. With `ini_set_many`:
+`ini_set_many(root, target, settings, *, comment_out=(), dry_run=False, new_file_mode=0o644)`
+optionally comments out active `(section, key)` lines (via `ini_comment_out_keys`, prepending
+`# openstack-forge disabled: `) and then applies `(section, key, value)` triples in order,
+each with the rules of `ini_set`, in a **single** edit of the file. Calling `ini_set` once
+per key is wrong for a file that does not exist yet: the first call creates it with one key,
+and the second call then backs up that one-key file as `<file>.orig`; in dry-run mode,
+separate calls also do not see each other's edits. With `ini_set_many`:
 
-- all settings are validated before the file is read;
+- all `(section, key)` and `(section, key, value)` entries are validated before the file is
+  read;
 - the result has one combined, redacted unified diff;
 - a file that did not exist is created with `created=True` and **no** `.orig` backup;
 - an existing file that changes gets one `<file>.orig` backup of its content before the
   call (an existing `.orig` is still never overwritten);
-- if every key already has its value, it returns `changed=False`, an empty diff, and
-  writes nothing;
+- if every `comment_out` key is already commented out or absent and every `settings` key
+  already has its value, it returns `changed=False`, an empty diff, and writes nothing;
 - the parent directory must already exist; it is never created.
 
 ### Guarantees common to all file primitives
@@ -233,7 +238,7 @@ openstack-forge apply --config cluster.yaml --step STEP_ID [--node HOSTNAME] [--
 | Option | Meaning |
 | ------ | ------- |
 | `--config PATH` | Cluster configuration (default: `cluster.yaml`), validated before use. |
-| `--step STEP_ID` | Catalog step ID to apply (required). Only steps registered in `IMPLEMENTED_STEPS` (`hosts-file`, `time-sync-controller`, `time-sync-other`, `openstack-packages`, `mariadb`, `rabbitmq`, `memcached`, `etcd`, `keystone`, `glance`, `placement`) can run; any other catalog step exits with code 1 and `"not implemented"`. A step whose catalog `roles` do not include the node's role (for example `time-sync-other` on the controller) exits with code 1. |
+| `--step STEP_ID` | Catalog step ID to apply (required). Only steps registered in `IMPLEMENTED_STEPS` (`hosts-file`, `time-sync-controller`, `time-sync-other`, `openstack-packages`, `mariadb`, `rabbitmq`, `memcached`, `etcd`, `keystone`, `glance`, `placement`, `nova-controller`, `nova-compute`, `neutron-controller`, `neutron-compute`) can run; any other catalog step exits with code 1 and `"not implemented"`. A step whose catalog `roles` do not include the node's role (for example `time-sync-other` on the controller) exits with code 1. |
 | `--node HOSTNAME` | Target node hostname. If omitted, matched against the local machine's hostname (`socket.gethostname()`). |
 | `--root PATH` | Target filesystem root (default: `/`). Used by tests to confine all writes to a temporary directory. |
 | `--yes` | Write changes, run the step's commands and update the state file. The commands of every step except `hosts-file` use the network through apt. Without `--yes`, `apply` runs in **dry-run** mode: it prints the redacted unified diff and the exact argv of every command the step would run, writes nothing, runs nothing, and exits 0. |
@@ -424,7 +429,7 @@ locking against two engines sharing a state file, and no timeout around a step's
 `openstack_forge.execution.commands` (with `audit.py`) is the only code in the project that
 may start a process on behalf of a deployment step. It exists so that steps (for example
 installing a package or restarting a service) have one reviewed path for doing so.
-`DEFAULT_REGISTRY` contains exactly the thirty-eight reviewed commands below, and a test pins
+`DEFAULT_REGISTRY` contains exactly the forty-three reviewed commands below, and a test pins
 their argv, parameter types, exit codes and `mutates` flags, so adding or changing one is a
 deliberate edit. The tests only ever run harmless `sys.executable` one-liners; everything
 else uses a fake backend.
@@ -469,6 +474,11 @@ else uses a fake backend.
 | `nova-manage.cell-v2-list-cells` | `/usr/bin/nova-manage cell_v2 list_cells` | no | no | 0 | Guide (`nova/2025.1/install/controller-install-ubuntu.html`): `nova-manage cell_v2 list_cells`. Read-only query (`mutates=False`) used by `check()`, `apply()` (before `create_cell`), and `verify()`. Timeout 60 s. |
 | `nova-manage.cell-v2-create-cell1` | `/usr/bin/nova-manage cell_v2 create_cell --name=cell1 --verbose` | yes | no | 0 | Guide (`nova/2025.1/install/controller-install-ubuntu.html`): `su -s /bin/sh -c "nova-manage cell_v2 create_cell --name=cell1 --verbose" nova`. Checked first via `list_cells` because `CellV2Commands.create_cell` exits with code `2` if a cell with the same `transport_url` and `database_connection` already exists. Timeout 120 s. |
 | `nova-manage.db-sync` | `/usr/bin/nova-manage db sync` | yes | no | 0 | Guide (`nova/2025.1/install/controller-install-ubuntu.html`): `su -s /bin/sh -c "nova-manage db sync" nova`. `nova/cmd/manage.py` `CATEGORIES` maps `'db': DbCommands` (`sync`). Timeout 300 s. |
+| `neutron-db-manage.upgrade-head` | `/usr/bin/neutron-db-manage --config-file /etc/neutron/neutron.conf --config-file /etc/neutron/plugins/ml2/ml2_conf.ini upgrade head` | yes | no | 0 | Guide (`neutron/2025.1/install/controller-install-ubuntu.html`): `su -s /bin/sh -c "neutron-db-manage --config-file /etc/neutron/neutron.conf --config-file /etc/neutron/plugins/ml2/ml2_conf.ini upgrade head" neutron` (`dpkg -S`: `python3-neutron: /usr/bin/neutron-db-manage`). Alembic `upgrade head` is natively idempotent when the schema is already at `head`. Invoked directly as `root` because `CommandSpec` forbids `su`. Timeout 300 s. |
+| `ovs-vsctl.add-br` | `/usr/bin/ovs-vsctl --may-exist add-br {bridge}` | yes | no | 0 | `ovs-vsctl(8)` (`dpkg -S`: `openvswitch-switch: /usr/bin/ovs-vsctl`): creates Open vSwitch bridge `{bridge}` (`br-provider` in `deploy-ovs-selfservice.html`); `--may-exist` makes `add-br` succeed if the bridge already exists. Timeout 30 s. |
+| `ovs-vsctl.add-port` | `/usr/bin/ovs-vsctl --may-exist add-port {bridge} {interface}` | yes | no | 0 | `ovs-vsctl(8)`: attaches physical provider interface `{interface}` to bridge `{bridge}` (`br-provider`); `--may-exist` makes `add-port` succeed if the port is already attached to that bridge. Timeout 30 s. |
+| `ovs-vsctl.br-exists` | `/usr/bin/ovs-vsctl br-exists {bridge}` | no | no | 0, 2 | `ovs-vsctl(8)`: read-only bridge existence check (`mutates=False`); exits `0` if `{bridge}` exists and `2` if it does not exist. Timeout 15 s. |
+| `ovs-vsctl.list-ports` | `/usr/bin/ovs-vsctl list-ports {bridge}` | no | no | 0 | `ovs-vsctl(8)`: read-only port listing (`mutates=False`), printing attached port names one per line. Timeout 15 s. |
 
 Each path is the one installed on Ubuntu 24.04 by the package named by `dpkg -S`: `apt`
 (`apt-get`, `apt-cache`), `software-properties-common` (`add-apt-repository`), `systemd`,
@@ -476,8 +486,9 @@ Each path is the one installed on Ubuntu 24.04 by the package named by `dpkg -S`
 (`/usr/bin/mariadb`), `python3-keystone` (`/usr/bin/keystone-manage`),
 `python3-openstackclient` (`/usr/bin/openstack`, installed via `update-alternatives` from
 `/usr/bin/python3-openstack`), `python3-glance` (`/usr/bin/glance-manage`),
-`python3-placement` (`/usr/bin/placement-manage`), and `python3-nova`
-(`/usr/bin/nova-manage`); `PATH` is never searched. No other
+`python3-placement` (`/usr/bin/placement-manage`), `python3-nova`
+(`/usr/bin/nova-manage`), `python3-neutron` (`/usr/bin/neutron-db-manage`), and
+`openvswitch-switch` (`/usr/bin/ovs-vsctl`); `PATH` is never searched. No other
 apt or dpkg option is used: in particular no `--force-*`, no `-o Dpkg::Options`, no lock
 timeout, and no `upgrade`, `dist-upgrade` or `reboot` command exists in the registry. A
 configuration file prompt from dpkg therefore makes the command fail (stdin is `/dev/null`)
@@ -529,6 +540,7 @@ Every value must be a string and is checked **before** anything runs or is logge
 | `openstack_name` | `[a-z][a-z0-9_-]{0,63}`, e.g. `service`, `glance`, `compute`, `volumev3` |
 | `endpoint_interface` | `public`, `internal`, or `admin` |
 | `endpoint_url` | `http://controller:<port>[/<path>]` where `<port>` is 1–65535 and optional `/<path>` uses `[A-Za-z0-9._/-]` with no `..` or `//` (also permits the literal `%\(tenant_id\)s` token for Cinder v3 if needed) |
+| `interface_name` | `[A-Za-z0-9][A-Za-z0-9._:-]{0,14}` (Linux `IFNAMSIZ - 1` = 15 characters max), e.g. `eno2`, `enp3s0`, `eth0.100`, `br-provider` |
 
 Missing or unexpected parameters are errors too. For sensitive parameters (including types
 `secret` and `sql_stdin`), `ParameterError` masks the rejected value as `'********'`. There
@@ -1486,4 +1498,181 @@ Deviations, trade-offs, and limits (`nova-controller` and `nova-compute`):
 - **What `verify()` does not check:** no live HTTP request to `http://controller:8774/v2.1`, no
   `openstack compute service list`, and no `nova-status upgrade check` (`verify.html`) are
   performed.
+
+## Step: `neutron-controller` (`openstack_forge.execution.neutron`)
+
+**Unverified, and never run on a real host.** Source:
+<https://docs.openstack.org/neutron/2025.1/install/controller-install-ubuntu.html>
+(`doc/source/install/controller-install-ubuntu.rst`),
+<https://docs.openstack.org/neutron/2025.1/install/controller-install-option2-ubuntu.html>
+(`doc/source/install/controller-install-option2-ubuntu.rst`),
+<https://docs.openstack.org/neutron/2025.1/admin/deploy-ovs-selfservice.html>, and
+<https://docs.openstack.org/neutron/2025.1/ovn/openvswitch_to_ovn_migration.html>, which for
+Ubuntu Option 2 (Self-service networks) with Open vSwitch prescribe:
+
+1. Prerequisites — create the `neutron` MariaDB database and grant `ALL PRIVILEGES ON
+   neutron.*` to `'neutron'@'localhost'` and `'neutron'@'%'` identified by `NEUTRON_DBPASS`;
+2. Create the `neutron` service credentials in Keystone (`default` domain, `service`
+   project, `admin` role) and the `neutron` (`network`) service entity with three `RegionOne`
+   endpoints (`public`, `internal`, `admin`) at `http://controller:9696`;
+3. `apt install neutron-server neutron-plugin-ml2 neutron-openvswitch-agent neutron-l3-agent
+   neutron-dhcp-agent neutron-metadata-agent`;
+4. Edit seven configuration files:
+   - `/etc/neutron/neutron.conf` (24 keys across 6 sections):
+     - `[database]`: `connection = mysql+pymysql://neutron:NEUTRON_DBPASS@controller/neutron`
+     - `[DEFAULT]`: `core_plugin = ml2`, `service_plugins = router`,
+       `transport_url = rabbit://openstack:RABBIT_PASS@controller:5672/`,
+       `auth_strategy = keystone`, `notify_nova_on_port_status_changes = true`,
+       `notify_nova_on_port_data_changes = true`
+     - `[keystone_authtoken]`: `www_authenticate_uri = http://controller:5000`,
+       `auth_url = http://controller:5000`, `memcached_servers = controller:11211`,
+       `auth_type = password`, `project_domain_name = Default`, `user_domain_name = Default`,
+       `project_name = service`, `username = neutron`, `password = NEUTRON_PASS`
+     - `[nova]`: `auth_url = http://controller:5000`, `auth_type = password`,
+       `project_domain_name = Default`, `user_domain_name = Default`,
+       `region_name = RegionOne`, `project_name = service`, `username = nova`,
+       `password = NOVA_PASS`
+     - `[oslo_concurrency]`: `lock_path = /var/lib/neutron/tmp`
+     - `[experimental]`: `linuxbridge = false`
+   - `/etc/neutron/plugins/ml2/ml2_conf.ini` (6 keys across 4 sections):
+     - `[ml2]`: `type_drivers = flat,vlan,vxlan`, `tenant_network_types = vxlan`,
+       `mechanism_drivers = openvswitch,l2population`, `extension_drivers = port_security`
+     - `[ml2_type_flat]`: `flat_networks = provider`
+     - `[ml2_type_vxlan]`: `vni_ranges = 1:1000`
+     - `[securitygroup]`: `enable_ipset = true`
+   - `/etc/neutron/plugins/ml2/openvswitch_agent.ini` (5 keys across 3 sections):
+     - `[ovs]`: `bridge_mappings = provider:br-provider`,
+       `local_ip = <local_node management_ip>`
+     - `[agent]`: `tunnel_types = vxlan`, `l2_population = true`
+     - `[securitygroup]`: `enable_security_group = true`, `firewall_driver = openvswitch`
+   - `/etc/neutron/l3_agent.ini`: `[DEFAULT] interface_driver = openvswitch`
+   - `/etc/neutron/dhcp_agent.ini`: `[DEFAULT] interface_driver = openvswitch`,
+     `dhcp_driver = neutron.agent.linux.dhcp.Dnsmasq`, `enable_isolated_metadata = true`
+   - `/etc/neutron/metadata_agent.ini`: `[DEFAULT] nova_metadata_host = controller`,
+     `metadata_proxy_shared_secret = METADATA_SECRET`
+   - `/etc/nova/nova.conf` (`[neutron]` section, 10 keys):
+     `auth_url = http://controller:5000`, `auth_type = password`,
+     `project_domain_name = Default`, `user_domain_name = Default`,
+     `region_name = RegionOne`, `project_name = service`, `username = neutron`,
+     `password = NEUTRON_PASS`, `service_metadata_proxy = true`,
+     `metadata_proxy_shared_secret = METADATA_SECRET`
+5. Restart `openvswitch-switch`, create the Open vSwitch provider bridge `br-provider`
+   (`ovs-vsctl --may-exist add-br br-provider`), and attach the controller's provider
+   interface (`ovs-vsctl --may-exist add-port br-provider <provider_interface>`);
+6. Populate the database:
+   `su -s /bin/sh -c "neutron-db-manage --config-file /etc/neutron/neutron.conf --config-file /etc/neutron/plugins/ml2/ml2_conf.ini upgrade head" neutron`;
+7. Restart the Compute API and Networking services: `nova-api`, `neutron-server`,
+   `neutron-openvswitch-agent`, `neutron-dhcp-agent`, `neutron-metadata-agent`, and
+   `neutron-l3-agent`.
+
+It runs only on the controller (constructing it for another role raises `ExecutionError`).
+
+| Phase | What happens |
+| ----- | ------------ |
+| `check()` | Pure first (runs zero external commands if any fails): `ADMIN_PASS`, `RABBIT_PASS`, `NEUTRON_DBPASS`, `NEUTRON_PASS`, `NOVA_PASS`, and `METADATA_SECRET` must exist in `SecretStore(root)`, and all 7 config files (`/etc/neutron/neutron.conf`, `ml2_conf.ini`, `openvswitch_agent.ini`, `l3_agent.ini`, `dhcp_agent.ini`, `metadata_agent.ini`, and `/etc/nova/nova.conf`) must exist and need no edit. Otherwise `True` only if, in order: `dpkg-query --status` reports all 6 controller packages installed; `systemctl is-active` prints `active` for `openvswitch-switch`, `nova-api`, `neutron-server`, `neutron-openvswitch-agent`, `neutron-dhcp-agent`, `neutron-metadata-agent`, and `neutron-l3-agent`; `mariadb.query-sql` confirms the `neutron` database and `'neutron'@'localhost'` + `'neutron'@'%'` grants exist; `service_user_ready` confirms the `neutron` user (`default` domain) and its `admin` role in `service` exist; `service_catalog_ready` confirms the `neutron` (`network`) service and all three `RegionOne` endpoints (`http://controller:9696`) exist and are enabled; and `ovs-vsctl br-exists br-provider` + `ovs-vsctl list-ports br-provider` confirm `br-provider` exists and has the node's provider interface attached. |
+| `apply()` | Precondition: loads the 6 controller secrets from `SecretStore(root)` and verifies `/etc/nova/nova.conf` exists. Then provisions the `neutron` MariaDB database and grants via `mariadb.execute-sql` (`stdin`); converges the `neutron` Keystone user, `admin` role on `service`, `neutron` (`network`) service entity, and three `RegionOne` endpoints (`ensure_service_user` + `ensure_service_catalog`); installs the 6 controller packages; edits all 7 configuration files (`ini_set_many`); restarts `openvswitch-switch`; runs `ovs-vsctl --may-exist add-br br-provider` and `ovs-vsctl --may-exist add-port br-provider <provider_interface>`; runs `/usr/bin/neutron-db-manage --config-file /etc/neutron/neutron.conf --config-file /etc/neutron/plugins/ml2/ml2_conf.ini upgrade head`; and restarts `nova-api`, `neutron-server`, `neutron-openvswitch-agent`, `neutron-dhcp-agent`, `neutron-metadata-agent`, and `neutron-l3-agent`. |
+| `verify()` | Checks all 6 secrets in `SecretStore(root)`, all 7 configuration files (redacting secret values), all 6 packages installed, all 7 systemd units active (`openvswitch-switch` + the 6 finalize units), the `neutron` MariaDB database and grants, the `neutron` Keystone user and `admin` role on `service`, the `neutron` (`network`) service and three `RegionOne` endpoints (`http://controller:9696`), and `br-provider` with the node's provider interface attached. |
+
+Established on an Ubuntu 24.04 development machine with read-only commands (`neutron-server`,
+`neutron-plugin-ml2`, `neutron-openvswitch-agent`, `neutron-l3-agent`, `neutron-dhcp-agent`,
+`neutron-metadata-agent`, `neutron-common`, `python3-neutron` `2:26.0.0-0ubuntu1~cloud1` in
+`noble-updates/epoxy/main` and `2:24.1.0-0ubuntu1` in `noble-updates/main`;
+`openvswitch-switch` `3.5.1-0ubuntu0.1~cloud0` in `noble-updates/epoxy/main`):
+
+- **Removal of `neutron-linuxbridge-agent` in 2025.1 (Epoxy):** `apt-cache policy
+  neutron-linuxbridge-agent` shows that `neutron-linuxbridge-agent` exists only in `noble`
+  (2024.1 Caracal, `2:24.1.0-0ubuntu1`) and does **not** exist in the 2025.1 (Epoxy) Ubuntu
+  Cloud Archive. Furthermore, `controller-install-option2-ubuntu.rst` and
+  `compute-install-option2-ubuntu.rst` open with an explicit `.. warning::` stating that the
+  Linuxbridge driver is experimental and no longer parsed unless `[experimental] linuxbridge =
+  true` is enabled.
+- `neutron-openvswitch-agent` (`2:26.0.0-0ubuntu1~cloud1`) depends on `openvswitch-switch` and
+  ships `/etc/neutron/plugins/ml2/openvswitch_agent.ini` and
+  `/usr/lib/systemd/system/neutron-openvswitch-agent.service`.
+- `openvswitch-switch` (`3.5.1-0ubuntu0.1~cloud0`) ships `/usr/bin/ovs-vsctl` and
+  `/usr/lib/systemd/system/openvswitch-switch.service`.
+- `neutron-common` ships `/etc/neutron/neutron.conf` (`neutron-common.postinst` sets
+  `/etc/neutron` to `0750` `root:neutron` and files in `/etc/neutron` to `0640`
+  `root:neutron`), whose pristine `[database]` section contains an active
+  `connection = sqlite:////var/lib/neutron/neutron.sqlite` line.
+- `python3-neutron` ships `/usr/bin/neutron-db-manage`.
+
+## Step: `neutron-compute` (`openstack_forge.execution.neutron`)
+
+**Unverified, and never run on a real host.** Source:
+<https://docs.openstack.org/neutron/2025.1/install/compute-install-ubuntu.html>
+(`doc/source/install/compute-install-ubuntu.rst`) and
+<https://docs.openstack.org/neutron/2025.1/install/compute-install-option2-ubuntu.html>
+(`doc/source/install/compute-install-option2-ubuntu.rst`), which for Ubuntu Option 2 with
+Open vSwitch prescribe:
+
+1. `apt install neutron-openvswitch-agent`;
+2. Edit `/etc/neutron/neutron.conf`:
+   - `[database]`: comment out any `connection` options (`# openstack-forge disabled:
+     connection = sqlite:////var/lib/neutron/neutron.sqlite`) because compute nodes do not
+     directly access the database;
+   - `[DEFAULT]`: `transport_url = rabbit://openstack:RABBIT_PASS@controller:5672/`,
+     `auth_strategy = keystone`;
+   - `[oslo_concurrency]`: `lock_path = /var/lib/neutron/tmp`
+   (as instructed by `compute-install-ubuntu.rst` after the `[keystone_authtoken]` snippet:
+   "If you choose to use the Openvswitch agent, the `keystone_authtoken` section need not be
+   configured on compute nodes");
+3. Edit `/etc/neutron/plugins/ml2/openvswitch_agent.ini` (same 5 settings across `[ovs]`,
+   `[agent]`, and `[securitygroup]` as the controller, with `local_ip = <local_node
+   management_ip>`);
+4. Edit `/etc/nova/nova.conf` (`[neutron]` section, 8 keys):
+   `auth_url = http://controller:5000`, `auth_type = password`,
+   `project_domain_name = Default`, `user_domain_name = Default`,
+   `region_name = RegionOne`, `project_name = service`, `username = neutron`,
+   `password = NEUTRON_PASS`;
+5. Restart `openvswitch-switch`, create the Open vSwitch provider bridge `br-provider`, and
+   attach the compute node's provider interface;
+6. Restart the Compute service and Open vSwitch agent: `nova-compute` and
+   `neutron-openvswitch-agent`.
+
+It runs only on `compute` nodes (constructing it for another role raises `ExecutionError`).
+
+| Phase | What happens |
+| ----- | ------------ |
+| `check()` | Pure first (runs zero external commands if any fails): `RABBIT_PASS` and `NEUTRON_PASS` must exist in `SecretStore(root)` (`ADMIN_PASS`, `NEUTRON_DBPASS`, `NOVA_PASS`, and `METADATA_SECRET` are never required on compute nodes), and all 3 config files (`/etc/neutron/neutron.conf` with `[database] connection` commented out, `/etc/neutron/plugins/ml2/openvswitch_agent.ini`, and `/etc/nova/nova.conf`) must exist and need no edit. Otherwise `True` only if `dpkg-query --status neutron-openvswitch-agent` reports it installed, `systemctl is-active` prints `active` for `openvswitch-switch`, `nova-compute`, and `neutron-openvswitch-agent`, and `ovs-vsctl br-exists br-provider` + `ovs-vsctl list-ports br-provider` confirm `br-provider` exists and has the node's provider interface attached. |
+| `apply()` | Precondition: loads `RABBIT_PASS` and `NEUTRON_PASS` from `SecretStore(root)` and verifies `/etc/nova/nova.conf` exists. Installs `neutron-openvswitch-agent`, edits `/etc/neutron/neutron.conf` (`ini_set_many(..., comment_out=(("database", "connection"),))`), `/etc/neutron/plugins/ml2/openvswitch_agent.ini`, and `/etc/nova/nova.conf`, restarts `openvswitch-switch`, runs `ovs-vsctl --may-exist add-br br-provider` and `ovs-vsctl --may-exist add-port br-provider <provider_interface>`, and restarts `nova-compute` and `neutron-openvswitch-agent`. |
+| `verify()` | Checks `RABBIT_PASS` and `NEUTRON_PASS` in `SecretStore(root)`, all 3 configuration files (including verifying that no active `connection` key remains in `[database]` of `/etc/neutron/neutron.conf`), `neutron-openvswitch-agent` installed, `openvswitch-switch`, `nova-compute`, and `neutron-openvswitch-agent` active, and `br-provider` with the node's provider interface attached. |
+
+Deviations, trade-offs, and limits (`neutron-controller` and `neutron-compute`):
+
+- **Open vSwitch (`openvswitch`) instead of `linuxbridge`:** because `neutron-linuxbridge-agent`
+  is removed from the 2025.1 (Epoxy) Ubuntu Cloud Archive and marked unsupported in the 2025.1
+  Neutron installation guide, OpenStack Forge implements Option 2 (Self-service networks) with
+  Open vSwitch (`neutron-openvswitch-agent`, `mechanism_drivers = openvswitch,l2population`,
+  `openvswitch_agent.ini`, `firewall_driver = openvswitch`, `interface_driver = openvswitch`,
+  and `br-provider`), cross-checked against `admin/deploy-ovs-selfservice.html` and
+  `ovn/openvswitch_to_ovn_migration.html`.
+- **Idempotent `ovs-vsctl --may-exist add-br` and `ovs-vsctl --may-exist add-port`:**
+  `ovs-vsctl(8)` specifies that `add-br` and `add-port` fail on re-runs unless `--may-exist` is
+  supplied; `check()` and `verify()` inspect `ovs-vsctl br-exists br-provider` and
+  `ovs-vsctl list-ports br-provider`.
+- **`[DEFAULT] transport_url = rabbit://openstack:RABBIT_PASS@controller:5672/` on both roles:**
+  consistent with `glance.py` and `nova.py`, OpenStack Forge uses the explicit `:5672/` port
+  and trailing slash on both controller and compute nodes.
+- **Commenting out `[database] connection` on compute nodes:** Ubuntu's `neutron-common`
+  package ships an active `connection = sqlite:////var/lib/neutron/neutron.sqlite` line in
+  `[database]` of `/etc/neutron/neutron.conf`. `NeutronComputeStep` comments it out in the
+  same atomic `ini_set_many` write (`comment_out=(("database", "connection"),)`) and `verify()`
+  rejects any remaining active `connection` key in `[database]`.
+- **Least-privilege secrets on compute nodes:** `NeutronComputeStep` reads only `RABBIT_PASS`
+  and `NEUTRON_PASS`; controller-only secrets (`ADMIN_PASS`, `NEUTRON_DBPASS`, `NOVA_PASS`,
+  `METADATA_SECRET`) are never required on compute nodes.
+- **No kernel sysctl (`net.bridge.bridge-nf-call-iptables`) mutation:** the `br_netfilter`
+  sysctl instructions in the guide were specific to the deprecated `iptables_hybrid` /
+  `linuxbridge` firewall path; native `firewall_driver = openvswitch` uses OpenFlow rules in
+  OVS rather than Linux bridge netfilter.
+- **`neutron-db-manage` invoked directly as `root` instead of `su`:** `CommandSpec` forbids
+  `su` and `sudo`. Editing `/etc/neutron/neutron.conf` and `ml2_conf.ini` before running
+  `neutron-db-manage` ensures `upgrade head` connects to MariaDB rather than SQLite; if
+  `log_file` or `log_dir` is enabled in `neutron.conf`, running `neutron-db-manage` as `root`
+  can create a root-owned log file in `/var/log/neutron`.
+- **What `verify()` does not check:** no live HTTP request to `http://controller:9696`, no
+  `openstack network agent list` (`verify.html`), and no provider/self-service network creation
+  (`verify-option2.html`) are performed.
+
 

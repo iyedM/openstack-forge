@@ -147,6 +147,48 @@
       "verification": "nova-compute is installed and active, /etc/nova/nova.conf sets all 35 compute keys across [DEFAULT], [api], [keystone_authtoken], [service_user], [vnc], [glance], [oslo_concurrency], and [placement], and /etc/nova/nova-compute.conf sets [libvirt] virt_type to kvm or qemu matching /proc/cpuinfo hardware virtualization flags.",
       "doc_url": "https://docs.openstack.org/nova/2025.1/install/compute-install-ubuntu.html",
       "status": "unverified"
+    },
+    {
+      "id": "neutron-controller",
+      "title": "Install and configure the Neutron Networking controller services (Option 2: Open vSwitch)",
+      "roles": ["controller"],
+      "depends_on": [
+        "mariadb",
+        "rabbitmq",
+        "memcached",
+        "keystone",
+        "nova-controller"
+      ],
+      "files_modified": [
+        "/etc/neutron/neutron.conf",
+        "/etc/neutron/plugins/ml2/ml2_conf.ini",
+        "/etc/neutron/plugins/ml2/openvswitch_agent.ini",
+        "/etc/neutron/l3_agent.ini",
+        "/etc/neutron/dhcp_agent.ini",
+        "/etc/neutron/metadata_agent.ini",
+        "/etc/nova/nova.conf"
+      ],
+      "verification": "neutron-server, neutron-plugin-ml2, neutron-openvswitch-agent, neutron-l3-agent, neutron-dhcp-agent, and neutron-metadata-agent are installed, openvswitch-switch, nova-api, and the 5 Neutron controller units are active, all 7 configuration files match Option 2 (Self-service networks with Open vSwitch), the neutron MariaDB database and grants exist, the Keystone 'neutron' user has the 'admin' role on 'service', the 'neutron' ('network') service and its public/internal/admin endpoints (http://controller:9696) exist in RegionOne, and Open vSwitch bridge 'br-provider' exists with the provider physical interface attached.",
+      "doc_url": "https://docs.openstack.org/neutron/2025.1/install/controller-install-ubuntu.html",
+      "status": "unverified"
+    },
+    {
+      "id": "neutron-compute",
+      "title": "Install and configure the Neutron Open vSwitch agent on a compute node",
+      "roles": ["compute"],
+      "depends_on": [
+        "openstack-packages",
+        "nova-compute",
+        "neutron-controller"
+      ],
+      "files_modified": [
+        "/etc/neutron/neutron.conf",
+        "/etc/neutron/plugins/ml2/openvswitch_agent.ini",
+        "/etc/nova/nova.conf"
+      ],
+      "verification": "neutron-openvswitch-agent is installed, openvswitch-switch, nova-compute, and neutron-openvswitch-agent are active, /etc/neutron/neutron.conf comments out [database] connection and sets [DEFAULT] transport_url and [oslo_concurrency] lock_path, /etc/neutron/plugins/ml2/openvswitch_agent.ini and /etc/nova/nova.conf ([neutron]) match Option 2, and Open vSwitch bridge 'br-provider' exists with the provider physical interface attached.",
+      "doc_url": "https://docs.openstack.org/neutron/2025.1/install/compute-install-ubuntu.html",
+      "status": "unverified"
     }
   ],
   "notes": [

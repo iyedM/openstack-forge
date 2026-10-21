@@ -41,6 +41,8 @@ from openstack_forge.execution import (
     FunctionStep,
     GlanceStep,
     KeystoneStep,
+    NeutronComputeStep,
+    NeutronControllerStep,
     NovaComputeStep,
     NovaControllerStep,
     ParameterError,
@@ -75,8 +77,18 @@ from openstack_forge.execution import (
 
 TOOL = "/opt/forge-test/bin/secret-tool"
 CANARY = "CanarySecretValue9876543210ZyXwVuTsRq"
-CONTROLLER_NODE = {"hostname": "ctl-01", "role": "controller", "management_ip": "192.0.2.11"}
-COMPUTE_NODE = {"hostname": "cmp-01", "role": "compute", "management_ip": "192.0.2.31"}
+CONTROLLER_NODE = {
+    "hostname": "ctl-01",
+    "role": "controller",
+    "management_ip": "192.0.2.11",
+    "provider_interface": "eno2",
+}
+COMPUTE_NODE = {
+    "hostname": "cmp-01",
+    "role": "compute",
+    "management_ip": "192.0.2.31",
+    "provider_interface": "enp3s0",
+}
 
 
 @pytest.fixture(autouse=True)
@@ -878,8 +890,9 @@ def test_canary_secret_never_leaks_outside_the_0600_secrets_file(
     (root / "var" / "log" / "openstack-forge").mkdir(parents=True, mode=0o700)
 
     # Pre-seed RABBIT_PASS, KEYSTONE_DBPASS, ADMIN_PASS, GLANCE_DBPASS, GLANCE_PASS,
-    # PLACEMENT_DBPASS, PLACEMENT_PASS, NOVA_DBPASS, and NOVA_PASS with CANARY and
-    # generate the other secrets via CLI `secrets init`.
+    # PLACEMENT_DBPASS, PLACEMENT_PASS, NOVA_DBPASS, NOVA_PASS, NEUTRON_DBPASS,
+    # NEUTRON_PASS, and METADATA_SECRET with CANARY and generate the other secrets via
+    # CLI `secrets init`.
     secrets_path = root / "etc" / "openstack-forge" / "secrets.json"
     secrets_path.write_text(
         json.dumps(
@@ -893,6 +906,9 @@ def test_canary_secret_never_leaks_outside_the_0600_secrets_file(
                 "PLACEMENT_PASS": CANARY,
                 "NOVA_DBPASS": CANARY,
                 "NOVA_PASS": CANARY,
+                "NEUTRON_DBPASS": CANARY,
+                "NEUTRON_PASS": CANARY,
+                "METADATA_SECRET": CANARY,
             }
         ),
         encoding="utf-8",
@@ -1037,6 +1053,22 @@ def test_canary_secret_never_leaks_outside_the_0600_secrets_file(
                 ("etc/nova/nova.conf", "[DEFAULT]\n"),
                 ("etc/nova/nova-compute.conf", "[DEFAULT]\n[libvirt]\n"),
             ),
+            "neutron-server": (
+                "etc/neutron/neutron.conf",
+                "[DEFAULT]\n[database]\nconnection = sqlite:////var/lib/neutron/neutron.sqlite\n"
+                "[keystone_authtoken]\n[nova]\n[oslo_concurrency]\n",
+            ),
+            "neutron-plugin-ml2": (
+                "etc/neutron/plugins/ml2/ml2_conf.ini",
+                "[ml2]\n[ml2_type_flat]\n[ml2_type_vxlan]\n",
+            ),
+            "neutron-openvswitch-agent": (
+                "etc/neutron/plugins/ml2/openvswitch_agent.ini",
+                "[ovs]\n[agent]\n[securitygroup]\n",
+            ),
+            "neutron-l3-agent": ("etc/neutron/l3_agent.ini", "[DEFAULT]\n"),
+            "neutron-dhcp-agent": ("etc/neutron/dhcp_agent.ini", "[DEFAULT]\n"),
+            "neutron-metadata-agent": ("etc/neutron/metadata_agent.ini", "[DEFAULT]\n"),
         },
     )
     service_exec = CommandExecutor(
@@ -1163,6 +1195,51 @@ def test_canary_secret_never_leaks_outside_the_0600_secrets_file(
     for argv in host.calls[nova_cmp_calls_start:]:
         assert all(CANARY not in arg for arg in argv)
 
+    neutron_ctl_step = NeutronControllerStep(
+        root=root, config={}, local_node=CONTROLLER_NODE, executor=service_exec
+    )
+    neutron_ctl_preview_before = neutron_ctl_step.dry_run_preview()
+    for cmd in (
+        *neutron_ctl_preview_before.commands,
+        *neutron_ctl_preview_before.read_only_commands,
+    ):
+        assert CANARY not in cmd.describe(DEFAULT_REGISTRY)
+        assert CANARY not in " ".join(cmd.argv(DEFAULT_REGISTRY))
+        assert CANARY not in repr(cmd)
+    for fc in neutron_ctl_preview_before.file_changes:
+        assert CANARY not in fc.diff
+    for note in neutron_ctl_preview_before.notes:
+        assert CANARY not in note
+    neutron_ctl_calls_start = len(host.calls)
+    neutron_ctl_report = engine.run([neutron_ctl_step])
+    assert neutron_ctl_report.ok
+    neutron_ctl_report_text = format_report(neutron_ctl_report)
+    for argv in host.calls[neutron_ctl_calls_start:]:
+        if argv[0] in {"/usr/bin/neutron-db-manage", "/usr/bin/ovs-vsctl", "/usr/bin/mariadb"}:
+            assert all(CANARY not in arg for arg in argv)
+
+    neutron_cmp_step = NeutronComputeStep(
+        root=root, config={}, local_node=COMPUTE_NODE, executor=service_exec
+    )
+    neutron_cmp_preview_before = neutron_cmp_step.dry_run_preview()
+    for cmd in (
+        *neutron_cmp_preview_before.commands,
+        *neutron_cmp_preview_before.read_only_commands,
+    ):
+        assert CANARY not in cmd.describe(DEFAULT_REGISTRY)
+        assert CANARY not in " ".join(cmd.argv(DEFAULT_REGISTRY))
+        assert CANARY not in repr(cmd)
+    for fc in neutron_cmp_preview_before.file_changes:
+        assert CANARY not in fc.diff
+    for note in neutron_cmp_preview_before.notes:
+        assert CANARY not in note
+    neutron_cmp_calls_start = len(host.calls)
+    neutron_cmp_report = engine.run([neutron_cmp_step])
+    assert neutron_cmp_report.ok
+    neutron_cmp_report_text = format_report(neutron_cmp_report)
+    for argv in host.calls[neutron_cmp_calls_start:]:
+        assert all(CANARY not in arg for arg in argv)
+
     # Backend raising a raw RuntimeError containing CANARY
     raising_executor = CommandExecutor(
         registry,
@@ -1188,6 +1265,8 @@ def test_canary_secret_never_leaks_outside_the_0600_secrets_file(
         ("placement_report", placement_report_text),
         ("nova_ctl_report", nova_ctl_report_text),
         ("nova_cmp_report", nova_cmp_report_text),
+        ("neutron_ctl_report", neutron_ctl_report_text),
+        ("neutron_cmp_report", neutron_cmp_report_text),
         ("ini_diff", ini_change.diff),
         ("block_diff", block_change.diff),
         ("caplog", caplog.text),
@@ -1195,7 +1274,8 @@ def test_canary_secret_never_leaks_outside_the_0600_secrets_file(
         assert CANARY not in text, f"CANARY leaked into {surface_name}"
 
     # Walk all files under tmp_path: only secrets.json, admin-openrc, keystone.conf,
-    # glance-api.conf, placement.conf, nova.conf, and app.conf contain CANARY.
+    # glance-api.conf, placement.conf, nova.conf, neutron.conf, metadata_agent.ini,
+    # and app.conf contain CANARY.
     files_with_canary = sorted(
         path.relative_to(root).as_posix()
         for path in root.rglob("*")
@@ -1205,6 +1285,8 @@ def test_canary_secret_never_leaks_outside_the_0600_secrets_file(
         "etc/app.conf",
         "etc/glance/glance-api.conf",
         "etc/keystone/keystone.conf",
+        "etc/neutron/metadata_agent.ini",
+        "etc/neutron/neutron.conf",
         "etc/nova/nova.conf",
         "etc/openstack-forge/admin-openrc",
         "etc/openstack-forge/secrets.json",

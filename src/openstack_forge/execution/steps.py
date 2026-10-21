@@ -23,6 +23,12 @@ from openstack_forge.execution.hosts import HOSTS_STEP_ID, make_hosts_file_step
 from openstack_forge.execution.keystone import KEYSTONE_STEP_ID, make_keystone_step
 from openstack_forge.execution.mariadb import MARIADB_STEP_ID, make_mariadb_step
 from openstack_forge.execution.memcached import MEMCACHED_STEP_ID, make_memcached_step
+from openstack_forge.execution.neutron import (
+    NEUTRON_COMPUTE_STEP_ID,
+    NEUTRON_CONTROLLER_STEP_ID,
+    make_neutron_compute_step,
+    make_neutron_controller_step,
+)
 from openstack_forge.execution.nova import (
     NOVA_COMPUTE_STEP_ID,
     NOVA_CONTROLLER_STEP_ID,
@@ -54,6 +60,8 @@ IMPLEMENTED_STEPS: Mapping[str, StepFactory] = {
     PLACEMENT_STEP_ID: make_placement_step,
     NOVA_CONTROLLER_STEP_ID: make_nova_controller_step,
     NOVA_COMPUTE_STEP_ID: make_nova_compute_step,
+    NEUTRON_CONTROLLER_STEP_ID: make_neutron_controller_step,
+    NEUTRON_COMPUTE_STEP_ID: make_neutron_compute_step,
 }
 
 

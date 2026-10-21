@@ -64,6 +64,30 @@ EXPECTED_STEPS: list[tuple[str, list[str], list[str], str]] = [
         ["/etc/nova/nova.conf", "/etc/nova/nova-compute.conf"],
         STATUS_UNVERIFIED,
     ),
+    (
+        "neutron-controller",
+        ["controller"],
+        [
+            "/etc/neutron/neutron.conf",
+            "/etc/neutron/plugins/ml2/ml2_conf.ini",
+            "/etc/neutron/plugins/ml2/openvswitch_agent.ini",
+            "/etc/neutron/l3_agent.ini",
+            "/etc/neutron/dhcp_agent.ini",
+            "/etc/neutron/metadata_agent.ini",
+            "/etc/nova/nova.conf",
+        ],
+        STATUS_UNVERIFIED,
+    ),
+    (
+        "neutron-compute",
+        ["compute"],
+        [
+            "/etc/neutron/neutron.conf",
+            "/etc/neutron/plugins/ml2/openvswitch_agent.ini",
+            "/etc/nova/nova.conf",
+        ],
+        STATUS_UNVERIFIED,
+    ),
 ]
 
 
@@ -164,7 +188,7 @@ def test_catalog_files_ship_as_package_data() -> None:
 def test_duplicate_step_id(raw_catalog, catalog_schema) -> None:
     raw_catalog["steps"].append(copy.deepcopy(raw_catalog["steps"][0]))
     assert _messages(raw_catalog, catalog_schema) == [
-        "steps[13].id: duplicate id 'hosts-file'; already used by steps[0]"
+        "steps[15].id: duplicate id 'hosts-file'; already used by steps[0]"
     ]
 
 

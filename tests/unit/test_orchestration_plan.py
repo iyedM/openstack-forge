@@ -87,7 +87,7 @@ def test_plan_is_ordered_by_step_then_controller_first(valid_config, catalog) ->
         ("blk-01", "openstack-packages"),
         ("obj-01", "openstack-packages"),
     ]
-    assert _order(plan)[-9:] == [
+    assert _order(plan)[-11:] == [
         ("ctl-01", "mariadb"),
         ("ctl-01", "rabbitmq"),
         ("ctl-01", "memcached"),
@@ -97,6 +97,8 @@ def test_plan_is_ordered_by_step_then_controller_first(valid_config, catalog) ->
         ("ctl-01", "placement"),
         ("ctl-01", "nova-controller"),
         ("cmp-01", "nova-compute"),
+        ("ctl-01", "neutron-controller"),
+        ("cmp-01", "neutron-compute"),
     ]
 
 
@@ -283,11 +285,18 @@ def test_dependency_not_run_by_any_node_is_reported(valid_config) -> None:
                 "glance",
                 "placement",
                 "nova-controller",
+                "neutron-controller",
             ],
         ),
         (
             "cmp-01",
-            ["hosts-file", "time-sync-other", "openstack-packages", "nova-compute"],
+            [
+                "hosts-file",
+                "time-sync-other",
+                "openstack-packages",
+                "nova-compute",
+                "neutron-compute",
+            ],
         ),
         ("blk-01", ["hosts-file", "time-sync-other", "openstack-packages"]),
         ("obj-01", ["hosts-file", "time-sync-other", "openstack-packages"]),
@@ -309,6 +318,11 @@ def test_nova_compute_waits_for_local_packages_and_controller_nova(valid_config,
     assert waits[("cmp-01", "nova-compute")] == (
         Dependency("openstack-packages", "cmp-01"),
         Dependency("nova-controller", "ctl-01"),
+    )
+    assert waits[("cmp-01", "neutron-compute")] == (
+        Dependency("openstack-packages", "cmp-01"),
+        Dependency("nova-compute", "cmp-01"),
+        Dependency("neutron-controller", "ctl-01"),
     )
 
 
@@ -347,9 +361,9 @@ def test_release_mismatch_is_rejected(valid_config, catalog) -> None:
 
 def test_unverified_steps_are_flagged_and_counted(valid_config, catalog) -> None:
     text = format_plan_text(build_plan(valid_config, catalog))
-    assert "WARNING: 21 of 21 step(s) are UNVERIFIED" in text
-    assert text.count("[UNVERIFIED]") == 21
-    assert text.rstrip().endswith("Summary: 21 step(s) on 4 node(s); 0 verified, 21 unverified.")
+    assert "WARNING: 23 of 23 step(s) are UNVERIFIED" in text
+    assert text.count("[UNVERIFIED]") == 23
+    assert text.rstrip().endswith("Summary: 23 step(s) on 4 node(s); 0 verified, 23 unverified.")
 
 
 def test_verified_steps_are_not_flagged(valid_config) -> None:
@@ -386,7 +400,7 @@ def test_json_output(valid_config, catalog) -> None:
     assert payload["cluster"] == "fixture-cluster"
     assert payload["read_only"] is True
     assert payload["node"] is None
-    assert payload["summary"] == {"steps": 21, "nodes": 4, "verified": 0, "unverified": 21}
+    assert payload["summary"] == {"steps": 23, "nodes": 4, "verified": 0, "unverified": 23}
     first, second = payload["steps"][:2]
     assert first == {
         "sequence": 1,

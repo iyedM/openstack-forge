@@ -64,6 +64,7 @@ class ServiceHost:
         openstack_role_assignments: Sequence[Mapping[str, Any]] | None = None,
         openstack_services: Sequence[Mapping[str, Any]] | None = None,
         openstack_endpoints: Sequence[Mapping[str, Any]] | None = None,
+        ovs_bridges: Mapping[str, Iterable[str]] | None = None,
     ) -> None:
         self.root = root
         self.installed = set(installed)
@@ -93,6 +94,10 @@ class ServiceHost:
         self.nova_api_db_synced: bool = False
         self.nova_db_synced: bool = False
         self.nova_cells: set[str] = set()
+        self.neutron_db_upgraded: bool = False
+        self.ovs_bridges: dict[str, set[str]] = (
+            {} if ovs_bridges is None else {br: set(ports) for br, ports in ovs_bridges.items()}
+        )
         self.openstack_projects: list[dict[str, Any]] = [
             dict(item) for item in (openstack_projects or ())
         ]
@@ -428,9 +433,85 @@ class ServiceHost:
                 )
             self.nova_db_synced = True
             return ProcessOutput(0, "", "")
+        if argv == (
+            "/usr/bin/neutron-db-manage",
+            "--config-file",
+            "/etc/neutron/neutron.conf",
+            "--config-file",
+            "/etc/neutron/plugins/ml2/ml2_conf.ini",
+            "upgrade",
+            "head",
+        ):
+            self._snapshot("neutron-db-manage upgrade head")
+            conf_path = self.root / "etc/neutron/neutron.conf"
+            ml2_path = self.root / "etc/neutron/plugins/ml2/ml2_conf.ini"
+            conf_text = conf_path.read_text(encoding="utf-8") if conf_path.exists() else ""
+            ml2_text = ml2_path.read_text(encoding="utf-8") if ml2_path.exists() else ""
+            if (
+                "mysql+pymysql://neutron:" not in conf_text
+                or "@controller/neutron" not in conf_text
+                or "mechanism_drivers = openvswitch,l2population" not in ml2_text
+            ):
+                return ProcessOutput(
+                    1,
+                    "",
+                    "CRITICAL neutron: /etc/neutron/neutron.conf and "
+                    "/etc/neutron/plugins/ml2/ml2_conf.ini must be configured before "
+                    "neutron-db-manage upgrade head\n",
+                )
+            self.neutron_db_upgraded = True
+            return ProcessOutput(0, "Running upgrade for neutron ...\nOK\n", "")
+        if argv[:1] == ("/usr/bin/ovs-vsctl",):
+            return self._run_ovs_vsctl(argv[1:])
         if argv[: len(OPENSTACK_ADMIN_AUTH_ARGS)] == OPENSTACK_ADMIN_AUTH_ARGS:
             return self._run_openstack_cli(argv[len(OPENSTACK_ADMIN_AUTH_ARGS) :], env)
         raise AssertionError(f"unexpected argv {argv!r}")
+
+    def _run_ovs_vsctl(self, sub: tuple[str, ...]) -> ProcessOutput:
+        if sub[:2] == ("--may-exist", "add-br") and len(sub) == 3:
+            bridge = sub[2]
+            self.ovs_bridges.setdefault(bridge, set())
+            return ProcessOutput(0, "", "")
+        if sub[:1] == ("add-br",) and len(sub) == 2:
+            bridge = sub[1]
+            if bridge in self.ovs_bridges:
+                return ProcessOutput(
+                    1,
+                    "",
+                    f"ovs-vsctl: cannot create a bridge named {bridge} because a bridge "
+                    f"named {bridge} already exists\n",
+                )
+            self.ovs_bridges[bridge] = set()
+            return ProcessOutput(0, "", "")
+        if sub[:2] == ("--may-exist", "add-port") and len(sub) == 4:
+            bridge, interface = sub[2], sub[3]
+            if bridge not in self.ovs_bridges:
+                return ProcessOutput(1, "", f"ovs-vsctl: no bridge named {bridge}\n")
+            self.ovs_bridges[bridge].add(interface)
+            return ProcessOutput(0, "", "")
+        if sub[:1] == ("add-port",) and len(sub) == 3:
+            bridge, interface = sub[1], sub[2]
+            if bridge not in self.ovs_bridges:
+                return ProcessOutput(1, "", f"ovs-vsctl: no bridge named {bridge}\n")
+            if interface in self.ovs_bridges[bridge]:
+                return ProcessOutput(
+                    1,
+                    "",
+                    f"ovs-vsctl: cannot create a port named {interface} on {bridge} because "
+                    f"a port named {interface} already exists on bridge {bridge}\n",
+                )
+            self.ovs_bridges[bridge].add(interface)
+            return ProcessOutput(0, "", "")
+        if sub[:1] == ("br-exists",) and len(sub) == 2:
+            bridge = sub[1]
+            return ProcessOutput(0 if bridge in self.ovs_bridges else 2, "", "")
+        if sub[:1] == ("list-ports",) and len(sub) == 2:
+            bridge = sub[1]
+            if bridge not in self.ovs_bridges:
+                return ProcessOutput(1, "", f"ovs-vsctl: no bridge named {bridge}\n")
+            ports = "".join(f"{p}\n" for p in sorted(self.ovs_bridges[bridge]))
+            return ProcessOutput(0, ports, "")
+        raise AssertionError(f"unexpected ovs-vsctl subcommand {sub!r}")
 
     def _run_openstack_cli(self, sub: tuple[str, ...], env: Mapping[str, str]) -> ProcessOutput:
         os_password = env.get("OS_PASSWORD")

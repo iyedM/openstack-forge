@@ -630,6 +630,44 @@ def test_default_registry_contains_exactly_the_reviewed_commands() -> None:
             True,
             frozenset({0}),
         ),
+        "neutron-db-manage.upgrade-head": (
+            (
+                "/usr/bin/neutron-db-manage",
+                "--config-file",
+                "/etc/neutron/neutron.conf",
+                "--config-file",
+                "/etc/neutron/plugins/ml2/ml2_conf.ini",
+                "upgrade",
+                "head",
+            ),
+            {},
+            True,
+            frozenset({0}),
+        ),
+        "ovs-vsctl.add-br": (
+            ("/usr/bin/ovs-vsctl", "--may-exist", "add-br", "{bridge}"),
+            {"bridge": "interface_name"},
+            True,
+            frozenset({0}),
+        ),
+        "ovs-vsctl.add-port": (
+            ("/usr/bin/ovs-vsctl", "--may-exist", "add-port", "{bridge}", "{interface}"),
+            {"bridge": "interface_name", "interface": "interface_name"},
+            True,
+            frozenset({0}),
+        ),
+        "ovs-vsctl.br-exists": (
+            ("/usr/bin/ovs-vsctl", "br-exists", "{bridge}"),
+            {"bridge": "interface_name"},
+            False,
+            frozenset({0, 2}),
+        ),
+        "ovs-vsctl.list-ports": (
+            ("/usr/bin/ovs-vsctl", "list-ports", "{bridge}"),
+            {"bridge": "interface_name"},
+            False,
+            frozenset({0}),
+        ),
     }
     assert all(spec.timeout > 0 for spec in specs.values())
     assert specs["keystone-manage.bootstrap"].env_params == {"password": "OS_BOOTSTRAP_PASSWORD"}
@@ -660,9 +698,21 @@ def test_default_registry_contains_exactly_the_reviewed_commands() -> None:
     assert specs["add-apt-repository.cloud-archive"].failure_hint
     assert "network" in specs["apt-get.update"].failure_hint
     assert "network" in specs["apt-get.update"].description
-    # No upgrade, dist-upgrade or reboot can be expressed with the registry.
-    words = {word for spec in specs.values() for word in spec.argv}
-    assert not words & {"upgrade", "dist-upgrade", "full-upgrade", "reboot", "--no-update"}
+    # No apt upgrade, dist-upgrade or reboot can be expressed with the registry
+    # (only neutron-db-manage uses Alembic's 'upgrade head' subcommand).
+    non_neutron_words = {
+        word
+        for spec_id, spec in specs.items()
+        if spec_id != "neutron-db-manage.upgrade-head"
+        for word in spec.argv
+    }
+    assert not non_neutron_words & {
+        "upgrade",
+        "dist-upgrade",
+        "full-upgrade",
+        "reboot",
+        "--no-update",
+    }
 
 
 @pytest.mark.parametrize(
