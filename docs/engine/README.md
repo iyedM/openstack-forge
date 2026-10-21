@@ -5,9 +5,13 @@ state store, step engine, and the first implemented deployment step (`hosts-file
 
 **Only `hosts-file` is implemented, it remains marked `unverified` in the step catalog, and
 it has not been run on a real VM.** Every other catalog step is rejected as "not
-implemented" by `openstack-forge apply`. Nothing in this package or in `apply` runs an
-external command (`subprocess`), uses `sudo`, or touches the network: all work is pure
-Python file operations confined to the target root directory.
+implemented" by `openstack-forge apply`. The file primitives, the `hosts-file` step and
+`apply` run no external command (`subprocess`), use no `sudo` and touch no network: all
+their work is pure Python file operations confined to the target root directory.
+
+The package also contains an allowlisted [command execution layer](#command-execution-layer)
+for future mutating steps. **No real system command is registered in it yet** (the default
+registry is empty; only test fixtures register commands), and nothing in `apply` uses it.
 
 ## Why a separate package
 
@@ -266,3 +270,113 @@ already says `done`, so no file and not even the state file is written.
 Limits: steps run one at a time on the local process; there is no parallelism, no
 rollback (the `.orig` backups and `uncomment_lines()` exist for a person to use), no
 locking against two engines sharing a state file, and no timeout around a step's methods.
+
+## Command execution layer
+
+`openstack_forge.execution.commands` (with `audit.py`) is the only code in the project that
+may start a process on behalf of a deployment step. It exists so that future steps (for
+example installing a package or restarting a service) have one reviewed path for doing so.
+**No real command is registered yet:** `DEFAULT_REGISTRY` is empty and a test keeps it
+that way until a step adds a reviewed spec. The tests only ever run two harmless
+`sys.executable` one-liners; everything else uses a fake backend.
+
+### Allowlist, not command strings
+
+A command is a `CommandSpec`:
+
+| Field | Meaning |
+| ----- | ------- |
+| `id` | Stable name, e.g. `chrony.restart`. |
+| `argv` | Template tuple. `argv[0]` must be a literal **absolute path** (no `PATH` lookup). Every other element is a literal or exactly `{name}`. |
+| `params` | `{name: type}` for every placeholder; each placeholder appears exactly once. |
+| `timeout` | Seconds; required to be positive. |
+| `allowed_exit_codes` | Exit codes that count as success for the caller (default `{0}`). |
+| `mutates` | Whether the command changes the system. |
+
+Specs are checked when created: shells (`sh`, `bash`, ...), `env`, `xargs`, `chroot`,
+`timeout`, `sudo`, `su`, `doas`, `pkexec` and `runuser` cannot be the executable, `sudo`/`su`
+cannot appear anywhere in argv, and a placeholder may not be part of a larger argument
+(`--unit={unit}` is rejected) so a parameter can never smuggle an option. Specs are only
+executable once registered in a `CommandRegistry`; `CommandExecutor.run(command_id, params)`
+is the only entry point, and an unknown id raises `UnknownCommandError`. No function takes a
+command string.
+
+### Parameter validation
+
+Every value must be a string and is checked **before** anything runs or is logged:
+
+1. it must not be empty or start with `-`;
+2. it must not contain whitespace, control characters or any of
+   `` ; | & $ ` " ' \ < > ( ) { } [ ] * ? ! # ~ % ^ , ``;
+3. it must fully match its type:
+
+| Type | Accepts |
+| ---- | ------- |
+| `systemd_unit` | `[A-Za-z0-9][A-Za-z0-9_.@:-]{0,254}`, e.g. `chrony.service` |
+| `package_name` | Debian names `[a-z0-9][a-z0-9+.-]{1,127}`, e.g. `python3-openstackclient` |
+| `cloud_archive_pocket` | `cloud-archive:<name>` with optional `-updates`/`-proposed` |
+| `hostname` | one DNS label |
+| `ipv4_address` | dotted quad, also checked with `ipaddress` |
+| `absolute_path` | `/`-separated segments of `[A-Za-z0-9._@+-]`, no empty, `.` or `..` segment |
+
+Missing or unexpected parameters are errors too. There is no free-text type.
+
+### Running a command
+
+`CommandExecutor(registry, root=..., audit_log=..., backend=..., dry_run=...)`:
+
+- **No shell.** The default `SubprocessBackend` passes the argv list to `subprocess.Popen`
+  with `shell=False`, stdin from `/dev/null`, `cwd="/"`, and a new session; the backend is
+  injectable (`ProcessBackend`), like `diagnostics.CommandRunner`.
+- **Sanitized environment.** The child gets exactly `PATH=/usr/sbin:/usr/bin:/sbin:/bin`,
+  `LC_ALL=C`, `LANG=C` and `DEBIAN_FRONTEND=noninteractive`; nothing is inherited (no
+  `LD_PRELOAD`, no credentials, no `HOME`).
+- **Timeout.** On expiry the whole process group is killed (`SIGKILL`) and
+  `CommandTimeoutError` is raised.
+- **Typed errors.** `CommandNotFoundError` (missing or non-executable binary),
+  `CommandTimeoutError`, `UnexpectedExitError` (exit code not in `allowed_exit_codes`; carries
+  the code and redacted stderr), `ParameterError`, `UnknownCommandError`,
+  `MutationRefusedError`, `AuditLogError`; any other launch failure becomes `CommandError`.
+- **Output.** stdout and stderr are decoded as UTF-8 (invalid bytes replaced), passed
+  through `redact_text()`, and only then truncated to the last 64 KiB characters per stream
+  (configurable) with a marker saying how much was removed. Redacting first means a cut can
+  never leave a secret's value without the key that identifies it. Unredacted output is
+  never returned, stored or logged.
+
+### Safety rules
+
+- **Mutating commands only touch the real host.** A command with `mutates=True` is refused
+  (`MutationRefusedError`) unless the executor's root resolves to `/`, so tests and
+  `--root` runs can never change the host, and unless the effective uid is 0: the tool is
+  expected to run as root when it writes to `/`, and `sudo` is never used.
+- **Dry run.** With `dry_run=True` the executor prints
+  `DRY RUN [<id>]: <exact argv, shell-quoted>` and runs nothing; parameters are still
+  validated. Dry-run printing is allowed under any root because nothing executes.
+- **Audit log.** Before a command starts, a `start` record is appended to the `AuditLog`
+  (JSON lines; `O_APPEND`, never truncated, symlinks refused, mode `0600` enforced, fsynced).
+  If that record cannot be written, the command does not run. After it ends, a `finish`
+  record adds the outcome (`ok`, `unexpected_exit`, `timeout`, `not_found`, `error`), exit
+  code and duration. Records contain the command id and redacted argv, never output. Dry
+  runs, refused commands and invalid parameters are not recorded, because nothing ran.
+
+### Use from steps
+
+Steps call the executor from `check()`, `apply()` or `verify()`. `command_succeeds()` returns
+whether a command exited 0 (useful with e.g. `allowed_exit_codes={0, 3}`), and
+`verify_command()` turns a command into a `VerifyResult` whose details are the redacted
+output. Exceptions raised by the executor are reported by the engine as usual, so failure
+details, `VerifyResult` details, the state file and the audit log all stay redacted.
+
+### Limits
+
+- Redaction only recognises secrets next to a telltale key, flag or URL; a tool that
+  prints a bare password is not protected.
+- Output is captured in memory before truncation, so a command that prints gigabytes
+  uses that much memory.
+- Read-only commands (`mutates=False`) run whatever the root is, and they inspect the real
+  host, not the root directory.
+- The allowlist is only as safe as the reviewed specs: a registered interpreter with `-c`
+  (as the tests use) can run anything, so real specs must name the real tool.
+- No retries, no locking between concurrent executors, and the audit log is local and not
+  tamper-proof against root.
+

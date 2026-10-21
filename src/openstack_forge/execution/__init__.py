@@ -2,10 +2,34 @@
 
 This package is imported lazily by ``openstack-forge apply`` so that read-only CLI
 commands (``config validate``, ``doctor``, ``plan``) and ``openstack_forge.orchestration``
-never import it. It runs no external command, uses no network, and writes only below an
-explicitly given root directory.
+never import it. The file edits and the ``hosts-file`` step run no external command and
+use no network; they write only below an explicitly given root directory.
+
+External commands can only run through :class:`CommandExecutor` and an allowlist
+:class:`CommandRegistry`. No real command is registered yet (:data:`DEFAULT_REGISTRY` is
+empty).
 """
 
+from openstack_forge.execution.audit import AUDIT_FILE_MODE, AuditLog
+from openstack_forge.execution.commands import (
+    DEFAULT_OUTPUT_LIMIT,
+    DEFAULT_REGISTRY,
+    FORBIDDEN_EXECUTABLES,
+    PARAM_TYPES,
+    SANITIZED_ENV,
+    CommandExecutor,
+    CommandRegistry,
+    CommandResult,
+    CommandSpec,
+    ParamType,
+    ProcessBackend,
+    ProcessOutput,
+    SubprocessBackend,
+    command_succeeds,
+    is_host_root,
+    validate_parameter,
+    verify_command,
+)
 from openstack_forge.execution.engine import (
     Engine,
     ExecutableStep,
@@ -19,11 +43,20 @@ from openstack_forge.execution.engine import (
     format_report,
 )
 from openstack_forge.execution.errors import (
+    AuditLogError,
+    CommandError,
+    CommandNotFoundError,
+    CommandSpecError,
+    CommandTimeoutError,
     EngineError,
     ExecutionError,
     FileFormatError,
+    MutationRefusedError,
+    ParameterError,
     RootEscapeError,
     StateError,
+    UnexpectedExitError,
+    UnknownCommandError,
     UnsafePathError,
 )
 from openstack_forge.execution.files import (
@@ -63,6 +96,34 @@ from openstack_forge.execution.state import (
 )
 
 __all__ = [
+    "AUDIT_FILE_MODE",
+    "DEFAULT_OUTPUT_LIMIT",
+    "DEFAULT_REGISTRY",
+    "FORBIDDEN_EXECUTABLES",
+    "PARAM_TYPES",
+    "SANITIZED_ENV",
+    "AuditLog",
+    "AuditLogError",
+    "CommandError",
+    "CommandExecutor",
+    "CommandNotFoundError",
+    "CommandRegistry",
+    "CommandResult",
+    "CommandSpec",
+    "CommandSpecError",
+    "CommandTimeoutError",
+    "MutationRefusedError",
+    "ParamType",
+    "ParameterError",
+    "ProcessBackend",
+    "ProcessOutput",
+    "SubprocessBackend",
+    "UnexpectedExitError",
+    "UnknownCommandError",
+    "command_succeeds",
+    "is_host_root",
+    "validate_parameter",
+    "verify_command",
     "BACKUP_SUFFIX",
     "CONTROLLER_ALIAS",
     "DEFAULT_STATE_TARGET",

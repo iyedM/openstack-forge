@@ -15,6 +15,10 @@ step used by `openstack-forge apply`. Imported lazily by the `apply` CLI handler
 - `redaction.py` - `redact_text()` and `redact_data()`.
 - `state.py` - `StateStore`, the 0600 JSON step-status file.
 - `engine.py` - `Engine.run()` / `Engine.resume()` over check/apply/verify steps.
+- `commands.py` - allowlisted `CommandSpec`s, typed parameter validation,
+  `CommandRegistry` (no real command registered), and `CommandExecutor` with an injectable
+  backend, sanitized environment, timeouts, redacted and truncated output.
+- `audit.py` - `AuditLog`, the append-only 0600 JSON-lines record of executed commands.
 - `errors.py` - `ExecutionError` and its subclasses.
 
 See [`docs/engine`](../../../docs/engine/README.md) for the guarantees and limits.

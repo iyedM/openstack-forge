@@ -92,6 +92,23 @@ All notable changes to this project will be documented in this file.
     `<root>/var/lib/openstack-forge/state.json` (mode `0600`);
   - lazy import of `openstack_forge.execution` inside the `apply` handler so `config validate`,
     `doctor`, and `plan` never import it.
+- Allowlisted command execution layer for future mutating steps
+  (`openstack_forge.execution.commands` and `.audit`). **No real system command is
+  registered** (`DEFAULT_REGISTRY` is empty) and no CLI command uses it.
+  - `CommandSpec` (id, absolute-path argv template with whole-argument placeholders, typed
+    parameters, timeout, allowed exit codes, `mutates`) and `CommandRegistry`; no API accepts
+    a command string, shells, `env` and `sudo`/`su` are rejected as executables.
+  - Strict per-type parameter validation (`systemd_unit`, `package_name`,
+    `cloud_archive_pocket`, `hostname`, `ipv4_address`, `absolute_path`) after rejecting
+    whitespace, shell metacharacters, quotes and a leading `-`.
+  - `CommandExecutor` with an injectable backend, no shell, sanitized environment
+    (`PATH`, `LC_ALL=C`, `LANG=C`, `DEBIAN_FRONTEND=noninteractive`), process-group kill on
+    timeout, output redacted then truncated, and typed errors.
+  - Mutating commands refuse to run unless the root is `/` and the effective uid is 0;
+    `dry_run` prints the exact argv and runs nothing; an append-only 0600 audit log records
+    start and finish (outcome, exit code, duration) of every executed command, redacted.
+  - `command_succeeds()` / `verify_command()` helpers for steps; engine failure details,
+    `VerifyResult` details and state stay redacted.
 
 ### Changed
 

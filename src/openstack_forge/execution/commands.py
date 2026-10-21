@@ -1,0 +1,484 @@
+"""Allowlisted, shell-free command execution for future mutating steps.
+
+A command can only run if a :class:`CommandSpec` for it is registered in a
+:class:`CommandRegistry`; callers pass a command id and typed parameters, never a command
+string. Parameters are validated before anything runs, argv is never passed to a shell,
+the environment is replaced by a minimal one, output is redacted then truncated, and a
+mutating command refuses to run unless the root is ``/`` and the process is root (sudo is
+never used). Every executed command is recorded in an :class:`AuditLog`.
+
+No real system command is registered: :data:`DEFAULT_REGISTRY` is empty.
+"""
+
+from __future__ import annotations
+
+import ipaddress
+import os
+import re
+import shlex
+import signal
+import subprocess
+import time
+import uuid
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass, field
+from pathlib import Path, PurePosixPath
+from typing import Protocol
+
+from openstack_forge.execution.audit import AuditLog
+from openstack_forge.execution.engine import VerifyResult
+from openstack_forge.execution.errors import (
+    CommandError,
+    CommandNotFoundError,
+    CommandSpecError,
+    CommandTimeoutError,
+    MutationRefusedError,
+    ParameterError,
+    UnexpectedExitError,
+    UnknownCommandError,
+)
+from openstack_forge.execution.redaction import redact_text
+
+# The complete environment of every command; nothing is inherited from the caller.
+SANITIZED_ENV: Mapping[str, str] = {
+    "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
+    "LC_ALL": "C",
+    "LANG": "C",
+    "DEBIAN_FRONTEND": "noninteractive",
+}
+DEFAULT_OUTPUT_LIMIT = 64 * 1024  # characters kept per stream
+TRUNCATION_MARKER = "[... output truncated: {count} earlier characters removed ...]\n"
+
+# Executables that would reintroduce a shell, an arbitrary program, or privilege changes.
+FORBIDDEN_EXECUTABLES: frozenset[str] = frozenset(
+    {
+        "sh", "bash", "dash", "zsh", "ksh", "mksh", "csh", "tcsh", "fish", "busybox",
+        "env", "xargs", "nohup", "setsid", "nice", "timeout", "script",
+        "sudo", "su", "doas", "pkexec", "runuser", "chroot",
+    }
+)  # fmt: skip
+
+# Rejected in every parameter value, whatever its type, before the type's own regex runs.
+_FORBIDDEN_CHARACTERS = frozenset(";|&$`\"'\\<>(){}[]*?!#~%^,")
+_PLACEHOLDER_RE = re.compile(r"^\{([a-z][a-z0-9_]*)\}$")
+_COMMAND_ID_RE = re.compile(r"^[a-z0-9]+(?:[-.][a-z0-9]+)*$")
+
+
+# --- parameter types ------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ParamType:
+    """A named parameter type: a strict full-match regex plus an optional extra check."""
+
+    name: str
+    pattern: re.Pattern[str]
+    description: str
+    extra_check: Callable[[str], bool] | None = None
+
+    def is_valid(self, value: str) -> bool:
+        if not self.pattern.fullmatch(value):
+            return False
+        return self.extra_check is None or self.extra_check(value)
+
+
+def _is_ipv4(value: str) -> bool:
+    try:
+        ipaddress.IPv4Address(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _is_clean_absolute_path(value: str) -> bool:
+    # Inspect the raw segments: PurePosixPath would silently collapse "." components.
+    return all(part not in ("", ".", "..") for part in value.split("/")[1:])
+
+
+PARAM_TYPES: Mapping[str, ParamType] = {
+    param.name: param
+    for param in (
+        ParamType(
+            "systemd_unit",
+            re.compile(r"[A-Za-z0-9][A-Za-z0-9_.@:-]{0,254}"),
+            'a systemd unit name such as "chrony" or "chrony.service"',
+        ),
+        ParamType(
+            "package_name",
+            re.compile(r"[a-z0-9][a-z0-9+.-]{1,127}"),
+            'a Debian package name such as "python3-openstackclient"',
+        ),
+        ParamType(
+            "cloud_archive_pocket",
+            re.compile(r"cloud-archive:[a-z]+(?:-(?:updates|proposed))?"),
+            'an Ubuntu Cloud Archive pocket such as "cloud-archive:epoxy"',
+        ),
+        ParamType(
+            "hostname",
+            re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"),
+            "a single DNS label",
+        ),
+        ParamType(
+            "ipv4_address",
+            re.compile(r"(?:[0-9]{1,3}\.){3}[0-9]{1,3}"),
+            "a dotted-quad IPv4 address",
+            extra_check=_is_ipv4,
+        ),
+        ParamType(
+            "absolute_path",
+            re.compile(r"(?:/[A-Za-z0-9._@+-]+)+"),
+            'an absolute path without "." or ".." segments, such as "/etc/hosts"',
+            extra_check=_is_clean_absolute_path,
+        ),
+    )
+}
+
+
+def validate_parameter(type_name: str, name: str, value: object) -> str:
+    """Return ``value`` if it is a valid ``type_name`` string, else raise ParameterError."""
+    param_type = PARAM_TYPES[type_name]
+    if not isinstance(value, str):
+        raise ParameterError(f"Parameter {name!r} must be a string, got {type(value).__name__}")
+    shown = redact_text(repr(value))
+    if not value:
+        raise ParameterError(f"Parameter {name!r} must not be empty")
+    if value.startswith("-"):
+        raise ParameterError(f"Parameter {name!r} must not start with '-': {shown}")
+    if any(char.isspace() or not char.isprintable() for char in value):
+        raise ParameterError(f"Parameter {name!r} contains whitespace or control characters")
+    bad = sorted(set(value) & _FORBIDDEN_CHARACTERS)
+    if bad:
+        raise ParameterError(
+            f"Parameter {name!r} contains forbidden character(s) {''.join(bad)!r}: {shown}"
+        )
+    if not param_type.is_valid(value):
+        raise ParameterError(
+            f"Parameter {name!r} is not {param_type.description} ({type_name}): {shown}"
+        )
+    return value
+
+
+# --- specifications and registry -------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CommandSpec:
+    """An allowlisted command: a fixed argv template with typed whole-argument parameters.
+
+    Each ``argv`` element is either a literal or exactly ``{name}``; placeholders are never
+    interpolated into part of an argument. ``argv[0]`` must be a literal absolute path.
+    """
+
+    id: str
+    argv: tuple[str, ...]
+    params: Mapping[str, str] = field(default_factory=dict)
+    timeout: float = 60.0
+    allowed_exit_codes: frozenset[int] = frozenset({0})
+    mutates: bool = True
+    description: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "argv", tuple(self.argv))
+        object.__setattr__(self, "params", dict(self.params))
+        object.__setattr__(self, "allowed_exit_codes", frozenset(self.allowed_exit_codes))
+        if not _COMMAND_ID_RE.fullmatch(self.id):
+            raise CommandSpecError(f"Invalid command id {self.id!r}")
+        if not self.argv:
+            raise CommandSpecError(f"Command {self.id!r} has an empty argv")
+        executable = self.argv[0]
+        if _PLACEHOLDER_RE.match(executable) or not executable.startswith("/"):
+            raise CommandSpecError(
+                f"Command {self.id!r}: argv[0] must be a literal absolute path, got {executable!r}"
+            )
+        if PurePosixPath(executable).name in FORBIDDEN_EXECUTABLES:
+            raise CommandSpecError(
+                f"Command {self.id!r}: {executable!r} is not allowed (no shell, env or sudo)"
+            )
+        if any(element == "" or "\0" in element for element in self.argv):
+            raise CommandSpecError(f"Command {self.id!r} has an empty or NUL argv element")
+        if any(PurePosixPath(e).name in {"sudo", "su", "doas", "pkexec"} for e in self.argv):
+            raise CommandSpecError(f"Command {self.id!r} must not invoke sudo or su")
+        used = [m[1] for e in self.argv if (m := _PLACEHOLDER_RE.match(e))]
+        for element in self.argv:
+            if not _PLACEHOLDER_RE.match(element) and ("{" in element or "}" in element):
+                raise CommandSpecError(
+                    f"Command {self.id!r}: placeholders must be whole arguments, got {element!r}"
+                )
+        unknown_types = sorted(t for t in self.params.values() if t not in PARAM_TYPES)
+        if unknown_types:
+            raise CommandSpecError(
+                f"Command {self.id!r}: unknown parameter type(s) {unknown_types}"
+            )
+        if sorted(set(used)) != sorted(self.params) or len(used) != len(set(used)):
+            raise CommandSpecError(
+                f"Command {self.id!r}: every declared parameter must appear exactly once in argv"
+            )
+        if not self.timeout > 0:
+            raise CommandSpecError(f"Command {self.id!r}: timeout must be positive")
+        if not self.allowed_exit_codes or not all(
+            isinstance(code, int) and 0 <= code <= 255 for code in self.allowed_exit_codes
+        ):
+            raise CommandSpecError(f"Command {self.id!r}: invalid allowed exit codes")
+
+    def build_argv(self, values: Mapping[str, object]) -> tuple[str, ...]:
+        """Validate ``values`` against the declared parameters and fill the template."""
+        missing = sorted(set(self.params) - set(values))
+        unexpected = sorted(set(values) - set(self.params))
+        if missing or unexpected:
+            raise ParameterError(
+                f"Command {self.id!r}: missing parameter(s) {missing}, unexpected {unexpected}"
+            )
+        checked = {
+            name: validate_parameter(self.params[name], name, values[name]) for name in self.params
+        }
+        return tuple(
+            checked[m[1]] if (m := _PLACEHOLDER_RE.match(element)) else element
+            for element in self.argv
+        )
+
+
+class CommandRegistry:
+    """The allowlist: only commands registered here can be executed."""
+
+    def __init__(self, specs: Iterable[CommandSpec] = ()) -> None:
+        self._specs: dict[str, CommandSpec] = {}
+        for spec in specs:
+            self.register(spec)
+
+    def register(self, spec: CommandSpec) -> None:
+        if spec.id in self._specs:
+            raise CommandSpecError(f"Command {spec.id!r} is already registered")
+        self._specs[spec.id] = spec
+
+    def get(self, command_id: str) -> CommandSpec:
+        try:
+            return self._specs[command_id]
+        except KeyError:
+            known = ", ".join(sorted(self._specs)) or "none"
+            raise UnknownCommandError(
+                f"Command {command_id!r} is not in the allowlist (registered: {known})"
+            ) from None
+
+    def ids(self) -> tuple[str, ...]:
+        return tuple(sorted(self._specs))
+
+
+# Real commands will be registered here by future steps, each with a reviewed spec.
+DEFAULT_REGISTRY = CommandRegistry()
+
+
+# --- process backend ------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ProcessOutput:
+    returncode: int
+    stdout: str
+    stderr: str
+
+
+class ProcessBackend(Protocol):
+    """Runs a validated argv; injectable so tests never spawn real system commands."""
+
+    def run(
+        self, argv: tuple[str, ...], *, env: Mapping[str, str], timeout: float
+    ) -> ProcessOutput: ...
+
+
+class SubprocessBackend:
+    """Run argv with ``subprocess`` (never a shell) in its own session, stdin closed."""
+
+    def run(
+        self, argv: tuple[str, ...], *, env: Mapping[str, str], timeout: float
+    ) -> ProcessOutput:
+        try:
+            process = subprocess.Popen(
+                list(argv),
+                shell=False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=dict(env),
+                cwd="/",
+                close_fds=True,
+                start_new_session=True,
+            )
+        except FileNotFoundError as exc:
+            raise CommandNotFoundError(f"Executable not found: {argv[0]}") from exc
+        except PermissionError as exc:
+            raise CommandNotFoundError(f"Executable is not executable: {argv[0]}") from exc
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            # The command runs in its own session: kill it and anything it started.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.communicate()
+            raise CommandTimeoutError(f"{argv[0]} timed out after {timeout:g}s") from exc
+        return ProcessOutput(
+            returncode=process.returncode,
+            stdout=stdout.decode("utf-8", errors="replace"),
+            stderr=stderr.decode("utf-8", errors="replace"),
+        )
+
+
+# --- executor --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CommandResult:
+    """A finished (or dry-run) command; argv and output are redacted, output truncated."""
+
+    command_id: str
+    argv: tuple[str, ...]
+    returncode: int | None
+    stdout: str = ""
+    stderr: str = ""
+    duration: float = 0.0
+    dry_run: bool = False
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
+
+    @property
+    def ok(self) -> bool:
+        return self.returncode == 0
+
+
+def is_host_root(root: Path) -> bool:
+    """True only if ``root`` resolves to the real filesystem root ``/``."""
+    return Path(root).resolve() == Path("/")
+
+
+class CommandExecutor:
+    """Execute allowlisted commands for steps; the only way this package runs a process."""
+
+    def __init__(
+        self,
+        registry: CommandRegistry,
+        *,
+        root: Path,
+        audit_log: AuditLog,
+        backend: ProcessBackend | None = None,
+        dry_run: bool = False,
+        output_limit: int = DEFAULT_OUTPUT_LIMIT,
+        echo: Callable[[str], None] = print,
+        euid: Callable[[], int] = os.geteuid,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if output_limit < 1:
+            raise ValueError("output_limit must be positive")
+        self.registry = registry
+        self.root = Path(root)
+        self.audit_log = audit_log
+        self.backend: ProcessBackend = SubprocessBackend() if backend is None else backend
+        self.dry_run = dry_run
+        self.output_limit = output_limit
+        self._echo = echo
+        self._euid = euid
+        self._clock = clock
+
+    def run(self, command_id: str, params: Mapping[str, object] | None = None) -> CommandResult:
+        """Validate and run ``command_id``; raise a typed CommandError on any failure."""
+        spec = self.registry.get(command_id)
+        argv = spec.build_argv(params or {})
+        shown_argv = tuple(redact_text(element) for element in argv)
+
+        if self.dry_run:
+            self._echo(f"DRY RUN [{spec.id}]: {shlex.join(shown_argv)}")
+            return CommandResult(spec.id, shown_argv, returncode=None, dry_run=True)
+        if spec.mutates:
+            self._refuse_unsafe_mutation(spec)
+
+        invocation = uuid.uuid4().hex
+        base = {"invocation": invocation, "command_id": spec.id, "argv": list(shown_argv)}
+        self.audit_log.record({**base, "event": "start", "mutates": spec.mutates})
+        started = self._clock()
+        try:
+            output = self.backend.run(argv, env=dict(SANITIZED_ENV), timeout=spec.timeout)
+        except CommandError as exc:
+            outcome = "timeout" if isinstance(exc, CommandTimeoutError) else "not_found"
+            self._finish(base, outcome, None, started)
+            raise
+        except Exception as exc:
+            self._finish(base, "error", None, started)
+            raise CommandError(f"Command {spec.id!r} could not be run: {exc}") from exc
+
+        duration = self._finish(
+            base,
+            "ok" if output.returncode in spec.allowed_exit_codes else "unexpected_exit",
+            output.returncode,
+            started,
+        )
+        stdout, stdout_cut = self._clean(output.stdout)
+        stderr, stderr_cut = self._clean(output.stderr)
+        if output.returncode not in spec.allowed_exit_codes:
+            raise UnexpectedExitError(spec.id, output.returncode, stderr)
+        return CommandResult(
+            spec.id,
+            shown_argv,
+            output.returncode,
+            stdout,
+            stderr,
+            duration,
+            stdout_truncated=stdout_cut,
+            stderr_truncated=stderr_cut,
+        )
+
+    def _refuse_unsafe_mutation(self, spec: CommandSpec) -> None:
+        if not is_host_root(self.root):
+            raise MutationRefusedError(
+                f"Refusing mutating command {spec.id!r}: root is {self.root}, not '/'; "
+                "mutating commands only run against the real host"
+            )
+        if self._euid() != 0:
+            raise MutationRefusedError(
+                f"Refusing mutating command {spec.id!r}: it requires effective uid 0 "
+                "(run the tool as root; sudo is never used)"
+            )
+
+    def _finish(
+        self, base: Mapping[str, object], outcome: str, returncode: int | None, started: float
+    ) -> float:
+        duration = round(self._clock() - started, 6)
+        self.audit_log.record(
+            {
+                **base,
+                "event": "finish",
+                "outcome": outcome,
+                "exit_code": returncode,
+                "duration_s": duration,
+            }  # fmt: skip
+        )
+        return duration
+
+    def _clean(self, text: str) -> tuple[str, bool]:
+        """Redact first (so a cut cannot expose a secret), then keep the last characters."""
+        redacted = redact_text(text)
+        if len(redacted) <= self.output_limit:
+            return redacted, False
+        removed = len(redacted) - self.output_limit
+        return TRUNCATION_MARKER.format(count=removed) + redacted[-self.output_limit :], True
+
+
+# --- helpers for steps ----------------------------------------------------------------
+
+
+def command_succeeds(
+    executor: CommandExecutor, command_id: str, params: Mapping[str, object] | None = None
+) -> bool:
+    """For ``check()``: True if the command exits 0 (other allowed codes mean False)."""
+    return executor.run(command_id, params).returncode == 0
+
+
+def verify_command(
+    executor: CommandExecutor, command_id: str, params: Mapping[str, object] | None = None
+) -> VerifyResult:
+    """For ``verify()``: ok if the command exits 0; details are the redacted output."""
+    try:
+        result = executor.run(command_id, params)
+    except UnexpectedExitError as exc:
+        return VerifyResult(False, str(exc))
+    details = (result.stdout or result.stderr).strip()
+    return VerifyResult(result.returncode == 0, details)
