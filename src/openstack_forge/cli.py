@@ -350,8 +350,8 @@ def build_parser(runner: CommandRunner | None = None) -> argparse.ArgumentParser
         required=True,
         metavar="STEP_ID",
         help=(
-            "Catalog step id to run "
-            "(implemented: hosts-file, time-sync-controller, openstack-packages)."
+            "Catalog step id to run (implemented: hosts-file, time-sync-controller, "
+            "time-sync-other, openstack-packages, mariadb)."
         ),
     )
     apply_parser.add_argument(

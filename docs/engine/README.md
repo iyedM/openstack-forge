@@ -1,14 +1,17 @@
 # Execution engine and `openstack-forge apply`
 
 `openstack_forge.execution` contains the confined file-editing primitives, redaction helper,
-state store, step engine, an allowlisted command layer, and three implemented deployment
-steps: `hosts-file`, `time-sync-controller` and `openstack-packages`.
+state store, step engine, an allowlisted command layer, and five implemented deployment
+steps: `hosts-file`, `time-sync-controller`, `time-sync-other`, `openstack-packages` and
+`mariadb`.
 
-**All three steps are marked `unverified` in the step catalog, and none has ever run on a
+**All five steps are marked `unverified` in the step catalog, and none has ever run on a
 real host.** Every other catalog step is rejected as "not implemented" by
 `openstack-forge apply`. `hosts-file` is pure Python file operations confined to the target
-root. [`time-sync-controller`](#step-time-sync-controller-openstack_forgeexecutionchrony)
-and [`openstack-packages`](#step-openstack-packages-openstack_forgeexecutionopenstack_packages)
+root. [`time-sync-controller`](#step-time-sync-controller-openstack_forgeexecutionchrony),
+[`time-sync-other`](#step-time-sync-other-openstack_forgeexecutionchrony),
+[`openstack-packages`](#step-openstack-packages-openstack_forgeexecutionopenstack_packages)
+and [`mariadb`](#step-mariadb-openstack_forgeexecutionmariadb)
 run system commands (`apt-get`, `add-apt-repository`, `apt-cache`, `systemctl`,
 `dpkg-query`), only through the [command execution layer](#command-execution-layer), whose
 registry contains exactly seven reviewed commands. Nothing uses `sudo`.
@@ -105,6 +108,24 @@ because it drops comments. In order:
 A repeated `[section]` header is treated as the same section. Comments, blank lines and
 ordering are preserved, and the call never adds a second line for the same key.
 
+### `ini_set_many`
+
+`ini_set_many(root, target, settings, *, dry_run=False, new_file_mode=0o644)` applies
+`(section, key, value)` triples in order, each with the rules of `ini_set`, in a **single**
+edit of the file. Calling `ini_set` once per key is wrong for a file that does not exist
+yet: the first call creates it with one key, and the second call then backs up that
+one-key file as `<file>.orig`; in dry-run mode, separate calls also do not see each
+other's edits. With `ini_set_many`:
+
+- all settings are validated before the file is read;
+- the result has one combined, redacted unified diff;
+- a file that did not exist is created with `created=True` and **no** `.orig` backup;
+- an existing file that changes gets one `<file>.orig` backup of its content before the
+  call (an existing `.orig` is still never overwritten);
+- if every key already has its value, it returns `changed=False`, an empty diff, and
+  writes nothing;
+- the parent directory must already exist; it is never created.
+
 ### Guarantees common to all file primitives
 
 - **Idempotent.** A second identical call returns `changed=False`, an empty diff, and
@@ -191,10 +212,10 @@ openstack-forge apply --config cluster.yaml --step STEP_ID [--node HOSTNAME] [--
 | Option | Meaning |
 | ------ | ------- |
 | `--config PATH` | Cluster configuration (default: `cluster.yaml`), validated before use. |
-| `--step STEP_ID` | Catalog step ID to apply (required). Only steps registered in `IMPLEMENTED_STEPS` (`hosts-file`, `time-sync-controller`, `openstack-packages`) can run; any other catalog step exits with code 1 and `"not implemented"`. |
+| `--step STEP_ID` | Catalog step ID to apply (required). Only steps registered in `IMPLEMENTED_STEPS` (`hosts-file`, `time-sync-controller`, `time-sync-other`, `openstack-packages`, `mariadb`) can run; any other catalog step exits with code 1 and `"not implemented"`. A step whose catalog `roles` do not include the node's role (for example `time-sync-other` on the controller) exits with code 1. |
 | `--node HOSTNAME` | Target node hostname. If omitted, matched against the local machine's hostname (`socket.gethostname()`). |
 | `--root PATH` | Target filesystem root (default: `/`). Used by tests to confine all writes to a temporary directory. |
-| `--yes` | Write changes, run the step's commands and update the state file. The commands of `time-sync-controller` and `openstack-packages` use the network through apt. Without `--yes`, `apply` runs in **dry-run** mode: it prints the redacted unified diff and the exact argv of every command the step would run, writes nothing, runs nothing, and exits 0. |
+| `--yes` | Write changes, run the step's commands and update the state file. The commands of `time-sync-controller`, `time-sync-other`, `openstack-packages` and `mariadb` use the network through apt. Without `--yes`, `apply` runs in **dry-run** mode: it prints the redacted unified diff and the exact argv of every command the step would run, writes nothing, runs nothing, and exits 0. |
 
 - **Catalog status warning:** `apply` prints a visible `WARNING` line when a step is marked
   `unverified` in `steps.json`, which all implemented steps are.
@@ -462,8 +483,54 @@ Deviations from the page, and limits:
 - `sourcedir` directives (for example servers learned from DHCP) are not touched.
 - **Time synchronization itself is not checked**, because the guide's NTP verification page
   has not been reviewed yet; `verify()` says so in its details.
-- `time-sync-other` (the other nodes) is in the catalog but not implemented; its page has
-  not been read.
+
+## Step: `time-sync-other` (`openstack_forge.execution.chrony`)
+
+**Unverified, and never run on a real host.** It follows the official page for the other
+nodes, <https://docs.openstack.org/install-guide/environment-ntp-other.html>, which for
+Ubuntu says: install `chrony`; in `/etc/chrony/chrony.conf`, "comment out or remove all but
+one `server` key" and change it to reference the controller node (`server controller
+iburst`); comment out the `pool 2.debian.pool.ntp.org offline iburst` line; restart the
+service with `service chrony restart`. It runs on `compute`, `block` and `object` nodes;
+constructing it for the controller raises `ExecutionError` (and `apply` refuses the
+controller earlier, because the catalog roles do not include it).
+
+It uses only commands already in the registry (`apt-get.update`, `apt-get.install`,
+`systemctl.restart`, `systemctl.is-active`, `dpkg-query.status`); none was added.
+
+| Phase | What happens |
+| ----- | ------------ |
+| `check()` | True only if `chrony.conf` needs no edit (pure) **and** `dpkg-query --status chrony` reports `install ok installed`. The file is checked first; a missing file means not done, without running anything. |
+| `apply()` | `apt-get update` (network); `apt-get install --yes chrony` (network); then the file edit; then `systemctl restart chrony`. |
+| `verify()` | Pure check that the managed block is intact and holds exactly `server controller iburst`, and that no active `pool`/`server` line is left outside it, plus `systemctl is-active chrony` exiting 0 and printing `active`. The details always end with the sentence saying that actual time synchronization is not checked (`TIME_SYNC_NOT_CHECKED`). |
+
+The file edit, in `chrony.conf` only (it must already exist: it is installed by the
+package, and the step never creates it):
+
+- every active `pool` and `server` line outside `# BEGIN openstack-forge time-sync` /
+  `# END openstack-forge time-sync` is commented out with the `# openstack-forge disabled: `
+  prefix; this covers the guide's `pool 2.debian.pool.ntp.org offline iburst` line and any
+  other default source;
+- the block contains the single line `server controller iburst`. `controller` is the
+  alias that the `hosts-file` step writes to `/etc/hosts` for the controller's management
+  address; this step does not check `/etc/hosts` itself, but in the catalog it depends on
+  the node's own `hosts-file` (and on the controller's `time-sync-controller`).
+
+Re-running writes nothing: lines already commented out are skipped and the block's own
+line is never commented out. A source line added later outside the block is commented out
+on the next run.
+
+Deviations from the page, and limits:
+
+- `apt-get update` before the install is not on the page (stale or empty package lists on
+  a fresh image).
+- `systemctl restart chrony` instead of `service chrony restart`.
+- The page allows commenting out *or removing* sources; this step only comments them out,
+  so `uncomment_lines()` or `chrony.conf.orig` can restore them.
+- Only `pool` and `server` lines are handled; `sourcedir`, `confdir` and `include`
+  directives, which may add other time sources, are left unchanged.
+- **Time synchronization itself is not checked** (the guide's verification page has not
+  been reviewed); `verify()` says so.
 
 ## Step: `openstack-packages` (`openstack_forge.execution.openstack_packages`)
 
@@ -479,9 +546,9 @@ entry in the supported release table (`openstack_forge.config.releases`), valida
 
 | Phase | What happens |
 | ----- | ------------ |
-| `check()` | True only if `dpkg-query --status python3-openstackclient` reports `install ok installed` **and** `apt-cache policy python3-openstackclient` lists an apt source whose suite is `<series>-updates/<name>` for the pocket (for example `noble-updates/epoxy`). The package alone is not enough: Ubuntu 24.04's own archive ships `python3-openstackclient` too (2024.1). |
-| `apply()` | Precondition: `dpkg-query --status software-properties-common` must report it installed (it provides `/usr/bin/add-apt-repository`); otherwise `PreconditionError` names the package, and nothing is installed. Then `add-apt-repository --yes --cloud <pocket>` (which updates the package lists itself), then `apt-get install --yes python3-openstackclient`. |
-| `verify()` | The same two checks, each reported separately in the details ("is not installed", "is not enabled"), always followed by a sentence saying the repository check is unconfirmed on a real host. |
+| `check()` | True only if, in order: `dpkg-query --status python3-openstackclient` reports `install ok installed`; `apt-cache policy python3-openstackclient` lists an apt source whose suite is `<series>-updates/<name>` for the pocket (for example `noble-updates/epoxy`); **and** the `Installed:` version reported by `apt-cache policy` is the version listed under one of those pocket sources. The package alone is not enough (Ubuntu 24.04's own archive ships `python3-openstackclient` too, 2024.1), and neither is an enabled pocket: a client installed from `noble/main` before the pocket was enabled, or left there because `apply()` stopped after `add-apt-repository`, stays at Ubuntu's version. |
+| `apply()` | Precondition: `dpkg-query --status software-properties-common` must report it installed (it provides `/usr/bin/add-apt-repository`); otherwise `PreconditionError` names the package, and nothing is installed. Then `add-apt-repository --yes --cloud <pocket>` (which updates the package lists itself), then `apt-get install --yes python3-openstackclient`. For an already-installed client, apt-get(8) `install` installs the newest candidate of that package only (and its dependencies), which replaces a version from Ubuntu's archive with the pocket's. |
+| `verify()` | The same three checks, each reported separately in the details: "is not installed", "is not enabled", or, when both hold but the version does not match, `the installed python3-openstackclient <installed> does not come from the repository <pocket>, which offers <version> (<suite>/<component>)`. On success the details name the installed version and its pocket source. The details always end with a sentence saying the repository check is unconfirmed on a real host. |
 
 No `apt-get update` is run by this step, because `add-apt-repository` updates the package
 lists unless given `--no-update` (add-apt-repository(1)). No upgrade, dist-upgrade or
@@ -504,9 +571,70 @@ Deviations from the page, and limits:
 - **The Ubuntu Cloud Archive suite naming (`<series>-<pocket>/<name>`) is an assumption
   not yet confirmed on a host where this step ran**; `verify()` says so.
 - Any Ubuntu series name is accepted in the suite, and source priorities are ignored.
-- `check()` does not require the installed version to come from the pocket: a client
-  installed from Ubuntu's own archive before the pocket was enabled counts as done.
+- Versions are compared as exact strings. If something keeps apt from choosing the
+  pocket's version (for example an apt pin), `apt-get install` is expected to leave the
+  installed version as it is and `verify()` then fails with the installed and pocket
+  versions (modeled with a fake backend, not observed on a host); the step does not touch
+  apt preferences.
 - `add-apt-repository` is run even if the pocket is already configured (for its update);
   that re-running it is harmless is assumed, not confirmed.
 - The step does not install `software-properties-common`; the operator must.
+
+## Step: `mariadb` (`openstack_forge.execution.mariadb`)
+
+**Unverified, and never run on a real host.** It follows the official page,
+<https://docs.openstack.org/install-guide/environment-sql-database-ubuntu.html>, which for
+Ubuntu 20.04 and later says to install `mariadb-server` and `python3-pymysql`, create
+`/etc/mysql/mariadb.conf.d/99-openstack.cnf` with a `[mysqld]` section, and restart the
+database service. It runs only on the controller (constructing it for another role raises
+`ExecutionError`), and uses only the existing `apt-get.install`, `systemctl.restart`,
+`systemctl.is-active` and `dpkg-query.status` commands.
+
+The file gets exactly these keys, written with `ini_set_many` in one edit:
+
+```ini
+[mysqld]
+bind-address = <management_ip of the controller>
+default-storage-engine = innodb
+innodb_file_per_table = on
+max_connections = 4096
+collation-server = utf8_general_ci
+character-set-server = utf8
+```
+
+| Phase | What happens |
+| ----- | ------------ |
+| `check()` | Pure first: if `/etc/mysql/mariadb.conf.d` or the file is missing, or the edit would change it, `False` without running any command. Otherwise `True` only if `dpkg-query --status` reports both `mariadb-server` and `python3-pymysql` as `install ok installed`. |
+| `apply()` | `apt-get install --yes mariadb-server`; `apt-get install --yes python3-pymysql`; the file edit; `systemctl restart mariadb`. |
+| `verify()` | Pure check that the file exists and that in `[mysqld]` each key has its expected active value, with no other active line for that key with a different value; `dpkg-query --status python3-pymysql` (checking only the service would miss a missing Python driver); `systemctl is-active mariadb` printing `active`. |
+
+The details of `verify()` always say that **SQL connectivity and TCP listening on
+`<management_ip>:3306` are not checked, and `mysql_secure_installation` is not run.**
+
+Decisions and limits:
+
+- **No `mysql_secure_installation`.** The guide runs it to set a root password. It is
+  interactive (commands run with stdin from `/dev/null`), and the same page notes that on
+  Ubuntu MariaDB uses the `unix_socket` authentication plugin, so local `root` access
+  needs no password. The step therefore does not run it and sets no database password.
+- **Unit name `mariadb`.** On Ubuntu 24.04 `mariadb-server` ships
+  `/usr/lib/systemd/system/mariadb.service` and `mysql.service` as a symlink to it
+  (checked with `dpkg -S` on a development machine). The guide restarts `mysql`; the step
+  uses the canonical `mariadb`, which is the same unit.
+- **Directory.** `/etc/mysql/mariadb.conf.d` comes with the MariaDB packages (on the
+  development machine `dpkg -S` lists `mariadb-common`, `mariadb-server`, `mariadb-client`
+  and others for it). The step never creates it; if it is still missing after
+  `apt-get install`, `apply()` stops with a `PreconditionError` before restarting anything.
+  A dry run on a host without it shows the exact content that will be written.
+- **No package list update.** On the controller the step runs after `time-sync-controller`
+  and `openstack-packages`, which already refreshed the package lists. Run alone with
+  `apply --step mariadb` on a host whose package lists are empty, `apt-get install` may
+  fail until they are updated.
+- **Universe repository.** The guide notes that since Ubuntu 18.04 `mariadb-server` is not
+  in the default repository and Universe must be enabled. The step enables no repository;
+  whether this still applies to Ubuntu 24.04 has not been confirmed.
+- **Other option files are not inspected.** MariaDB also reads the other files in
+  `mariadb.conf.d` and its other option files; a file read after `99-openstack.cnf` could
+  override these keys. Keys are compared by exact name (MariaDB may also accept `_` for
+  `-` in option names; this is not relied on), and values exactly (`ON` is not `on`).
 

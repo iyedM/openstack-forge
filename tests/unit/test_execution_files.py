@@ -18,6 +18,7 @@ from openstack_forge.execution import (
     comment_out_lines,
     fsutil,
     ini_set,
+    ini_set_many,
     managed_block,
     uncomment_lines,
 )
@@ -645,3 +646,118 @@ def test_relative_and_absolute_targets_are_equivalent(root: Path) -> None:
     change = managed_block(root, "/etc/hosts", BLOCK, "x\n")
     assert change.path == "/etc/hosts" and not change.changed
     assert os.listdir(root / "etc") == ["hosts"]
+
+
+# --- ini_set_many --------------------------------------------------------------------------
+
+MYSQLD = [
+    ("mysqld", "bind-address", "192.0.2.11"),
+    ("mysqld", "default-storage-engine", "innodb"),
+    ("mysqld", "max_connections", "4096"),
+]
+
+
+def test_ini_set_many_creates_a_new_file_without_a_backup(root: Path) -> None:
+    change = ini_set_many(root, "/etc/app.cnf", MYSQLD)
+    assert (change.changed, change.created, change.backup) == (True, True, None)
+    assert (root / "etc/app.cnf").read_text() == (
+        "[mysqld]\nbind-address = 192.0.2.11\ndefault-storage-engine = innodb\n"
+        "max_connections = 4096\n"
+    )
+    assert sorted(path.name for path in (root / "etc").iterdir()) == ["app.cnf"]
+
+
+def test_separate_ini_set_calls_would_back_up_a_partial_file(root: Path) -> None:
+    # Why ini_set_many exists: the second ini_set call backs up the 1-key file it just made.
+    for section, key, value in MYSQLD[:2]:
+        ini_set(root, "/etc/app.cnf", section, key, value)
+    assert (root / "etc/app.cnf.orig").read_text() == "[mysqld]\nbind-address = 192.0.2.11\n"
+
+
+def test_ini_set_many_backs_up_the_original_content_once(root: Path) -> None:
+    original = "# managed elsewhere\n[client]\nport = 3306\n\n[mysqld]\nmax_connections = 100\n"
+    _write(root, "/etc/app.cnf", original, mode=0o640)
+    change = ini_set_many(root, "/etc/app.cnf", MYSQLD)
+    second = ini_set_many(root, "/etc/app.cnf", [("mysqld", "max_connections", "8192")])
+    assert (change.created, change.backup, second.backup) == (False, "/etc/app.cnf.orig", None)
+    assert (root / "etc/app.cnf.orig").read_text() == original
+    assert stat.S_IMODE((root / "etc/app.cnf").stat().st_mode) == 0o640
+    assert (root / "etc/app.cnf").read_text() == (
+        "# managed elsewhere\n[client]\nport = 3306\n\n[mysqld]\nmax_connections = 8192\n"
+        "bind-address = 192.0.2.11\ndefault-storage-engine = innodb\n"
+    )
+
+
+def test_ini_set_many_is_idempotent(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    ini_set_many(root, "/etc/app.cnf", MYSQLD)
+    before = _snapshot(root / "etc/app.cnf")
+    _forbid_writes(monkeypatch)
+    change = ini_set_many(root, "/etc/app.cnf", MYSQLD)
+    assert (change.changed, change.diff, change.backup, change.created) == (False, "", None, False)
+    assert _snapshot(root / "etc/app.cnf") == before
+
+
+def test_ini_set_many_dry_run_shows_one_combined_diff(root: Path) -> None:
+    _write(root, "/etc/app.cnf", "[mysqld]\nmax_connections = 100\n")
+    change = ini_set_many(root, "/etc/app.cnf", MYSQLD, dry_run=True)
+    assert change.diff == (
+        "--- a/etc/app.cnf\n"
+        "+++ b/etc/app.cnf\n"
+        "@@ -1,2 +1,4 @@\n"
+        " [mysqld]\n"
+        "-max_connections = 100\n"
+        "+max_connections = 4096\n"
+        "+bind-address = 192.0.2.11\n"
+        "+default-storage-engine = innodb\n"
+    )
+    assert (root / "etc/app.cnf").read_text() == "[mysqld]\nmax_connections = 100\n"
+    assert not (root / "etc/app.cnf.orig").exists()
+
+
+def test_ini_set_many_dry_run_on_a_missing_file(root: Path) -> None:
+    change = ini_set_many(root, "/etc/new.cnf", MYSQLD, dry_run=True)
+    assert change.changed and change.created and change.backup is None
+    assert change.diff.startswith("--- a/etc/new.cnf\n+++ b/etc/new.cnf\n@@ -0,0 +1,4 @@\n")
+    assert not (root / "etc/new.cnf").exists()
+
+
+def test_ini_set_many_preserves_other_sections_and_comments(root: Path) -> None:
+    text = (
+        "[client]\n# keep this comment\nuser = app\n\n[mysqld]\n#max_connections = 151\n"
+        "\n[mysqldump]\nquick\n"
+    )
+    _write(root, "/etc/app.cnf", text)
+    ini_set_many(root, "/etc/app.cnf", [*MYSQLD, ("mysqldump", "max_allowed_packet", "16M")])
+    assert (root / "etc/app.cnf").read_text() == (
+        "[client]\n# keep this comment\nuser = app\n\n[mysqld]\nmax_connections = 4096\n"
+        "bind-address = 192.0.2.11\ndefault-storage-engine = innodb\n\n[mysqldump]\nquick\n"
+        "max_allowed_packet = 16M\n"
+    )
+
+
+def test_ini_set_many_applies_settings_in_order(root: Path) -> None:
+    ini_set_many(root, "/etc/app.cnf", [("s", "k", "1"), ("s", "k", "2")])
+    assert (root / "etc/app.cnf").read_text() == "[s]\nk = 2\n"
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [[], [("mysqld", "key")], [("mysqld", "a=b", "x")], [("mysqld", "k", 5)], ["not a tuple"]],
+)
+def test_ini_set_many_validates_every_setting_first(root: Path, settings) -> None:
+    _write(root, "/etc/app.cnf", "[mysqld]\n")
+    with pytest.raises(ValueError):
+        ini_set_many(root, "/etc/app.cnf", [("mysqld", "ok", "1"), *settings] if settings else [])
+    assert (root / "etc/app.cnf").read_text() == "[mysqld]\n"
+
+
+def test_ini_set_many_never_creates_the_parent_directory(root: Path) -> None:
+    with pytest.raises(UnsafePathError, match="parent directory does not exist"):
+        ini_set_many(root, "/etc/mysql/mariadb.conf.d/99-openstack.cnf", MYSQLD)
+    assert not (root / "etc/mysql").exists()
+
+
+def test_ini_set_many_diff_is_redacted(root: Path) -> None:
+    change = ini_set_many(root, "/etc/app.cnf", [("client", "password", "hunter2")])
+    assert "hunter2" not in change.diff and f"password = {MASK}" in change.diff
+    assert "password = hunter2" in (root / "etc/app.cnf").read_text()

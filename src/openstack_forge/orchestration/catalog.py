@@ -2,7 +2,11 @@
 
 The catalog is data shipped as package data next to its JSON Schema, the same way as
 the cluster configuration schema. Structural rules live in the schema; the rules it
-cannot express (unique ids, existing dependencies, no cycles) are checked here.
+cannot express (unique ids, existing dependencies, role-scoped dependencies limited to
+the step's own roles, no duplicate dependency, no cycles) are checked here.
+
+A ``depends_on`` entry is either a step id, which applies on every role of the step, or
+``{"step": <id>, "roles": [...]}``, which applies only on nodes whose role is listed.
 """
 
 from __future__ import annotations
@@ -39,15 +43,26 @@ class Step:
     id: str
     title: str
     roles: tuple[str, ...]
-    depends_on: tuple[str, ...]
+    depends_on: tuple[str, ...]  # every dependency id, in catalog order
     files_modified: tuple[str, ...]
     verification: str
     doc_url: str
     status: str
+    # (dependency id, roles) for each depends_on entry that applies only on those roles.
+    dependency_roles: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
     @property
     def verified(self) -> bool:
         return self.status == STATUS_VERIFIED
+
+    def dependencies_for(self, role: str) -> tuple[str, ...]:
+        """The ``depends_on`` ids that apply on a node with ``role``."""
+        restricted = dict(self.dependency_roles)
+        return tuple(
+            dependency
+            for dependency in self.depends_on
+            if dependency not in restricted or role in restricted[dependency]
+        )
 
 
 @dataclass(frozen=True)
@@ -111,6 +126,7 @@ def validate_catalog(data: Any, schema: Mapping[str, Any]) -> list[ValidationIss
     steps = data["steps"]
     issues = _check_unique_ids(steps, "steps") + _check_unique_ids(data["notes"], "notes")
     issues += _check_dependencies_exist(steps)
+    issues += _check_dependency_roles(steps)
     if not issues:
         issues += _check_no_cycles(steps)
     return issues
@@ -143,18 +159,68 @@ def _check_unique_ids(entries: Sequence[Mapping[str, Any]], field: str) -> list[
     return issues
 
 
+def _dependency_entries(
+    step: Mapping[str, Any], index: int
+) -> list[tuple[str, str, tuple[str, ...] | None]]:
+    """``(location, step id, roles or None)`` for each ``depends_on`` entry of a step."""
+    entries: list[tuple[str, str, tuple[str, ...] | None]] = []
+    for position, entry in enumerate(step["depends_on"]):
+        location = f"steps[{index}].depends_on[{position}]"
+        if isinstance(entry, str):
+            entries.append((location, entry, None))
+        else:
+            entries.append((location, entry["step"], tuple(entry["roles"])))
+    return entries
+
+
+def _dependency_ids(step: Mapping[str, Any]) -> list[str]:
+    return [dependency for _, dependency, _ in _dependency_entries(step, 0)]
+
+
 def _check_dependencies_exist(steps: Sequence[Mapping[str, Any]]) -> list[ValidationIssue]:
     known = {step["id"] for step in steps}
     return [
-        ValidationIssue(f"steps[{index}].depends_on[{position}]", f"unknown step {dependency!r}")
+        ValidationIssue(
+            location if roles is None else f"{location}.step", f"unknown step {dependency!r}"
+        )
         for index, step in enumerate(steps)
-        for position, dependency in enumerate(step["depends_on"])
+        for location, dependency, roles in _dependency_entries(step, index)
         if dependency not in known
     ]
 
 
+def _check_dependency_roles(steps: Sequence[Mapping[str, Any]]) -> list[ValidationIssue]:
+    """Role-scoped entries name only the step's own roles; no dependency is listed twice."""
+    issues: list[ValidationIssue] = []
+    for index, step in enumerate(steps):
+        first_seen: dict[str, str] = {}
+        for location, dependency, roles in _dependency_entries(step, index):
+            if dependency in first_seen:
+                issues.append(
+                    ValidationIssue(
+                        location,
+                        f"duplicate dependency {dependency!r}; already listed at "
+                        f"{first_seen[dependency]}",
+                    )
+                )
+            else:
+                first_seen[dependency] = location
+            for role in roles or ():
+                if role not in step["roles"]:
+                    issues.append(
+                        ValidationIssue(
+                            f"{location}.roles",
+                            f"role {role!r} does not run this step (its roles: "
+                            f"{', '.join(step['roles'])})",
+                        )
+                    )
+    return issues
+
+
 def _check_no_cycles(steps: Sequence[Mapping[str, Any]]) -> list[ValidationIssue]:
-    cycle = _find_cycle({step["id"]: step["depends_on"] for step in steps})
+    # Every dependency counts, whatever its roles, so a cycle is refused even if no single
+    # role would follow it.
+    cycle = _find_cycle({step["id"]: _dependency_ids(step) for step in steps})
     if cycle is None:
         return []
     return [ValidationIssue("steps", f"dependency cycle: {' -> '.join(cycle)}")]
@@ -192,11 +258,16 @@ def _build_catalog(data: Mapping[str, Any]) -> StepCatalog:
             id=raw["id"],
             title=raw["title"],
             roles=tuple(raw["roles"]),
-            depends_on=tuple(raw["depends_on"]),
+            depends_on=tuple(_dependency_ids(raw)),
             files_modified=tuple(raw["files_modified"]),
             verification=raw["verification"],
             doc_url=raw["doc_url"],
             status=raw["status"],
+            dependency_roles=tuple(
+                (dependency, roles)
+                for _, dependency, roles in _dependency_entries(raw, 0)
+                if roles is not None
+            ),
         )
         for raw in data["steps"]
     )

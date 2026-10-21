@@ -30,7 +30,12 @@ def catalog() -> StepCatalog:
     return load_catalog()
 
 
-def _step(step_id: str, roles: list[str], depends_on: list[str] = ()) -> Step:
+def _step(
+    step_id: str,
+    roles: list[str],
+    depends_on: list[str] = (),
+    dependency_roles: dict[str, list[str]] | None = None,
+) -> Step:
     return Step(
         id=step_id,
         title=f"Test step {step_id}",
@@ -40,6 +45,9 @@ def _step(step_id: str, roles: list[str], depends_on: list[str] = ()) -> Step:
         verification="Test verification.",
         doc_url=DOCS,
         status=STATUS_UNVERIFIED,
+        dependency_roles=tuple(
+            (dependency, tuple(only)) for dependency, only in (dependency_roles or {}).items()
+        ),
     )
 
 
@@ -117,11 +125,92 @@ def test_other_nodes_wait_for_the_controller_time_sync(valid_config, catalog) ->
     plan = build_plan(valid_config, catalog)
     waits = {(i.node, i.step.id): i.waits_for for i in plan.items}
     for node in ("cmp-01", "blk-01", "obj-01"):
-        assert waits[(node, "time-sync-other")] == (Dependency("time-sync-controller", "ctl-01"),)
-        # Documented limitation: packages do not wait for the node's own time-sync-other.
-        assert waits[(node, "openstack-packages")] == (
+        # Its own hosts-file first: 'server controller iburst' needs the /etc/hosts alias.
+        assert waits[(node, "time-sync-other")] == (
+            Dependency("hosts-file", node),
             Dependency("time-sync-controller", "ctl-01"),
         )
+
+
+def test_packages_wait_for_the_nodes_own_time_sync_other(valid_config, catalog) -> None:
+    # Role-scoped dependencies (milestone 10): on compute, block and object nodes,
+    # openstack-packages waits for that node's own time-sync-other, which itself waits for
+    # the controller's time-sync-controller.
+    plan = build_plan(valid_config, catalog)
+    waits = {(i.node, i.step.id): i.waits_for for i in plan.items}
+    order = _order(plan)
+    for node in ("cmp-01", "blk-01", "obj-01"):
+        assert waits[(node, "openstack-packages")] == (Dependency("time-sync-other", node),)
+        assert order.index((node, "time-sync-other")) < order.index((node, "openstack-packages"))
+
+
+def test_controller_packages_do_not_wait_for_other_nodes(valid_config, catalog) -> None:
+    for index in (2, 3):
+        valid_config["nodes"].append(
+            {**valid_config["nodes"][1], "hostname": f"cmp-0{index}", "fqdn": f"c{index}.test"}
+        )
+    plan = build_plan(valid_config, catalog)
+    (item,) = [i for i in plan.items if (i.node, i.step.id) == ("ctl-01", "openstack-packages")]
+    assert item.waits_for == (Dependency("time-sync-controller", "ctl-01"),)
+    text = format_plan_text(build_plan(valid_config, catalog, node="ctl-01"))
+    packages = text[text.index("openstack-packages  [UNVERIFIED]") :].split("\n\n", 1)[0]
+    assert "waits for:    time-sync-controller on ctl-01" in packages
+    assert "time-sync-other" not in packages
+
+
+def test_node_plan_shows_the_local_time_sync_other_wait(valid_config, catalog) -> None:
+    text = format_plan_text(build_plan(valid_config, catalog, node="blk-01"))
+    packages = text[text.index("openstack-packages  [UNVERIFIED]") :].split("\n\n", 1)[0]
+    assert "waits for:    time-sync-other on blk-01" in packages
+    assert "time-sync-controller" not in packages
+
+
+def test_role_scoped_dependency_is_ignored_on_other_roles(valid_config) -> None:
+    catalog = _catalog(
+        _step("sync-a", ["controller"]),
+        _step("sync-b", ["compute", "block", "object"]),
+        _step(
+            "packages",
+            ["controller", "compute", "block", "object"],
+            ["sync-a", "sync-b"],
+            {"sync-a": ["controller"], "sync-b": ["compute", "block", "object"]},
+        ),
+    )
+    waits = {(i.node, i.step.id): i.waits_for for i in build_plan(valid_config, catalog).items}
+    assert waits[("ctl-01", "packages")] == (Dependency("sync-a", "ctl-01"),)
+    assert waits[("cmp-01", "packages")] == (Dependency("sync-b", "cmp-01"),)
+
+
+def test_without_role_scope_the_controller_would_wait_for_every_other_node(valid_config) -> None:
+    # The same catalog with plain ids: the reason role scopes exist.
+    catalog = _catalog(
+        _step("sync-a", ["controller"]),
+        _step("sync-b", ["compute", "block", "object"]),
+        _step("packages", ["controller", "compute", "block", "object"], ["sync-a", "sync-b"]),
+    )
+    waits = {(i.node, i.step.id): i.waits_for for i in build_plan(valid_config, catalog).items}
+    assert waits[("ctl-01", "packages")] == (
+        Dependency("sync-a", "ctl-01"),
+        Dependency("sync-b", "cmp-01"),
+        Dependency("sync-b", "blk-01"),
+        Dependency("sync-b", "obj-01"),
+    )
+
+
+def test_role_scoped_dependency_can_still_cross_nodes(valid_config) -> None:
+    catalog = _catalog(
+        _step("database", ["controller"]),
+        _step("agent", ["controller", "compute"], ["database"], {"database": ["compute"]}),
+    )
+    waits = {(i.node, i.step.id): i.waits_for for i in build_plan(valid_config, catalog).items}
+    assert waits[("ctl-01", "agent")] == ()
+    assert waits[("cmp-01", "agent")] == (Dependency("database", "ctl-01"),)
+
+
+def test_dependencies_for_role() -> None:
+    step = _step("s", ["controller", "compute"], ["a", "b", "c"], {"b": ["compute"]})
+    assert step.dependencies_for("controller") == ("a", "c")
+    assert step.dependencies_for("compute") == ("a", "b", "c")
 
 
 def test_cross_node_dependency_waits_for_the_controller(valid_config) -> None:
@@ -257,7 +346,7 @@ def test_text_shows_every_step_field(valid_config, catalog) -> None:
     mariadb = text[text.index("mariadb  [UNVERIFIED]") :].split("\n\n", 1)[0]
     assert "Install and configure MariaDB" in mariadb
     assert "files:        /etc/mysql/mariadb.conf.d/99-openstack.cnf" in mariadb
-    assert "verification: The MariaDB service is running on the controller." in mariadb
+    assert "verification: mariadb-server and python3-pymysql are installed" in mariadb
     assert f"docs:         {DOCS}environment-sql-database-ubuntu.html" in mariadb
     assert "waits for:    openstack-packages on ctl-01" in mariadb
     rabbitmq = text[text.index("rabbitmq  [UNVERIFIED]") :]
@@ -296,7 +385,17 @@ def test_json_output(valid_config, catalog) -> None:
     time_sync = next(s for s in payload["steps"] if s["id"] == "time-sync-controller")
     assert time_sync["waits_for"] == [{"step": "hosts-file", "node": "ctl-01"}]
     other = next(s for s in payload["steps"] if s["id"] == "time-sync-other")
-    assert other["waits_for"] == [{"step": "time-sync-controller", "node": "ctl-01"}]
+    assert other["waits_for"] == [
+        {"step": "hosts-file", "node": "cmp-01"},
+        {"step": "time-sync-controller", "node": "ctl-01"},
+    ]
+    packages = [s for s in payload["steps"] if s["id"] == "openstack-packages"]
+    assert [p["waits_for"] for p in packages] == [
+        [{"step": "time-sync-controller", "node": "ctl-01"}],
+        [{"step": "time-sync-other", "node": "cmp-01"}],
+        [{"step": "time-sync-other", "node": "blk-01"}],
+        [{"step": "time-sync-other", "node": "obj-01"}],
+    ]
     assert [note["id"] for note in payload["notes"]] == ["network-configuration"]
 
 

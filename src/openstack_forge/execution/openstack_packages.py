@@ -17,6 +17,13 @@ package is missing, ``apply()`` fails and says so instead of installing it.
 
 Both commands download from the network through apt; the Python code opens no connection.
 
+The step is done only if the client is installed, the pocket is enabled AND the installed
+version is one the pocket provides: a client installed from Ubuntu's own ``noble/main``
+before the pocket was enabled (or left there because ``apply()`` stopped after
+``add-apt-repository``) does not count. ``apt-get install`` of an already-installed package
+installs the newest candidate of that package only (apt-get(8), ``install``), so running
+the step again replaces it.
+
 The step is UNVERIFIED and has never run on a real host. The repository check relies on
 the Ubuntu Cloud Archive suite naming seen in ``apt-cache policy`` output, which is an
 assumption not yet confirmed on a host where this step ran (see
@@ -33,9 +40,11 @@ from typing import Any, ClassVar
 from openstack_forge.config import find_release
 from openstack_forge.execution.apt_output import (
     REPOSITORY_CHECK_UNCONFIRMED,
+    AptPolicy,
     AptSource,
     cloud_archive_sources,
     describe_cloud_archive_suite,
+    installed_from,
     parse_apt_policy,
     parse_dpkg_status,
 )
@@ -121,15 +130,25 @@ class OpenStackPackagesStep:
                 "no connection itself.",
                 "No upgrade, dist-upgrade or reboot is run, and no other package is requested "
                 f"(apt-get may install dependencies of {OPENSTACK_CLIENT_PACKAGE}).",
+                f"check() and verify() also require the installed {OPENSTACK_CLIENT_PACKAGE} "
+                f"version to be one listed for {self.pocket} by apt-cache policy; a version "
+                "installed from Ubuntu's own archive is replaced by apt-get install, which "
+                "installs the newest candidate of that one package.",
             ),
         )
 
     def check(self) -> bool:
-        """True if the client is installed AND apt lists a source for the pocket.
+        """True if the client is installed, the pocket is enabled, and the installed
+        version comes from the pocket.
 
-        The package alone is not enough: Ubuntu 24.04's own archive also ships it.
+        The package alone is not enough: Ubuntu 24.04's own archive also ships it. An
+        enabled pocket is not enough either: a client installed from ``noble/main`` stays
+        at that version until ``apt-get install`` replaces it.
         """
-        return self._client_installed() and bool(self._pocket_sources())
+        if not self._client_installed():
+            return False
+        policy, sources = self._pocket_policy()
+        return bool(sources) and installed_from(policy, sources)
 
     def apply(self) -> None:
         """Require software-properties-common, enable the pocket, install the client."""
@@ -139,37 +158,59 @@ class OpenStackPackagesStep:
         self.executor.run(INSTALL_CLIENT.command_id, INSTALL_CLIENT.params)
 
     def verify(self) -> VerifyResult:
-        """The same two checks as check(), each reported separately."""
+        """The same three checks as check(), each reported separately."""
         suite = describe_cloud_archive_suite(self.pocket)
         unconfirmed = REPOSITORY_CHECK_UNCONFIRMED.format(suite=suite)
         problems: list[str] = []
-        if not self._client_installed():
+        installed = self._client_installed()
+        if not installed:
             problems.append(
                 f"{OPENSTACK_CLIENT_PACKAGE} is not installed "
                 "(dpkg-query --status does not report 'install ok installed')"
             )
-        sources = self._pocket_sources()
+        policy, sources = self._pocket_policy()
         if not sources:
             problems.append(
                 f"the repository {self.pocket} is not enabled: 'apt-cache policy "
                 f"{OPENSTACK_CLIENT_PACKAGE}' lists no apt source with suite '{suite}'"
             )
+        elif installed and not installed_from(policy, sources):
+            problems.append(self._version_mismatch(policy, sources))
         if problems:
             return VerifyResult(False, f"{'; '.join(problems)}. {unconfirmed}")
-        listed = ", ".join(f"{s.uri} {s.suite}/{s.component}" for s in sources)
+        listed = ", ".join(
+            f"{s.uri} {s.suite}/{s.component}" for s in sources if s.version == policy.installed
+        )
         return VerifyResult(
             True,
-            f"{OPENSTACK_CLIENT_PACKAGE} is installed and the repository {self.pocket} is "
-            f"enabled (apt source: {listed}). {unconfirmed}",
+            f"{OPENSTACK_CLIENT_PACKAGE} {policy.installed} is installed from the repository "
+            f"{self.pocket}, which is enabled (apt source: {listed}). {unconfirmed}",
         )
 
     def _client_installed(self) -> bool:
         result = self.executor.run(QUERY_CLIENT_PACKAGE.command_id, QUERY_CLIENT_PACKAGE.params)
         return result.returncode == 0 and parse_dpkg_status(result.stdout)
 
-    def _pocket_sources(self) -> tuple[AptSource, ...]:
+    def _pocket_policy(self) -> tuple[AptPolicy, tuple[AptSource, ...]]:
         result = self.executor.run(QUERY_CLIENT_POLICY.command_id, QUERY_CLIENT_POLICY.params)
-        return cloud_archive_sources(parse_apt_policy(result.stdout), self.pocket)
+        policy = parse_apt_policy(result.stdout)
+        return policy, cloud_archive_sources(policy, self.pocket)
+
+    def _version_mismatch(self, policy: AptPolicy, sources: tuple[AptSource, ...]) -> str:
+        offered = ", ".join(
+            dict.fromkeys(f"{s.version} ({s.suite}/{s.component})" for s in sources)
+        )
+        if policy.installed is None:
+            return (
+                f"dpkg-query reports {OPENSTACK_CLIENT_PACKAGE} installed, but 'apt-cache "
+                f"policy {OPENSTACK_CLIENT_PACKAGE}' reports no installed version; the "
+                f"repository {self.pocket} offers {offered}"
+            )
+        return (
+            f"the installed {OPENSTACK_CLIENT_PACKAGE} {policy.installed} does not come from "
+            f"the repository {self.pocket}, which offers {offered}; it was installed from "
+            f"another source (see 'apt-cache policy {OPENSTACK_CLIENT_PACKAGE}')"
+        )
 
     def _require_software_properties(self) -> None:
         result = self.executor.run(

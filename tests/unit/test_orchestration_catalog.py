@@ -236,6 +236,74 @@ def test_load_catalog_reports_issues(tmp_path: Path, raw_catalog) -> None:
     assert [issue.location for issue in excinfo.value.issues] == ["steps[1].depends_on[0]"]
 
 
+# --- role-scoped dependencies ----------------------------------------------------------
+
+
+def test_openstack_packages_dependencies_are_role_scoped() -> None:
+    step = load_catalog().step("openstack-packages")
+    assert step.depends_on == ("time-sync-controller", "time-sync-other")
+    assert step.dependency_roles == (
+        ("time-sync-controller", ("controller",)),
+        ("time-sync-other", ("compute", "block", "object")),
+    )
+    assert step.dependencies_for("controller") == ("time-sync-controller",)
+    for role in ("compute", "block", "object"):
+        assert step.dependencies_for(role) == ("time-sync-other",)
+
+
+def test_role_scoped_dependency_must_name_the_steps_own_roles(raw_catalog, catalog_schema) -> None:
+    # mariadb runs on the controller only.
+    raw_catalog["steps"][4]["depends_on"] = [
+        {"step": "openstack-packages", "roles": ["controller", "compute"]}
+    ]
+    assert _messages(raw_catalog, catalog_schema) == [
+        "steps[4].depends_on[0].roles: role 'compute' does not run this step "
+        "(its roles: controller)"
+    ]
+
+
+def test_role_scoped_dependency_on_an_unknown_step(raw_catalog, catalog_schema) -> None:
+    raw_catalog["steps"][4]["depends_on"] = [{"step": "keystone", "roles": ["controller"]}]
+    assert _messages(raw_catalog, catalog_schema) == [
+        "steps[4].depends_on[0].step: unknown step 'keystone'"
+    ]
+
+
+def test_dependency_listed_twice_is_refused(raw_catalog, catalog_schema) -> None:
+    raw_catalog["steps"][3]["depends_on"].append("time-sync-other")
+    assert _messages(raw_catalog, catalog_schema) == [
+        "steps[3].depends_on[2]: duplicate dependency 'time-sync-other'; already listed at "
+        "steps[3].depends_on[1]"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("entry", "expected"),
+    [
+        ({"step": "hosts-file"}, "steps[4].depends_on[0].roles: required field is missing"),
+        (
+            {"step": "hosts-file", "roles": []},
+            "steps[4].depends_on[0].roles: must contain at least 1 item(s)",
+        ),
+        (
+            {"step": "hosts-file", "roles": ["controller"], "when": "x"},
+            "steps[4].depends_on[0].when: unknown field (allowed fields: step, roles)",
+        ),
+    ],
+)
+def test_role_scoped_dependency_structure(raw_catalog, catalog_schema, entry, expected) -> None:
+    raw_catalog["steps"][4]["depends_on"] = [entry]
+    assert _messages(raw_catalog, catalog_schema) == [expected]
+
+
+def test_role_scoped_dependency_cycle_is_refused(raw_catalog, catalog_schema) -> None:
+    raw_catalog["steps"][0]["depends_on"] = [{"step": "openstack-packages", "roles": ["object"]}]
+    assert _messages(raw_catalog, catalog_schema) == [
+        "steps: dependency cycle: "
+        "hosts-file -> openstack-packages -> time-sync-controller -> hosts-file"
+    ]
+
+
 def test_load_catalog_rejects_invalid_json(tmp_path: Path) -> None:
     path = tmp_path / "steps.json"
     path.write_text("{not json", encoding="utf-8")

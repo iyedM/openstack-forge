@@ -149,6 +149,36 @@ All notable changes to this project will be documented in this file.
   `apt-cache policy` output, with synthetic fixtures in `tests/fixtures/apt/` modeled on
   real output read on an Ubuntu 24.04 machine.
 - `PreconditionError` for steps whose host prerequisites are missing.
+- `time-sync-other` step (`openstack_forge.execution.chrony`) for `compute`, `block` and
+  `object` nodes; constructing it for the controller raises `ExecutionError`. **Unverified
+  and never run on a real host.** Following the official "Other nodes" NTP page:
+  `apt-get update`, `apt-get install --yes chrony`, then in `/etc/chrony/chrony.conf`
+  (which must already exist) every active `pool`/`server` line outside the
+  `openstack-forge time-sync` managed block is commented out and the block holds
+  `server controller iburst`, then `systemctl restart chrony`. `check()` is the pure file
+  check plus `dpkg-query --status chrony`; `verify()` checks the block, the absence of
+  other active sources and `systemctl is-active chrony`, and always says that actual time
+  synchronization is not checked. It reuses the existing command specs; the registry is
+  unchanged.
+- Role-scoped catalog dependencies: a `depends_on` entry may be
+  `{"step": <id>, "roles": [...]}`, which applies only on nodes with one of those roles
+  (validated: existing step, roles within the step's own roles, no duplicate dependency,
+  no cycle). `Step.dependencies_for(role)` exposes the result.
+- Synthetic fixture `policy_client_noble_installed_uca_candidate.txt`: client installed
+  from `noble/main` while `cloud-archive:epoxy` offers a newer candidate.
+- `ini_set_many(root, target, settings, ...)` in `openstack_forge.execution.files`: applies
+  `(section, key, value)` settings in order in one edit, with one combined redacted diff;
+  a new file is created without a `.orig` backup, an existing file that changes gets one
+  `.orig` of its previous content, an unchanged file is not written, and the parent
+  directory is never created. `ini_set()` is now built on the same pure line editor.
+- `mariadb` step (`openstack_forge.execution.mariadb`, controller only). **Unverified and
+  never run on a real host.** Following the official SQL database page for Ubuntu: install
+  `mariadb-server` and `python3-pymysql`, write the guide's six `[mysqld]` keys to
+  `/etc/mysql/mariadb.conf.d/99-openstack.cnf` (`bind-address` = the controller's
+  management IP), then `systemctl restart mariadb`. `verify()` checks the file,
+  `python3-pymysql` and the service; it does not check SQL connectivity or the 3306
+  listener. `mysql_secure_installation` is not run (interactive; the guide notes Ubuntu
+  uses `unix_socket` authentication for local root). No new command spec was added.
 
 ### Changed
 
@@ -187,6 +217,24 @@ All notable changes to this project will be documented in this file.
 - Documentation no longer says that the project or `apply` uses no network: the Python
   code opens no connection, but the apt commands it runs (`apt-get update`, `apt-get
   install`, `add-apt-repository`) do.
+- `openstack-packages` `check()` and `verify()` now also require the installed
+  `python3-openstackclient` version (`Installed:` in `apt-cache policy`) to be a version
+  listed under a source of the pocket (`installed_from()` in `apt_output`). A client
+  installed from `noble/main` before the pocket was enabled, or left there because
+  `apply()` stopped after `add-apt-repository`, is no longer reported as done; `verify()`
+  names the installed version and the version(s) the pocket offers.
+- `openstack-packages` now depends on `time-sync-controller` on the controller only and on
+  the node's own `time-sync-other` on `compute`, `block` and `object` nodes (role-scoped
+  dependencies), replacing the documented limitation that other nodes did not wait for
+  their own time synchronization. The controller does not wait for other nodes.
+- `time-sync-other` now also depends on `hosts-file` (on the same node), because its
+  `server controller iburst` line needs the `controller` alias in `/etc/hosts`; before,
+  it waited only for the controller's `time-sync-controller`.
+- The catalog's `time-sync-other` verification text now describes what the step checks
+  (chrony installed and active, `server controller iburst` as the only pool/server
+  source) instead of a synchronized time source, which is not checked yet.
+- `IMPLEMENTED_STEPS` pin deliberately updated to four steps; `time-sync-other` is no
+  longer used as the example of an unimplemented step in tests.
 
 ### Fixed
 

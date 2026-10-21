@@ -11,7 +11,7 @@ Files must be UTF-8 with LF line endings; files containing CR are refused.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -229,7 +229,58 @@ def ini_set(
     duplicate can override the value), else replace the first commented default
     (``#key = ...``), else append after the section's last non-blank line, else append a
     new section. Comments, blank lines and ordering are kept.
+
+    To set several keys in one file, use :func:`ini_set_many`: separate calls would each
+    write (and back up) the file, and dry runs would not see each other's edits.
     """
+    edit = _ini_set_editor(section, key, value)
+    return _edit_file(root, target, edit, dry_run=dry_run, new_file_mode=new_file_mode)
+
+
+def ini_set_many(
+    root: Path,
+    target: str | PurePosixPath,
+    settings: Iterable[tuple[str, str, str]],
+    *,
+    dry_run: bool = False,
+    new_file_mode: int = DEFAULT_FILE_MODE,
+) -> FileChange:
+    """Apply ``(section, key, value)`` settings in order, in a single edit of ``target``.
+
+    Each setting follows the rules of :func:`ini_set`. All settings are validated before
+    anything is read or written. The result has one combined redacted diff; a file that
+    did not exist is created (``created=True``) with no ``.orig`` backup; an existing file
+    that changes gets one ``<file>.orig`` backup of its content before this call; when
+    every key already has its value, nothing is written. The parent directory must exist.
+    """
+    edit = _ini_set_many_editor(settings)
+    return _edit_file(root, target, edit, dry_run=dry_run, new_file_mode=new_file_mode)
+
+
+def _ini_set_many_editor(
+    settings: Iterable[tuple[str, str, str]],
+) -> Callable[[list[str], str], list[str]]:
+    """Compose :func:`_ini_set_editor` for every setting, applied in order."""
+    editors = []
+    for setting in settings:
+        if not isinstance(setting, tuple) or len(setting) != 3:
+            raise ValueError(f"Each setting must be a (section, key, value) tuple: {setting!r}")
+        if not all(isinstance(part, str) for part in setting):
+            raise ValueError(f"Section, key and value must be strings: {setting!r}")
+        editors.append(_ini_set_editor(*setting))
+    if not editors:
+        raise ValueError("ini_set_many needs at least one setting")
+
+    def edit(lines: list[str], display: str) -> list[str]:
+        for editor in editors:
+            lines = editor(lines, display)
+        return lines
+
+    return edit
+
+
+def _ini_set_editor(section: str, key: str, value: str) -> Callable[[list[str], str], list[str]]:
+    """Pure line editor setting ``key = value`` in ``[section]`` (see :func:`ini_set`)."""
     _require_single_line("section", section)
     _require_single_line("key", key)
     _require_single_line("value", value, allow_empty=True)
@@ -267,7 +318,7 @@ def ini_set(
         last = max([i for i in range(header + 1, stop) if lines[i].strip()], default=header)
         return [*lines[: last + 1], setting, *lines[last + 1 :]]
 
-    return _edit_file(root, target, edit, dry_run=dry_run, new_file_mode=new_file_mode)
+    return edit
 
 
 def _edit_file(

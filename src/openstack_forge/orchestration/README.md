@@ -6,10 +6,11 @@ any system.
 ## Modules
 
 - `catalog.py` - loads the bundled step catalog and validates it against its JSON Schema
-  (structure) and its own rules (unique ids, existing dependencies, no cycles).
+  (structure) and its own rules (unique ids, existing dependencies, role-scoped
+  dependencies limited to the step's roles, no duplicate dependency, no cycles).
 - `plan.py` - `build_plan()` orders the catalog steps for each node of a validated
-  configuration, resolving dependencies across nodes; `format_plan_text()` and
-  `format_plan_json()` render it.
+  configuration, resolving dependencies across nodes (only those that apply to the
+  node's role); `format_plan_text()` and `format_plan_json()` render it.
 - `errors.py` - `OrchestrationError`, `CatalogError` and `PlanError`.
 - `data/steps.json` - the step catalog, shipped as package data.
 - `schemas/steps.schema.json` - the catalog's JSON Schema, shipped as package data.

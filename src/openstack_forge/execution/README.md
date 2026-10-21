@@ -1,15 +1,15 @@
 # Execution package
 
 Confined file edits, redaction, state store, step engine, the allowlisted command layer,
-and the implemented `hosts-file`, `time-sync-controller` and `openstack-packages` steps used
-by `openstack-forge apply`. Imported lazily by the `apply` CLI handler so that
-`config validate`, `doctor`, and `plan` never import it.
+and the implemented `hosts-file`, `time-sync-controller`, `time-sync-other`,
+`openstack-packages` and `mariadb` steps used by `openstack-forge apply`. Imported lazily by the `apply`
+CLI handler so that `config validate`, `doctor`, and `plan` never import it.
 
 ## Modules
 
 - `fsutil.py` - maps target paths under a root directory, atomic writes that preserve
   owner, group (uid/gid) and mode, one-time `.orig` backups, redacted unified diffs.
-- `files.py` - `managed_block()`, `ini_set()`, `comment_out_lines()` and
+- `files.py` - `managed_block()`, `ini_set()`, `ini_set_many()`, `comment_out_lines()` and
   `uncomment_lines()`.
 - `hosts.py` - the `hosts-file` step (`HostsFileStep`, `build_hosts_block()`,
   `parse_hosts()`, `verify_hosts_file()`) and `IMPLEMENTED_STEPS`.
@@ -20,10 +20,13 @@ by `openstack-forge apply`. Imported lazily by the `apply` CLI handler so that
   `CommandRegistry` (`DEFAULT_REGISTRY` holds the seven reviewed system commands), and
   `CommandExecutor` with an injectable backend, sanitized environment, SIGTERM-then-SIGKILL
   timeouts, redacted and truncated output.
-- `chrony.py` - the `time-sync-controller` step (unverified, never run on a real host).
+- `chrony.py` - the `time-sync-controller` and `time-sync-other` steps (unverified, never
+  run on a real host).
 - `openstack_packages.py` - the `openstack-packages` step (unverified, never run on a real
   host).
-- `apt_output.py` - pure parsers for `dpkg-query --status` and `apt-cache policy` output.
+- `mariadb.py` - the `mariadb` step (unverified, never run on a real host).
+- `apt_output.py` - pure parsers for `dpkg-query --status` and `apt-cache policy` output,
+  and `installed_from()` (is the installed version one of the pocket's?).
 - `preview.py` - `StepPreview` / `PlannedCommand` used by `apply` dry runs.
 - `steps.py` - `IMPLEMENTED_STEPS` and `build_step()`.
 - `audit.py` - `AuditLog`, the append-only 0600 JSON-lines record of executed commands.

@@ -4,6 +4,8 @@
 - :func:`parse_apt_policy` reads ``apt-cache policy <package>`` (run with ``LC_ALL=C``).
 - :func:`cloud_archive_sources` finds the apt sources of an Ubuntu Cloud Archive pocket in
   a parsed policy.
+- :func:`installed_from` says whether the installed version is one of those sources'
+  versions (enabling the pocket does not replace a version installed from elsewhere).
 
 The ``apt-cache policy`` format was taken from real output read on an Ubuntu 24.04
 machine (apt 2.8); the test fixtures in ``tests/fixtures/apt/`` are synthetic, modeled on
@@ -25,6 +27,7 @@ OpenStack Forge ran the step**; see :data:`REPOSITORY_CHECK_UNCONFIRMED`.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from openstack_forge.execution.commands import validate_parameter
@@ -123,3 +126,15 @@ def cloud_archive_sources(policy: AptPolicy, pocket: str) -> tuple[AptSource, ..
     name, apt_pocket = cloud_archive_suite(pocket)
     suite = re.compile(rf"[a-z]+-{re.escape(apt_pocket)}/{re.escape(name)}")
     return tuple(source for source in policy.sources if suite.fullmatch(source.suite))
+
+
+def installed_from(policy: AptPolicy, sources: Sequence[AptSource]) -> bool:
+    """True if ``policy.installed`` is the version listed under one of ``sources``.
+
+    A pocket being enabled is not enough: a version installed earlier from another
+    archive (for example Ubuntu's own ``noble/main``) stays installed until apt installs
+    the pocket's version. Versions are compared as exact strings, as apt prints them.
+    """
+    return policy.installed is not None and any(
+        source.version == policy.installed for source in sources
+    )

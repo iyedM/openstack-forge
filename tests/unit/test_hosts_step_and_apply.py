@@ -74,8 +74,12 @@ def test_hosts_step_remains_unverified_in_catalog() -> None:
     catalog = load_catalog()
     step = catalog.step(HOSTS_STEP_ID)
     assert step.status == "unverified"
-    # Deliberately updated in milestone 8 (time-sync-controller) and 9 (openstack-packages).
-    assert set(IMPLEMENTED_STEPS) == {HOSTS_STEP_ID, "time-sync-controller", "openstack-packages"}
+    # Deliberately updated in milestone 8 (time-sync-controller), 9 (openstack-packages),
+    # 10 (time-sync-other) and 11 (mariadb).
+    assert set(IMPLEMENTED_STEPS) == {
+        HOSTS_STEP_ID, "time-sync-controller", "time-sync-other", "openstack-packages",
+        "mariadb",
+    }  # fmt: skip
 
 
 # --- 127.0.1.1 and 127.0.0.1 handling ---------------------------------------------------
@@ -403,7 +407,7 @@ def test_cli_apply_yes_on_real_root_requires_effective_uid_0(
     assert "requires root privileges (effective uid 0)" in err
 
 
-@pytest.mark.parametrize("step_id", ["time-sync-other", "rabbitmq", "mariadb"])
+@pytest.mark.parametrize("step_id", ["memcached", "rabbitmq", "etcd"])
 def test_cli_apply_rejects_unimplemented_catalog_step(
     root: Path, step_id: str, capsys: pytest.CaptureFixture[str]
 ) -> None:

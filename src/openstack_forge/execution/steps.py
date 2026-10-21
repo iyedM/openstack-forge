@@ -12,10 +12,13 @@ from typing import Any
 
 from openstack_forge.execution.chrony import (
     TIME_SYNC_CONTROLLER_STEP_ID,
+    TIME_SYNC_OTHER_STEP_ID,
     make_time_sync_controller_step,
+    make_time_sync_other_step,
 )
 from openstack_forge.execution.commands import CommandExecutor
 from openstack_forge.execution.hosts import HOSTS_STEP_ID, make_hosts_file_step
+from openstack_forge.execution.mariadb import MARIADB_STEP_ID, make_mariadb_step
 from openstack_forge.execution.openstack_packages import (
     OPENSTACK_PACKAGES_STEP_ID,
     make_openstack_packages_step,
@@ -28,7 +31,9 @@ StepFactory = Callable[..., Any]
 IMPLEMENTED_STEPS: Mapping[str, StepFactory] = {
     HOSTS_STEP_ID: make_hosts_file_step,
     TIME_SYNC_CONTROLLER_STEP_ID: make_time_sync_controller_step,
+    TIME_SYNC_OTHER_STEP_ID: make_time_sync_other_step,
     OPENSTACK_PACKAGES_STEP_ID: make_openstack_packages_step,
+    MARIADB_STEP_ID: make_mariadb_step,
 }
 
 

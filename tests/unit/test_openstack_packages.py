@@ -43,6 +43,7 @@ from openstack_forge.execution import (
     cloud_archive_sources,
     cloud_archive_suite,
     describe_cloud_archive_suite,
+    installed_from,
     parse_apt_policy,
 )
 from openstack_forge.orchestration import load_catalog
@@ -126,8 +127,15 @@ class FakeAptHost:
     def _policy(self) -> str:
         if self.pocket_enabled:
             return policy_fixture(
-                "client_uca_installed" if self.client else "client_uca_not_installed"
+                {
+                    None: "client_uca_not_installed",
+                    # Installed from noble/main before the pocket was enabled.
+                    "noble": "client_noble_installed_uca_candidate",
+                    "uca": "client_uca_installed",
+                }[self.client]
             )
+        if self.client == "uca":
+            raise AssertionError("a client from the pocket needs the pocket enabled")
         if self.client:
             return policy_fixture("client_noble_installed")
         return policy_fixture("client_noble_not_installed")
@@ -229,6 +237,41 @@ def test_suite_must_match_exactly() -> None:
     assert cloud_archive_sources(parse_apt_policy(text), "cloud-archive:epoxy") == ()
 
 
+def test_parse_policy_of_the_noble_installed_uca_candidate_fixture() -> None:
+    policy = parse_apt_policy(policy_fixture("client_noble_installed_uca_candidate"))
+    assert (policy.installed, policy.candidate) == ("6.6.0-0ubuntu2", "7.4.0-0ubuntu1~cloud0")
+    assert [(s.version, s.suite) for s in policy.sources] == [
+        ("7.4.0-0ubuntu1~cloud0", "noble-updates/epoxy"),
+        ("6.6.0-0ubuntu2", "noble"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("fixture", "from_pocket"),
+    [
+        ("client_uca_installed", True),
+        ("client_noble_installed_uca_candidate", False),  # pocket listed, version not from it
+        ("client_uca_not_installed", False),  # nothing installed
+        ("client_noble_installed", False),  # no pocket source at all
+    ],
+)
+def test_installed_from_compares_the_installed_version(fixture: str, from_pocket: bool) -> None:
+    policy = parse_apt_policy(policy_fixture(fixture))
+    sources = cloud_archive_sources(policy, "cloud-archive:epoxy")
+    assert installed_from(policy, sources) is from_pocket
+
+
+def test_installed_from_needs_an_exact_version_match() -> None:
+    policy = parse_apt_policy(policy_fixture("client_uca_installed"))
+    sources = cloud_archive_sources(policy, "cloud-archive:epoxy")
+    assert installed_from(policy, sources)
+    text = policy_fixture("client_uca_installed").replace(
+        "Installed: 7.4.0-0ubuntu1~cloud0", "Installed: 7.4.0-0ubuntu1"
+    )
+    assert not installed_from(parse_apt_policy(text), sources)
+    assert not installed_from(policy, ())
+
+
 # --- the pocket comes from the release table --------------------------------------------------
 
 
@@ -280,6 +323,17 @@ def test_check_is_true_when_both_are_present(config: dict, tmp_path: Path) -> No
     assert host.calls == [DPKG_CLIENT, POLICY]
 
 
+def test_check_is_false_when_the_installed_version_is_not_from_the_pocket(
+    config: dict, tmp_path: Path
+) -> None:
+    # The second trap: the client came from noble/main before the pocket was enabled (or
+    # apply() stopped after add-apt-repository). dpkg-query says installed and the pocket
+    # is listed, but the installed version is Ubuntu's own.
+    host = FakeAptHost(client="noble", pocket_enabled=True)
+    assert _step(tmp_path, config, host).check() is False
+    assert host.calls == [DPKG_CLIENT, POLICY]
+
+
 def test_check_is_false_for_other_cloud_archive_pockets(config: dict, tmp_path: Path) -> None:
     host = FakeAptHost(client="noble")
     host.failures[POLICY] = ProcessOutput(0, policy_fixture("client_other_pockets"), "")
@@ -320,6 +374,19 @@ def test_package_from_ubuntu_archive_without_pocket_is_applied(config, tmp_path)
     assert report.ok, report.failure
     assert host.calls == [DPKG_CLIENT, POLICY, DPKG_SPC, ADD_REPO, INSTALL, DPKG_CLIENT, POLICY]
     assert host.client == "uca"
+
+
+def test_noble_client_with_the_pocket_enabled_is_reinstalled_from_the_pocket(
+    config, tmp_path
+) -> None:
+    # apt-get(8), install: an already-installed package gets its newest candidate.
+    host = FakeAptHost(client="noble", pocket_enabled=True)
+    report, store = _run(tmp_path, config, host)
+    assert report.ok, report.failure
+    assert [o.outcome for o in report.outcomes] == [Outcome.APPLIED]
+    assert host.calls == [DPKG_CLIENT, POLICY, DPKG_SPC, ADD_REPO, INSTALL, DPKG_CLIENT, POLICY]
+    assert host.client == "uca"
+    assert store.get("openstack-packages").status is StepStatus.DONE
 
 
 def test_done_host_is_skipped_without_mutating_commands(config: dict, tmp_path: Path) -> None:
@@ -417,13 +484,53 @@ def test_verify_reports_both_failures(config: dict, tmp_path: Path) -> None:
     assert "is not installed" in result.details and "is not enabled" in result.details
 
 
+def test_verify_names_the_installed_and_the_pocket_versions(config, tmp_path) -> None:
+    host = FakeAptHost(client="noble", pocket_enabled=True)
+    result = _step(tmp_path, config, host).verify()
+    assert result.ok is False
+    assert result.details == (
+        "the installed python3-openstackclient 6.6.0-0ubuntu2 does not come from the "
+        "repository cloud-archive:epoxy, which offers 7.4.0-0ubuntu1~cloud0 "
+        "(noble-updates/epoxy/main); it was installed from another source (see "
+        f"'apt-cache policy python3-openstackclient'). {UNCONFIRMED}"
+    )
+
+
+def test_verify_fails_after_install_if_the_candidate_is_not_from_the_pocket(
+    config, tmp_path
+) -> None:
+    # e.g. an apt pin keeps Ubuntu's version: apt-get install succeeds but changes nothing.
+    host = FakeAptHost(client="noble", pocket_enabled=True)
+    host.failures[INSTALL] = ProcessOutput(0, "already the newest version\n", "")
+    report, store = _run(tmp_path, config, host)
+    assert report.failure.phase is Phase.VERIFY
+    assert "6.6.0-0ubuntu2 does not come from the repository" in report.failure.details
+    assert "7.4.0-0ubuntu1~cloud0" in report.failure.details
+    assert store.get("openstack-packages").status is StepStatus.FAILED
+
+
+def test_verify_when_apt_cache_reports_no_installed_version(config, tmp_path) -> None:
+    host = FakeAptHost(client="uca", pocket_enabled=True)
+    host.failures[POLICY] = ProcessOutput(0, policy_fixture("client_uca_not_installed"), "")
+    step = _step(tmp_path, config, host)
+    assert step.check() is False
+    result = step.verify()
+    assert not result.ok
+    assert result.details.startswith(
+        "dpkg-query reports python3-openstackclient installed, but 'apt-cache policy "
+        "python3-openstackclient' reports no installed version; the repository "
+        "cloud-archive:epoxy offers 7.4.0-0ubuntu1~cloud0 (noble-updates/epoxy/main)."
+    )
+
+
 def test_verify_success_says_the_repository_check_is_unconfirmed(config, tmp_path) -> None:
     result = _step(tmp_path, config, FakeAptHost(client="uca", pocket_enabled=True)).verify()
     assert result.ok
     assert result.details == (
-        "python3-openstackclient is installed and the repository cloud-archive:epoxy is "
-        "enabled (apt source: http://ubuntu-cloud.archive.canonical.com/ubuntu "
-        f"noble-updates/epoxy/main). {UNCONFIRMED}"
+        "python3-openstackclient 7.4.0-0ubuntu1~cloud0 is installed from the repository "
+        "cloud-archive:epoxy, which is enabled (apt source: "
+        "http://ubuntu-cloud.archive.canonical.com/ubuntu noble-updates/epoxy/main). "
+        f"{UNCONFIRMED}"
     )
 
 

@@ -14,6 +14,7 @@ real host where the `openstack-packages` step runs**. The step's `verify()` deta
 | ---- | ------ |
 | `policy_client_noble_installed.txt` | Client installed from Ubuntu 24.04's own archive, Cloud Archive not enabled (the case where the package alone would wrongly say "done"). |
 | `policy_client_noble_not_installed.txt` | Fresh host: client not installed, Cloud Archive not enabled. |
+| `policy_client_noble_installed_uca_candidate.txt` | Client installed from Ubuntu 24.04's own archive (`noble/main`) **before** `cloud-archive:epoxy` was enabled (or `apply()` stopped after `add-apt-repository`): the pocket is listed and offers a newer candidate, but the installed version does not come from it. The `***` marker sits on the older version, below the newer candidate, as apt lists versions newest first. |
 | `policy_client_uca_installed.txt` | `cloud-archive:epoxy` enabled and the client installed from it. |
 | `policy_client_uca_not_installed.txt` | `cloud-archive:epoxy` enabled, client not installed. |
 | `policy_client_other_pockets.txt` | Only other Cloud Archive pockets (`epoxy-proposed`, `dalmatian`), not `cloud-archive:epoxy`. |

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://example.com/schemas/openstack-forge-step-catalog.schema.json",
   "title": "OpenStack Forge step catalog",
-  "description": "Ordered deployment steps shown by 'openstack-forge plan'. Steps describe what would change; they contain no commands or file contents. Unique ids, existing dependencies and the absence of cycles are checked by openstack_forge.orchestration.catalog.",
+  "description": "Ordered deployment steps shown by 'openstack-forge plan'. Steps describe what would change; they contain no commands or file contents. Unique ids, existing dependencies, role-scoped dependencies limited to the step's own roles and the absence of cycles are checked by openstack_forge.orchestration.catalog.",
   "type": "object",
   "additionalProperties": false,
   "required": ["openstack_release", "steps", "notes"],
@@ -37,6 +37,25 @@
       "type": "string",
       "enum": ["controller", "compute", "block", "object"]
     },
+    "dependency": {
+      "description": "a step id, which applies on every role of the step, or {\"step\": id, \"roles\": [...]}, which applies only on nodes with one of those roles",
+      "if": { "type": "string" },
+      "then": { "$ref": "#/$defs/step_id" },
+      "else": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["step", "roles"],
+        "properties": {
+          "step": { "$ref": "#/$defs/step_id" },
+          "roles": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": { "$ref": "#/$defs/role" }
+          }
+        }
+      }
+    },
     "step": {
       "type": "object",
       "additionalProperties": false,
@@ -62,7 +81,7 @@
         "depends_on": {
           "type": "array",
           "uniqueItems": true,
-          "items": { "$ref": "#/$defs/step_id" }
+          "items": { "$ref": "#/$defs/dependency" }
         },
         "files_modified": {
           "type": "array",

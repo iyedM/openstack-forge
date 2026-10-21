@@ -207,9 +207,13 @@ def _resolve_dependencies(
     catalog: StepCatalog,
     runners: Mapping[str, Sequence[str]],
 ) -> tuple[Dependency, ...]:
-    """Wait on this node if it also runs the dependency, otherwise on every node that does."""
+    """Wait on this node if it also runs the dependency, otherwise on every node that does.
+
+    Only the dependencies that apply to the node's role are considered: a role-scoped
+    ``depends_on`` entry is ignored on nodes whose role it does not list.
+    """
     dependencies: list[Dependency] = []
-    for dependency_id in step.depends_on:
+    for dependency_id in step.dependencies_for(node["role"]):
         if node["role"] in catalog.step(dependency_id).roles:
             dependencies.append(Dependency(dependency_id, node["hostname"]))
         elif runners[dependency_id]:

@@ -25,9 +25,9 @@
       "id": "time-sync-other",
       "title": "Configure time synchronization with chrony on the non-controller nodes",
       "roles": ["compute", "block", "object"],
-      "depends_on": ["time-sync-controller"],
+      "depends_on": ["hosts-file", "time-sync-controller"],
       "files_modified": ["/etc/chrony/chrony.conf"],
-      "verification": "chrony reports a synchronized time source on this node.",
+      "verification": "chrony is installed and active on this node, and chrony.conf uses only 'server controller iburst' as its pool/server source (actual synchronization is not checked yet).",
       "doc_url": "https://docs.openstack.org/install-guide/environment-ntp-other.html",
       "status": "unverified"
     },
@@ -35,9 +35,12 @@
       "id": "openstack-packages",
       "title": "Enable the cloud-archive:epoxy repository and install python3-openstackclient",
       "roles": ["controller", "compute", "block", "object"],
-      "depends_on": ["time-sync-controller"],
+      "depends_on": [
+        { "step": "time-sync-controller", "roles": ["controller"] },
+        { "step": "time-sync-other", "roles": ["compute", "block", "object"] }
+      ],
       "files_modified": [],
-      "verification": "The cloud-archive:epoxy repository is enabled and python3-openstackclient is installed on this node.",
+      "verification": "The cloud-archive:epoxy repository is enabled and python3-openstackclient is installed from it on this node.",
       "doc_url": "https://docs.openstack.org/install-guide/environment-packages-ubuntu.html",
       "status": "unverified"
     },
@@ -47,7 +50,7 @@
       "roles": ["controller"],
       "depends_on": ["openstack-packages"],
       "files_modified": ["/etc/mysql/mariadb.conf.d/99-openstack.cnf"],
-      "verification": "The MariaDB service is running on the controller.",
+      "verification": "mariadb-server and python3-pymysql are installed, 99-openstack.cnf sets the guide's [mysqld] keys (bind-address = the controller's management IP) and the mariadb service is active (SQL connectivity is not checked yet).",
       "doc_url": "https://docs.openstack.org/install-guide/environment-sql-database-ubuntu.html",
       "status": "unverified"
     },

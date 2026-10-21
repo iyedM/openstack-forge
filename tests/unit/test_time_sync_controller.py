@@ -576,23 +576,3 @@ def test_cli_rejects_non_controller_node(root: Path, capsys: pytest.CaptureFixtu
     )
     assert rc == 1
     assert "does not apply to role 'compute'" in capsys.readouterr().err
-
-
-def test_cli_time_sync_other_is_not_implemented(
-    root: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    rc = main(
-        [
-            "apply",
-            "--config",
-            str(EXAMPLE_CONFIG),
-            "--step",
-            "time-sync-other",
-            "--node",
-            "forge-compute-01",
-            "--root",
-            str(root),
-        ]  # fmt: skip
-    )
-    assert rc == 1
-    assert "not implemented yet" in capsys.readouterr().err

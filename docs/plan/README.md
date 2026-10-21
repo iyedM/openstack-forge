@@ -5,13 +5,14 @@ each node would go through to prepare an OpenStack 2025.1 (Epoxy) deployment.
 
 It is strictly read-only. It reads the configuration file and the step catalog bundled
 with the package, and nothing else: it runs no command, opens no network connection,
-connects to no node and changes nothing. In `openstack-forge apply`, three steps are
+connects to no node and changes nothing. In `openstack-forge apply`, five steps are
 implemented: `hosts-file` (confined file operations only, no external command, no
-network), `time-sync-controller` and `openstack-packages`. The last two run reviewed
-system commands; OpenStack Forge's Python code opens no connection, but the apt commands
-they run (`apt-get update`, `apt-get install`, `add-apt-repository`) use the network. All
-three remain marked **unverified** in the catalog and none has been run on a real host;
-see [`docs/engine/README.md`](../engine/README.md).
+network), `time-sync-controller`, `time-sync-other`, `openstack-packages` and `mariadb`.
+The last four run reviewed system commands; OpenStack Forge's Python code opens no
+connection, but the apt commands they run (`apt-get update`, `apt-get install`,
+`add-apt-repository`) use the network. All five remain marked **unverified** in the
+catalog and none has been run on a real host; see
+[`docs/engine/README.md`](../engine/README.md).
 
 ## Usage
 
@@ -56,12 +57,21 @@ the top repeats the number of unverified steps.
 ### Ordering rules
 
 - A step runs on every node whose role is listed in the step's `roles`.
-- For each id in `depends_on`:
+- Each `depends_on` entry is either a step id, which applies on every node that runs the
+  step, or a **role-scoped** entry `{"step": "<id>", "roles": [...]}`, which applies only
+  on nodes whose role is listed, and is ignored on the others. Its roles must be among the
+  step's own `roles`.
+- For each dependency that applies on the node:
   - if the node's role also runs that step, the node waits for **its own** instance of it;
   - otherwise the node waits for that step on **every node that runs it** (for example,
     a compute step that depends on a controller-only step waits for it on the controller);
   - if no node in the cluster runs it (for example, an optional `object` role with no
     object node), the plan says so: `waits for <step> (not run by any node in this cluster)`.
+- Role scopes exist for steps that run on several roles but must wait for different
+  steps depending on the role. Without them, a plain id that the node's role does not run
+  makes the node wait for it on every node that runs it: listing both
+  `time-sync-controller` and `time-sync-other` as plain ids on `openstack-packages` would
+  make the controller wait for every other node's `time-sync-other`.
 - Among steps that are ready at the same time, catalog order comes first, then role
   (controller, compute, block, object), then the node's position in the configuration.
   The order is therefore deterministic, and controller steps come before the same step
@@ -80,7 +90,7 @@ every time it is loaded. Each step has exactly these fields:
 | `id` | Lowercase words separated by hyphens; unique in the catalog. |
 | `title` | Short description. |
 | `roles` | Non-empty subset of `controller`, `compute`, `block`, `object` (the configuration roles). |
-| `depends_on` | Ids of other catalog steps, possibly for other roles. Must exist and must not form a cycle. |
+| `depends_on` | Other catalog steps, possibly for other roles: each entry is a step id, or `{"step": "<id>", "roles": [...]}` to apply it only on those roles (a non-empty subset of the step's `roles`). Steps must exist, must not be listed twice and must not form a cycle (role-scoped entries included). |
 | `files_modified` | Absolute paths of files the step would modify. May be empty. |
 | `verification` | Human description of how to confirm the step worked. |
 | `doc_url` | A page under `https://docs.openstack.org/`. |
@@ -107,22 +117,34 @@ All steps are **unverified**.
 The `depends_on` chain follows the order of the "Environment" chapter of the installation
 guide and is itself unverified:
 
-- `hosts-file` → `time-sync-controller` → `openstack-packages` → each controller service;
-- `time-sync-other` (on compute, block and object nodes) waits for `time-sync-controller`
-  on the controller, because those nodes synchronize their clocks from it.
+- `hosts-file` → `time-sync-controller` → `openstack-packages` → each controller service
+  (on the controller);
+- `hosts-file` → `time-sync-other` → `openstack-packages` on compute, block and object
+  nodes, where `time-sync-other` also waits for `time-sync-controller` on the controller,
+  because those nodes synchronize their clocks from it. It waits for the node's own
+  `hosts-file` because its `server controller iburst` line needs the `controller` alias
+  that `hosts-file` writes to `/etc/hosts`.
 
-`openstack-packages` depends on `time-sync-controller` only. On the controller this is a
-local wait; on every other node it is a wait for the controller's `time-sync-controller`.
-**Non-controller nodes therefore do not wait for their own `time-sync-other` before
-`openstack-packages`.** A step's `depends_on` applies to all of its roles, so making
-`openstack-packages` depend on `time-sync-other` would leave the controller (which never
-runs `time-sync-other`) waiting for a step it does not run. Supporting per-role
-dependencies (for example `depends_on` keyed by role) is future work.
+`openstack-packages` uses role-scoped dependencies:
 
-`time-sync-controller` and `openstack-packages` are implemented by `openstack-forge apply`
-(see [`docs/engine`](../engine/README.md)); `time-sync-other` is not, and its documentation
-page has not been read yet. `openstack-packages` takes its Ubuntu Cloud Archive pocket from
-the supported release table, not from the catalog title.
+```json
+"depends_on": [
+  { "step": "time-sync-controller", "roles": ["controller"] },
+  { "step": "time-sync-other", "roles": ["compute", "block", "object"] }
+]
+```
+
+So on the controller it waits only for `time-sync-controller on <controller>` and never
+for another node; on a compute, block or object node it waits for `time-sync-other` on
+that same node (which in turn waited for the controller's `time-sync-controller`).
+
+`time-sync-controller`, `time-sync-other`, `openstack-packages` and `mariadb` are
+implemented by `openstack-forge apply` (see [`docs/engine`](../engine/README.md)).
+`mariadb` does not update the package lists itself: it relies on running after
+`openstack-packages` on the controller, as its `depends_on` says. `openstack-packages`
+takes its Ubuntu Cloud Archive pocket from the supported release table, not from the
+catalog title. `plan` only orders the steps; `apply` runs one step on one node and does
+not check that the steps it waits for were applied.
 
 ### Open decision: network configuration
 
