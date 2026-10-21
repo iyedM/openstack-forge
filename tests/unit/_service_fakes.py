@@ -65,11 +65,14 @@ class ServiceHost:
         openstack_services: Sequence[Mapping[str, Any]] | None = None,
         openstack_endpoints: Sequence[Mapping[str, Any]] | None = None,
         ovs_bridges: Mapping[str, Iterable[str]] | None = None,
+        lvm_pvs: set[str] | frozenset[str] = frozenset(),
+        lvm_vgs: set[str] | frozenset[str] = frozenset(),
     ) -> None:
         self.root = root
         self.installed = set(installed)
         self.active = set(active)
         self.enabled = set(enabled)
+        self.reloaded: list[str] = []
         self.no_candidate = set(no_candidate)
         self.starts = set(starts)
         self.creates = dict(creates or {})
@@ -95,9 +98,12 @@ class ServiceHost:
         self.nova_db_synced: bool = False
         self.nova_cells: set[str] = set()
         self.neutron_db_upgraded: bool = False
+        self.cinder_db_synced: bool = False
         self.ovs_bridges: dict[str, set[str]] = (
             {} if ovs_bridges is None else {br: set(ports) for br, ports in ovs_bridges.items()}
         )
+        self.lvm_pvs: set[str] = set(lvm_pvs)
+        self.lvm_vgs: set[str] = set(lvm_vgs)
         self.openstack_projects: list[dict[str, Any]] = [
             dict(item) for item in (openstack_projects or ())
         ]
@@ -179,6 +185,11 @@ class ServiceHost:
             return ProcessOutput(0, f"Setting up {package} ...\n", "")
         if argv[:2] == ("/usr/bin/systemctl", "restart"):
             self._snapshot("restart")
+            self.active.add(argv[2])
+            return ProcessOutput(0, "", "")
+        if argv[:2] == ("/usr/bin/systemctl", "reload"):
+            self._snapshot("reload")
+            self.reloaded.append(argv[2])
             self.active.add(argv[2])
             return ProcessOutput(0, "", "")
         if argv[:2] == ("/usr/bin/systemctl", "enable"):
@@ -461,6 +472,44 @@ class ServiceHost:
                 )
             self.neutron_db_upgraded = True
             return ProcessOutput(0, "Running upgrade for neutron ...\nOK\n", "")
+        if argv == ("/usr/bin/cinder-manage", "db", "sync"):
+            self._snapshot("cinder-manage db sync")
+            conf_path = self.root / "etc/cinder/cinder.conf"
+            conf_text = conf_path.read_text(encoding="utf-8") if conf_path.exists() else ""
+            if "mysql+pymysql://cinder:" not in conf_text or "@controller/cinder" not in conf_text:
+                return ProcessOutput(
+                    1,
+                    "",
+                    "CRITICAL cinder: [database] connection is not configured for MariaDB in "
+                    "/etc/cinder/cinder.conf\n",
+                )
+            self.cinder_db_synced = True
+            return ProcessOutput(0, "", "")
+        if argv == ("/usr/sbin/pvs", "--noheadings", "-o", "pv_name"):
+            rows = "".join(f"  {pv}\n" for pv in sorted(self.lvm_pvs))
+            return ProcessOutput(0, rows, "")
+        if len(argv) == 2 and argv[0] == "/usr/sbin/pvcreate":
+            device = argv[1]
+            if device in self.lvm_pvs:
+                return ProcessOutput(
+                    5,
+                    "",
+                    f'  Can\'t initialize physical volume "{device}" of volume group '
+                    '"cinder-volumes" without -ff\n',
+                )
+            self.lvm_pvs.add(device)
+            return ProcessOutput(0, f'  Physical volume "{device}" successfully created.\n', "")
+        if argv == ("/usr/sbin/vgs", "--noheadings", "-o", "vg_name"):
+            rows = "".join(f"  {vg}\n" for vg in sorted(self.lvm_vgs))
+            return ProcessOutput(0, rows, "")
+        if len(argv) == 3 and argv[:2] == ("/usr/sbin/vgcreate", "cinder-volumes"):
+            device = argv[2]
+            if "cinder-volumes" in self.lvm_vgs:
+                return ProcessOutput(5, "", '  Volume group "cinder-volumes" already exists\n')
+            if device not in self.lvm_pvs:
+                return ProcessOutput(5, "", f'  Physical volume "{device}" not initialized\n')
+            self.lvm_vgs.add("cinder-volumes")
+            return ProcessOutput(0, '  Volume group "cinder-volumes" successfully created\n', "")
         if argv[:1] == ("/usr/bin/ovs-vsctl",):
             return self._run_ovs_vsctl(argv[1:])
         if argv[: len(OPENSTACK_ADMIN_AUTH_ARGS)] == OPENSTACK_ADMIN_AUTH_ARGS:

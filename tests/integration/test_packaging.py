@@ -71,7 +71,7 @@ def test_wheel_contains_data_file(wheel: Path, data_file: str) -> None:
     ("command", "expected"),
     [
         (["config", "validate"], "Configuration is valid"),
-        (["plan", "--config"], "Summary: 28 step(s) on 5 node(s)"),
+        (["plan", "--config"], "Summary: 31 step(s) on 5 node(s)"),
     ],
 )
 def test_installed_wheel_runs_command(

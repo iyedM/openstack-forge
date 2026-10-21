@@ -42,9 +42,9 @@ def test_plan_for_the_example_cluster(
         "Deployment plan for cluster 'forge-demo': OpenStack 2025.1 on Ubuntu 24.04, 5 node(s)"
     )
     assert "Read-only: no command has been run and nothing has been changed." in out
-    assert "WARNING: 28 of 28 step(s) are UNVERIFIED" in out
-    assert out.count("[UNVERIFIED]") == 28
-    assert "Summary: 28 step(s) on 5 node(s); 0 verified, 28 unverified." in out
+    assert "WARNING: 31 of 31 step(s) are UNVERIFIED" in out
+    assert out.count("[UNVERIFIED]") == 31
+    assert "Summary: 31 step(s) on 5 node(s); 0 verified, 31 unverified." in out
     assert "Open decisions (not steps):" in out
 
 
@@ -70,7 +70,7 @@ def test_plan_json(
     payload = json.loads(capsys.readouterr().out)
     assert exit_code == 0
     assert payload["node"] == "ctl-01"
-    assert payload["summary"] == {"steps": 12, "nodes": 1, "verified": 0, "unverified": 12}
+    assert payload["summary"] == {"steps": 14, "nodes": 1, "verified": 0, "unverified": 14}
     assert {step["status"] for step in payload["steps"]} == {"unverified"}
 
 

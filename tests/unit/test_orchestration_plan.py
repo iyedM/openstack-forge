@@ -87,7 +87,7 @@ def test_plan_is_ordered_by_step_then_controller_first(valid_config, catalog) ->
         ("blk-01", "openstack-packages"),
         ("obj-01", "openstack-packages"),
     ]
-    assert _order(plan)[-11:] == [
+    assert _order(plan)[-14:] == [
         ("ctl-01", "mariadb"),
         ("ctl-01", "rabbitmq"),
         ("ctl-01", "memcached"),
@@ -99,6 +99,9 @@ def test_plan_is_ordered_by_step_then_controller_first(valid_config, catalog) ->
         ("cmp-01", "nova-compute"),
         ("ctl-01", "neutron-controller"),
         ("cmp-01", "neutron-compute"),
+        ("ctl-01", "horizon"),
+        ("ctl-01", "cinder-controller"),
+        ("blk-01", "cinder-storage"),
     ]
 
 
@@ -286,6 +289,8 @@ def test_dependency_not_run_by_any_node_is_reported(valid_config) -> None:
                 "placement",
                 "nova-controller",
                 "neutron-controller",
+                "horizon",
+                "cinder-controller",
             ],
         ),
         (
@@ -298,7 +303,15 @@ def test_dependency_not_run_by_any_node_is_reported(valid_config) -> None:
                 "neutron-compute",
             ],
         ),
-        ("blk-01", ["hosts-file", "time-sync-other", "openstack-packages"]),
+        (
+            "blk-01",
+            [
+                "hosts-file",
+                "time-sync-other",
+                "openstack-packages",
+                "cinder-storage",
+            ],
+        ),
         ("obj-01", ["hosts-file", "time-sync-other", "openstack-packages"]),
     ],
 )
@@ -361,9 +374,9 @@ def test_release_mismatch_is_rejected(valid_config, catalog) -> None:
 
 def test_unverified_steps_are_flagged_and_counted(valid_config, catalog) -> None:
     text = format_plan_text(build_plan(valid_config, catalog))
-    assert "WARNING: 23 of 23 step(s) are UNVERIFIED" in text
-    assert text.count("[UNVERIFIED]") == 23
-    assert text.rstrip().endswith("Summary: 23 step(s) on 4 node(s); 0 verified, 23 unverified.")
+    assert "WARNING: 26 of 26 step(s) are UNVERIFIED" in text
+    assert text.count("[UNVERIFIED]") == 26
+    assert text.rstrip().endswith("Summary: 26 step(s) on 4 node(s); 0 verified, 26 unverified.")
 
 
 def test_verified_steps_are_not_flagged(valid_config) -> None:
@@ -400,7 +413,7 @@ def test_json_output(valid_config, catalog) -> None:
     assert payload["cluster"] == "fixture-cluster"
     assert payload["read_only"] is True
     assert payload["node"] is None
-    assert payload["summary"] == {"steps": 23, "nodes": 4, "verified": 0, "unverified": 23}
+    assert payload["summary"] == {"steps": 26, "nodes": 4, "verified": 0, "unverified": 26}
     first, second = payload["steps"][:2]
     assert first == {
         "sequence": 1,

@@ -130,6 +130,12 @@ VALID = {
         "http://controller:8778",
         "http://controller:8774/v2.1",
         "https://controller.example.test:9696",
+        "http://controller:8776/v3/%(project_id)s",
+    ],
+    "device_path": [
+        "/dev/sdb",
+        "/dev/vdb",
+        "/dev/nvme0n1",
     ],
 }
 
@@ -180,6 +186,15 @@ INVALID_FORMAT = {
         "http://controller:9292/./x",
         "http://-bad:9292",
         "http://bad..host:9292",
+        "http://controller:8776/v3/%(other)s",
+        "http://controller:8776/v3/%s",
+    ],
+    "device_path": [
+        "sdb",
+        "/dev/",
+        "/etc/passwd",
+        "/dev/../etc/passwd",
+        "/dev//sdb",
     ],
 }
 
@@ -313,6 +328,12 @@ def test_default_registry_contains_exactly_the_reviewed_commands() -> None:
         ),
         "systemctl.restart": (
             ("/usr/bin/systemctl", "restart", "{unit}"),
+            {"unit": "systemd_unit"},
+            True,
+            frozenset({0}),
+        ),
+        "systemctl.reload": (
+            ("/usr/bin/systemctl", "reload", "{unit}"),
             {"unit": "systemd_unit"},
             True,
             frozenset({0}),
@@ -666,6 +687,36 @@ def test_default_registry_contains_exactly_the_reviewed_commands() -> None:
             ("/usr/bin/ovs-vsctl", "list-ports", "{bridge}"),
             {"bridge": "interface_name"},
             False,
+            frozenset({0}),
+        ),
+        "cinder-manage.db-sync": (
+            ("/usr/bin/cinder-manage", "db", "sync"),
+            {},
+            True,
+            frozenset({0}),
+        ),
+        "lvm.pvs": (
+            ("/usr/sbin/pvs", "--noheadings", "-o", "pv_name"),
+            {},
+            False,
+            frozenset({0}),
+        ),
+        "lvm.pvcreate": (
+            ("/usr/sbin/pvcreate", "{device}"),
+            {"device": "device_path"},
+            True,
+            frozenset({0}),
+        ),
+        "lvm.vgs": (
+            ("/usr/sbin/vgs", "--noheadings", "-o", "vg_name"),
+            {},
+            False,
+            frozenset({0}),
+        ),
+        "lvm.vgcreate-cinder-volumes": (
+            ("/usr/sbin/vgcreate", "cinder-volumes", "{device}"),
+            {"device": "device_path"},
+            True,
             frozenset({0}),
         ),
     }

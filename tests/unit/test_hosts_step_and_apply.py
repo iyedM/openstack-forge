@@ -82,6 +82,7 @@ def test_hosts_step_remains_unverified_in_catalog() -> None:
         HOSTS_STEP_ID, "time-sync-controller", "time-sync-other", "openstack-packages",
         "mariadb", "rabbitmq", "memcached", "etcd", "keystone", "glance", "placement",
         "nova-controller", "nova-compute", "neutron-controller", "neutron-compute",
+        "horizon", "cinder-controller", "cinder-storage",
     }  # fmt: skip
 
 

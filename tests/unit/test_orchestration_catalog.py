@@ -88,6 +88,31 @@ EXPECTED_STEPS: list[tuple[str, list[str], list[str], str]] = [
         ],
         STATUS_UNVERIFIED,
     ),
+    (
+        "horizon",
+        ["controller"],
+        [
+            "/etc/openstack-dashboard/local_settings.py",
+            "/etc/apache2/conf-available/openstack-dashboard.conf",
+        ],
+        STATUS_UNVERIFIED,
+    ),
+    (
+        "cinder-controller",
+        ["controller"],
+        ["/etc/cinder/cinder.conf", "/etc/nova/nova.conf"],
+        STATUS_UNVERIFIED,
+    ),
+    (
+        "cinder-storage",
+        ["block"],
+        [
+            "/etc/lvm/lvm.conf",
+            "/etc/cinder/cinder.conf",
+            "/etc/tgt/conf.d/cinder.conf",
+        ],
+        STATUS_UNVERIFIED,
+    ),
 ]
 
 
@@ -188,7 +213,7 @@ def test_catalog_files_ship_as_package_data() -> None:
 def test_duplicate_step_id(raw_catalog, catalog_schema) -> None:
     raw_catalog["steps"].append(copy.deepcopy(raw_catalog["steps"][0]))
     assert _messages(raw_catalog, catalog_schema) == [
-        "steps[15].id: duplicate id 'hosts-file'; already used by steps[0]"
+        "steps[18].id: duplicate id 'hosts-file'; already used by steps[0]"
     ]
 
 

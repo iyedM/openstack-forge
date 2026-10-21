@@ -405,7 +405,8 @@ def build_parser(runner: CommandRunner | None = None) -> argparse.ArgumentParser
             "Catalog step id to run (implemented: hosts-file, time-sync-controller, "
             "time-sync-other, openstack-packages, mariadb, rabbitmq, memcached, etcd, "
             "keystone, glance, placement, nova-controller, nova-compute, "
-            "neutron-controller, neutron-compute)."
+            "neutron-controller, neutron-compute, horizon, cinder-controller, "
+            "cinder-storage)."
         ),
     )
     apply_parser.add_argument(

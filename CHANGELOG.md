@@ -414,6 +414,51 @@ All notable changes to this project will be documented in this file.
   `/etc/nova/nova.conf`, restarts `openvswitch-switch`, idempotently creates `br-provider`
   and attaches the compute node's provider interface via `ovs-vsctl --may-exist`, and
   restarts `nova-compute` and `neutron-openvswitch-agent`.
+- `systemctl.reload` (`/usr/bin/systemctl reload {unit}`), `"device_path"` parameter type,
+  support for the literal `%(project_id)s` Keystone project-ID macro in `endpoint_url`, and
+  five reviewed Cinder / LVM command specs in `DEFAULT_REGISTRY`: `cinder-manage.db-sync`,
+  `lvm.pvs` (`mutates=False`), `lvm.pvcreate`, `lvm.vgs` (`mutates=False`), and
+  `lvm.vgcreate-cinder-volumes`, with `CINDER_MANAGE_FAILURE_HINT` and `LVM_FAILURE_HINT`.
+- `horizon` step (`openstack_forge.execution.horizon`, controller only; depends on
+  `memcached`, `keystone`, `glance`, `nova-controller`, and `neutron-controller`) in the
+  catalog and `IMPLEMENTED_STEPS`. **Unverified and never run on a real host.** Following
+  `https://docs.openstack.org/horizon/2025.1/install/install-ubuntu.html`: requires zero
+  secrets, installs `openstack-dashboard`, appends an idempotent `# BEGIN horizon` Python
+  settings block at the end of `/etc/openstack-dashboard/local_settings.py` (overriding
+  Ubuntu's bottom-of-file `ALLOWED_HOSTS = ['*']` with the deduplicated list of `controller`,
+  node `hostname`, `fqdn`, `management_ip`, `localhost`, and `127.0.0.1`, configuring
+  `PyMemcacheCache` at `controller:11211`, `OPENSTACK_KEYSTONE_URL = "http://%s:5000/v3" %
+  OPENSTACK_HOST`, `OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT = True`, `OPENSTACK_API_VERSIONS`
+  for identity v3 / image v2 / volume v3, `Default` domain, `member` role, and `UTC`),
+  ensures `WSGIApplicationGroup %{GLOBAL}` is present in
+  `/etc/apache2/conf-available/openstack-dashboard.conf` (a no-op on Ubuntu 24.04 where line
+  4 already contains it), and runs `systemctl reload apache2`.
+- `cinder-controller` step (`openstack_forge.execution.cinder`, controller only; depends on
+  `mariadb`, `rabbitmq`, `memcached`, `keystone`, and `nova-controller`) in the catalog and
+  `IMPLEMENTED_STEPS`. **Unverified and never run on a real host.** Following
+  `https://docs.openstack.org/cinder/2025.1/install/cinder-controller-install-ubuntu.html`:
+  requires `ADMIN_PASS`, `RABBIT_PASS`, `CINDER_DBPASS`, and `CINDER_PASS` in `SecretStore`,
+  provisions the `cinder` MariaDB database and `'cinder'@'localhost'` + `'cinder'@'%'` grants
+  over `stdin`, converges the `cinder` Keystone user (`admin` role in `service`) and
+  `cinderv3` (`volumev3`) service with three `RegionOne` endpoints at
+  `http://controller:8776/v3/%(project_id)s` (v3 only; deprecated v2 `volumev2` is not created
+  in 2025.1), installs `cinder-api` and `cinder-scheduler`, edits `/etc/cinder/cinder.conf`
+  and `[cinder] os_region_name = RegionOne` in `/etc/nova/nova.conf`, runs
+  `/usr/bin/cinder-manage db sync`, and restarts `nova-api`, `cinder-scheduler`, and
+  `apache2`.
+- `cinder-storage` step (`openstack_forge.execution.cinder`, block storage nodes only;
+  depends on `openstack-packages` and `cinder-controller`) in the catalog and
+  `IMPLEMENTED_STEPS`. **Unverified and never run on a real host.** Following
+  `https://docs.openstack.org/cinder/2025.1/install/cinder-storage-install-ubuntu.html`:
+  requires only `RABBIT_PASS`, `CINDER_DBPASS`, and `CINDER_PASS` in `SecretStore`
+  (least-privilege: `ADMIN_PASS` is never required on block storage nodes), installs `lvm2`,
+  `thin-provisioning-tools`, `cinder-volume`, and `tgt`, sets `filter = [ "a/<rel_disk>/",
+  "r/.*/"]` inside the `devices { ... }` section of `/etc/lvm/lvm.conf`, idempotently
+  initializes the LVM physical volume (`pvcreate <disk>` when absent from `pvs`) and
+  `cinder-volumes` volume group (`vgcreate cinder-volumes <disk>` when absent from `vgs`),
+  edits `/etc/cinder/cinder.conf` (including `[lvm]` backend settings, `enabled_backends =
+  lvm`, and `glance_api_servers = http://controller:9292`) and `/etc/tgt/conf.d/cinder.conf`
+  (`include /var/lib/cinder/volumes/*`), and restarts `tgt` and `cinder-volume`.
 
 ### Changed
 
@@ -473,13 +518,15 @@ All notable changes to this project will be documented in this file.
 - Replaced the development machine's local RFC 1918 IP in `memcached`/`etcd`
   modules, tests, `_service_fakes.py` and `docs/engine/README.md` with the RFC 5737
   documentation address `192.0.2.170`.
-- `IMPLEMENTED_STEPS` pin deliberately updated to all fifteen catalog steps (adds `rabbitmq`,
+- `IMPLEMENTED_STEPS` pin deliberately updated to all eighteen catalog steps (adds `rabbitmq`,
   `keystone`, `glance`, `placement`, `nova-controller`, `nova-compute`,
-  `neutron-controller`, and `neutron-compute`), and the `DEFAULT_REGISTRY` test deliberately
-  pins forty-three reviewed commands (adds the five `/usr/sbin/rabbitmqctl`, two
-  `/usr/bin/mariadb`, four `/usr/bin/keystone-manage`, eleven `/usr/bin/openstack`,
+  `neutron-controller`, `neutron-compute`, `horizon`, `cinder-controller`, and
+  `cinder-storage`), and the `DEFAULT_REGISTRY` test deliberately
+  pins forty-nine reviewed commands (adds `systemctl.reload`, the five `/usr/sbin/rabbitmqctl`,
+  two `/usr/bin/mariadb`, four `/usr/bin/keystone-manage`, eleven `/usr/bin/openstack`,
   `glance-manage.db-sync`, `placement-manage.db-sync`, five `/usr/bin/nova-manage`,
-  `neutron-db-manage.upgrade-head`, and four `/usr/bin/ovs-vsctl` specs).
+  `neutron-db-manage.upgrade-head`, four `/usr/bin/ovs-vsctl`, `cinder-manage.db-sync`, and
+  four LVM `/usr/sbin/pvs` / `pvcreate` / `vgs` / `vgcreate` specs).
 - `keystone-manage.bootstrap` now delivers `ADMIN_PASS` via
   `env_params={"password": "OS_BOOTSTRAP_PASSWORD"}` instead of `--bootstrap-password
   {password}` in `argv` (confirmed in `/usr/lib/python3/dist-packages/keystone/cmd/cli.py`),

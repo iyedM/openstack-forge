@@ -16,9 +16,16 @@ from openstack_forge.execution.chrony import (
     make_time_sync_controller_step,
     make_time_sync_other_step,
 )
+from openstack_forge.execution.cinder import (
+    CINDER_CONTROLLER_STEP_ID,
+    CINDER_STORAGE_STEP_ID,
+    make_cinder_controller_step,
+    make_cinder_storage_step,
+)
 from openstack_forge.execution.commands import CommandExecutor
 from openstack_forge.execution.etcd import ETCD_STEP_ID, make_etcd_step
 from openstack_forge.execution.glance import GLANCE_STEP_ID, make_glance_step
+from openstack_forge.execution.horizon import HORIZON_STEP_ID, make_horizon_step
 from openstack_forge.execution.hosts import HOSTS_STEP_ID, make_hosts_file_step
 from openstack_forge.execution.keystone import KEYSTONE_STEP_ID, make_keystone_step
 from openstack_forge.execution.mariadb import MARIADB_STEP_ID, make_mariadb_step
@@ -62,6 +69,9 @@ IMPLEMENTED_STEPS: Mapping[str, StepFactory] = {
     NOVA_COMPUTE_STEP_ID: make_nova_compute_step,
     NEUTRON_CONTROLLER_STEP_ID: make_neutron_controller_step,
     NEUTRON_COMPUTE_STEP_ID: make_neutron_compute_step,
+    HORIZON_STEP_ID: make_horizon_step,
+    CINDER_CONTROLLER_STEP_ID: make_cinder_controller_step,
+    CINDER_STORAGE_STEP_ID: make_cinder_storage_step,
 }
 
 

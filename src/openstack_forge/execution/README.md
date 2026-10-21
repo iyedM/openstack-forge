@@ -5,7 +5,8 @@ command layer, the reusable MariaDB SQL provisioning brick, the reusable `/usr/b
 CLI provisioning brick, and the implemented `hosts-file`, `time-sync-controller`,
 `time-sync-other`, `openstack-packages`, `mariadb`, `rabbitmq`, `memcached`, `etcd`,
 `keystone`, `glance`, `placement`, `nova-controller`, `nova-compute`, `neutron-controller`,
-and `neutron-compute` steps used by `openstack-forge apply`.
+`neutron-compute`, `horizon`, `cinder-controller`, and `cinder-storage` steps used by
+`openstack-forge apply`.
 Imported lazily by the `apply` and `secrets` CLI handlers so that `config validate`,
 `doctor`, and `plan` never import it.
 
@@ -25,7 +26,7 @@ Imported lazily by the `apply` and `secrets` CLI handlers so that `config valida
 - `engine.py` - `Engine.run()` / `Engine.resume()` over check/apply/verify steps.
 - `commands.py` - allowlisted `CommandSpec`s (including `sensitive_params`, `stdin_param`,
   `env_params`, and `sql_stdin`), typed parameter validation, `CommandRegistry`
-  (`DEFAULT_REGISTRY` holds the forty-three reviewed system commands), and `CommandExecutor`
+  (`DEFAULT_REGISTRY` holds the forty-nine reviewed system commands), and `CommandExecutor`
   with an injectable backend, sanitized environment, SIGTERM-then-SIGKILL timeouts,
   redacted and truncated output.
 - `sql.py` - reusable MariaDB database and user-grant provisioning brick via `stdin`
@@ -50,6 +51,9 @@ Imported lazily by the `apply` and `secrets` CLI handlers so that `config valida
   host).
 - `neutron.py` - the `neutron-controller` and `neutron-compute` steps (unverified, never run
   on a real host).
+- `horizon.py` - the `horizon` controller step (unverified, never run on a real host).
+- `cinder.py` - the `cinder-controller` and `cinder-storage` steps (unverified, never run on a
+  real host).
 - `service_checks.py` - read-only package / unit-active / unit-enabled checks shared by
   the controller service steps.
 - `apt_output.py` - pure parsers for `dpkg-query --status` and `apt-cache policy` output,

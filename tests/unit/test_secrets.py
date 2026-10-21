@@ -32,6 +32,8 @@ from openstack_forge.execution import (
     SECRETS_FILE_MODE,
     SECURITY_TABLE_SECRET_NAMES,
     AuditLog,
+    CinderControllerStep,
+    CinderStorageStep,
     CommandError,
     CommandExecutor,
     CommandRegistry,
@@ -40,6 +42,7 @@ from openstack_forge.execution import (
     Engine,
     FunctionStep,
     GlanceStep,
+    HorizonStep,
     KeystoneStep,
     NeutronComputeStep,
     NeutronControllerStep,
@@ -79,15 +82,24 @@ TOOL = "/opt/forge-test/bin/secret-tool"
 CANARY = "CanarySecretValue9876543210ZyXwVuTsRq"
 CONTROLLER_NODE = {
     "hostname": "ctl-01",
+    "fqdn": "ctl-01.cluster.test",
     "role": "controller",
     "management_ip": "192.0.2.11",
     "provider_interface": "eno2",
 }
 COMPUTE_NODE = {
     "hostname": "cmp-01",
+    "fqdn": "cmp-01.cluster.test",
     "role": "compute",
     "management_ip": "192.0.2.31",
     "provider_interface": "enp3s0",
+}
+BLOCK_NODE = {
+    "hostname": "blk-01",
+    "fqdn": "blk-01.cluster.test",
+    "role": "block",
+    "management_ip": "192.0.2.41",
+    "disk": "/dev/sdb",
 }
 
 
@@ -1069,6 +1081,23 @@ def test_canary_secret_never_leaks_outside_the_0600_secrets_file(
             "neutron-l3-agent": ("etc/neutron/l3_agent.ini", "[DEFAULT]\n"),
             "neutron-dhcp-agent": ("etc/neutron/dhcp_agent.ini", "[DEFAULT]\n"),
             "neutron-metadata-agent": ("etc/neutron/metadata_agent.ini", "[DEFAULT]\n"),
+            "openstack-dashboard": (
+                ("etc/openstack-dashboard/local_settings.py", "ALLOWED_HOSTS = ['*']\n"),
+                (
+                    "etc/apache2/conf-available/openstack-dashboard.conf",
+                    "WSGIApplicationGroup %{GLOBAL}\n",
+                ),
+            ),
+            "cinder-api": (
+                "etc/cinder/cinder.conf",
+                "[DEFAULT]\n[database]\n[keystone_authtoken]\n[oslo_concurrency]\n",
+            ),
+            "lvm2": ("etc/lvm/lvm.conf", 'devices {\n\t# filter = [ "a|.*|" ]\n}\n'),
+            "cinder-volume": (
+                "etc/cinder/cinder.conf",
+                "[DEFAULT]\n[database]\n[keystone_authtoken]\n[oslo_concurrency]\n",
+            ),
+            "tgt": ("etc/tgt/conf.d/cinder.conf", "include /var/lib/cinder/volumes/*\n"),
         },
     )
     service_exec = CommandExecutor(
@@ -1240,6 +1269,58 @@ def test_canary_secret_never_leaks_outside_the_0600_secrets_file(
     for argv in host.calls[neutron_cmp_calls_start:]:
         assert all(CANARY not in arg for arg in argv)
 
+    horizon_step = HorizonStep(
+        root=root, config={}, local_node=CONTROLLER_NODE, executor=service_exec
+    )
+    horizon_report = engine.run([horizon_step])
+    assert horizon_report.ok
+    horizon_report_text = format_report(horizon_report)
+
+    cinder_ctl_step = CinderControllerStep(
+        root=root, config={}, local_node=CONTROLLER_NODE, executor=service_exec
+    )
+    cinder_ctl_preview_before = cinder_ctl_step.dry_run_preview()
+    for cmd in (
+        *cinder_ctl_preview_before.commands,
+        *cinder_ctl_preview_before.read_only_commands,
+    ):
+        assert CANARY not in cmd.describe(DEFAULT_REGISTRY)
+        assert CANARY not in " ".join(cmd.argv(DEFAULT_REGISTRY))
+        assert CANARY not in repr(cmd)
+    for fc in cinder_ctl_preview_before.file_changes:
+        assert CANARY not in fc.diff
+    for note in cinder_ctl_preview_before.notes:
+        assert CANARY not in note
+    cinder_ctl_calls_start = len(host.calls)
+    cinder_ctl_report = engine.run([cinder_ctl_step])
+    assert cinder_ctl_report.ok
+    cinder_ctl_report_text = format_report(cinder_ctl_report)
+    for argv in host.calls[cinder_ctl_calls_start:]:
+        if argv[0] in {"/usr/bin/cinder-manage", "/usr/bin/mariadb"}:
+            assert all(CANARY not in arg for arg in argv)
+
+    cinder_stor_step = CinderStorageStep(
+        root=root, config={}, local_node=BLOCK_NODE, executor=service_exec
+    )
+    cinder_stor_preview_before = cinder_stor_step.dry_run_preview()
+    for cmd in (
+        *cinder_stor_preview_before.commands,
+        *cinder_stor_preview_before.read_only_commands,
+    ):
+        assert CANARY not in cmd.describe(DEFAULT_REGISTRY)
+        assert CANARY not in " ".join(cmd.argv(DEFAULT_REGISTRY))
+        assert CANARY not in repr(cmd)
+    for fc in cinder_stor_preview_before.file_changes:
+        assert CANARY not in fc.diff
+    for note in cinder_stor_preview_before.notes:
+        assert CANARY not in note
+    cinder_stor_calls_start = len(host.calls)
+    cinder_stor_report = engine.run([cinder_stor_step])
+    assert cinder_stor_report.ok
+    cinder_stor_report_text = format_report(cinder_stor_report)
+    for argv in host.calls[cinder_stor_calls_start:]:
+        assert all(CANARY not in arg for arg in argv)
+
     # Backend raising a raw RuntimeError containing CANARY
     raising_executor = CommandExecutor(
         registry,
@@ -1267,6 +1348,9 @@ def test_canary_secret_never_leaks_outside_the_0600_secrets_file(
         ("nova_cmp_report", nova_cmp_report_text),
         ("neutron_ctl_report", neutron_ctl_report_text),
         ("neutron_cmp_report", neutron_cmp_report_text),
+        ("horizon_report", horizon_report_text),
+        ("cinder_ctl_report", cinder_ctl_report_text),
+        ("cinder_stor_report", cinder_stor_report_text),
         ("ini_diff", ini_change.diff),
         ("block_diff", block_change.diff),
         ("caplog", caplog.text),
@@ -1275,7 +1359,7 @@ def test_canary_secret_never_leaks_outside_the_0600_secrets_file(
 
     # Walk all files under tmp_path: only secrets.json, admin-openrc, keystone.conf,
     # glance-api.conf, placement.conf, nova.conf, neutron.conf, metadata_agent.ini,
-    # and app.conf contain CANARY.
+    # cinder.conf, and app.conf contain CANARY.
     files_with_canary = sorted(
         path.relative_to(root).as_posix()
         for path in root.rglob("*")
@@ -1283,6 +1367,7 @@ def test_canary_secret_never_leaks_outside_the_0600_secrets_file(
     )
     assert files_with_canary == [
         "etc/app.conf",
+        "etc/cinder/cinder.conf",
         "etc/glance/glance-api.conf",
         "etc/keystone/keystone.conf",
         "etc/neutron/metadata_agent.ini",

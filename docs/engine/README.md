@@ -2,13 +2,13 @@
 
 `openstack_forge.execution` contains the confined file-editing primitives, redaction helper,
 secrets store, state store, step engine, an allowlisted command layer, a reusable MariaDB
-SQL provisioning brick, a reusable `/usr/bin/openstack` CLI provisioning brick, and fifteen
+SQL provisioning brick, a reusable `/usr/bin/openstack` CLI provisioning brick, and eighteen
 implemented deployment steps: `hosts-file`, `time-sync-controller`, `time-sync-other`,
 `openstack-packages`, `mariadb`, `rabbitmq`, `memcached`, `etcd`, `keystone`, `glance`,
-`placement`, `nova-controller`, `nova-compute`, `neutron-controller`, and
-`neutron-compute`.
+`placement`, `nova-controller`, `nova-compute`, `neutron-controller`, `neutron-compute`,
+`horizon`, `cinder-controller`, and `cinder-storage`.
 
-**All fifteen steps are marked `unverified` in the step catalog, and none has ever run on a
+**All eighteen steps are marked `unverified` in the step catalog, and none has ever run on a
 real host.** Every other catalog step is rejected as "not implemented" by
 `openstack-forge apply`. `hosts-file` is pure Python file operations confined to the target
 root. [`time-sync-controller`](#step-time-sync-controller-openstack_forgeexecutionchrony),
@@ -24,12 +24,16 @@ root. [`time-sync-controller`](#step-time-sync-controller-openstack_forgeexecuti
 [`nova-controller`](#step-nova-controller-openstack_forgeexecutionnova),
 [`nova-compute`](#step-nova-compute-openstack_forgeexecutionnova),
 [`neutron-controller`](#step-neutron-controller-openstack_forgeexecutionneutron),
-and [`neutron-compute`](#step-neutron-compute-openstack_forgeexecutionneutron)
+[`neutron-compute`](#step-neutron-compute-openstack_forgeexecutionneutron),
+[`horizon`](#step-horizon-openstack_forgeexecutionhorizon),
+[`cinder-controller`](#step-cinder-controller-openstack_forgeexecutioncinder),
+and [`cinder-storage`](#step-cinder-storage-openstack_forgeexecutioncinder)
 run system commands (`apt-get`, `add-apt-repository`, `apt-cache`, `systemctl`,
 `dpkg-query`, `rabbitmqctl`, `mariadb`, `keystone-manage`, `openstack`, `glance-manage`,
-`placement-manage`, `nova-manage`, `neutron-db-manage`, `ovs-vsctl`), only through the
+`placement-manage`, `nova-manage`, `neutron-db-manage`, `ovs-vsctl`, `cinder-manage`,
+`pvs`, `pvcreate`, `vgs`, `vgcreate`), only through the
 [command execution layer](#command-execution-layer), whose registry contains exactly
-forty-three reviewed commands. Nothing uses `sudo` or `su`.
+forty-nine reviewed commands. Nothing uses `sudo` or `su`.
 
 **Network:** OpenStack Forge's Python code opens no network connection. Some of the
 commands it runs do: `apt-get update`, `apt-get install` and `add-apt-repository` download
@@ -238,7 +242,7 @@ openstack-forge apply --config cluster.yaml --step STEP_ID [--node HOSTNAME] [--
 | Option | Meaning |
 | ------ | ------- |
 | `--config PATH` | Cluster configuration (default: `cluster.yaml`), validated before use. |
-| `--step STEP_ID` | Catalog step ID to apply (required). Only steps registered in `IMPLEMENTED_STEPS` (`hosts-file`, `time-sync-controller`, `time-sync-other`, `openstack-packages`, `mariadb`, `rabbitmq`, `memcached`, `etcd`, `keystone`, `glance`, `placement`, `nova-controller`, `nova-compute`, `neutron-controller`, `neutron-compute`) can run; any other catalog step exits with code 1 and `"not implemented"`. A step whose catalog `roles` do not include the node's role (for example `time-sync-other` on the controller) exits with code 1. |
+| `--step STEP_ID` | Catalog step ID to apply (required). Only steps registered in `IMPLEMENTED_STEPS` (`hosts-file`, `time-sync-controller`, `time-sync-other`, `openstack-packages`, `mariadb`, `rabbitmq`, `memcached`, `etcd`, `keystone`, `glance`, `placement`, `nova-controller`, `nova-compute`, `neutron-controller`, `neutron-compute`, `horizon`, `cinder-controller`, `cinder-storage`) can run; any other catalog step exits with code 1 and `"not implemented"`. A step whose catalog `roles` do not include the node's role (for example `time-sync-other` on the controller) exits with code 1. |
 | `--node HOSTNAME` | Target node hostname. If omitted, matched against the local machine's hostname (`socket.gethostname()`). |
 | `--root PATH` | Target filesystem root (default: `/`). Used by tests to confine all writes to a temporary directory. |
 | `--yes` | Write changes, run the step's commands and update the state file. The commands of every step except `hosts-file` use the network through apt. Without `--yes`, `apply` runs in **dry-run** mode: it prints the redacted unified diff and the exact argv of every command the step would run, writes nothing, runs nothing, and exits 0. |
@@ -429,7 +433,7 @@ locking against two engines sharing a state file, and no timeout around a step's
 `openstack_forge.execution.commands` (with `audit.py`) is the only code in the project that
 may start a process on behalf of a deployment step. It exists so that steps (for example
 installing a package or restarting a service) have one reviewed path for doing so.
-`DEFAULT_REGISTRY` contains exactly the forty-three reviewed commands below, and a test pins
+`DEFAULT_REGISTRY` contains exactly the forty-nine reviewed commands below, and a test pins
 their argv, parameter types, exit codes and `mutates` flags, so adding or changing one is a
 deliberate edit. The tests only ever run harmless `sys.executable` one-liners; everything
 else uses a fake backend.
@@ -441,6 +445,7 @@ else uses a fake backend.
 | `add-apt-repository.cloud-archive` | `/usr/bin/add-apt-repository --yes --cloud {pocket}` | yes | **yes** (it updates the lists) | 0 | add-apt-repository(1): `-y, --yes` "Assume yes to all queries" (non-interactive); `-C, --cloud` "Add an Ubuntu Cloud Archive ... cloud-archive:CANAME ... the pocket defaults to -updates" (the positional LINE form used by the guide is "deprecated"); `-n, --no-update` "After adding the repository, do not update the package cache", i.e. **it updates the package lists by default**, so no separate `apt-get update` follows it. Timeout 600 s. |
 | `apt-cache.policy` | `/usr/bin/apt-cache policy {package}` | no | no | 0 | apt-cache(8): "does not manipulate the state of the system", works from the local lists "(e.g. offline)"; `policy pkg` prints the package's versions and the sources providing them. DIAGNOSTICS: 0 normally, 100 on error; an unknown package exits 0 with empty stdout and an `N:` notice on stderr. |
 | `systemctl.restart` | `/usr/bin/systemctl restart {unit}` | yes | no | 0 | systemctl(1): stops and starts the unit, starting it if it was not running. Timeout 120 s. |
+| `systemctl.reload` | `/usr/bin/systemctl reload {unit}` | yes | no | 0 | systemctl(1): asks the unit to reload its configuration (`horizon/2025.1/install/install-ubuntu.html`: `systemctl reload apache2.service`). Timeout 60 s. |
 | `systemctl.is-active` | `/usr/bin/systemctl is-active {unit}` | no | no | 0-4 | systemctl(1): exit 0 if active, non-zero otherwise; the LSB codes 1-4 all mean "not active", and the man page advises reading the printed state, so callers also require the output `active`. |
 | `systemctl.enable` | `/usr/bin/systemctl enable {unit}` | yes | no | 0 | systemctl(1): enable "will create a set of symlinks, as encoded in the [Install] sections", reloads the manager configuration, and does "not have the effect of also starting" the unit. Needed because the etcd page runs `systemctl enable etcd`. Timeout 60 s. |
 | `systemctl.is-enabled` | `/usr/bin/systemctl is-enabled {unit}` | no | no | 0-4 | systemctl(1): exit 0 "if at least one is enabled, non-zero otherwise", and prints the status; its table gives 0 for several statuses (`static`, `alias`, `indirect`, ...), so callers require the output `enabled`. Added so that `check()` of `etcd` does not report a configured but disabled unit as done. |
@@ -479,6 +484,11 @@ else uses a fake backend.
 | `ovs-vsctl.add-port` | `/usr/bin/ovs-vsctl --may-exist add-port {bridge} {interface}` | yes | no | 0 | `ovs-vsctl(8)`: attaches physical provider interface `{interface}` to bridge `{bridge}` (`br-provider`); `--may-exist` makes `add-port` succeed if the port is already attached to that bridge. Timeout 30 s. |
 | `ovs-vsctl.br-exists` | `/usr/bin/ovs-vsctl br-exists {bridge}` | no | no | 0, 2 | `ovs-vsctl(8)`: read-only bridge existence check (`mutates=False`); exits `0` if `{bridge}` exists and `2` if it does not exist. Timeout 15 s. |
 | `ovs-vsctl.list-ports` | `/usr/bin/ovs-vsctl list-ports {bridge}` | no | no | 0 | `ovs-vsctl(8)`: read-only port listing (`mutates=False`), printing attached port names one per line. Timeout 15 s. |
+| `cinder-manage.db-sync` | `/usr/bin/cinder-manage db sync` | yes | no | 0 | Guide (`cinder/2025.1/install/cinder-controller-install-ubuntu.html`): `su -s /bin/sh -c "cinder-manage db sync" cinder` (`dpkg -S`: `cinder-common: /usr/bin/cinder-manage`). `cinder/cmd/manage.py` `CATEGORIES` maps `'db': DbCommands` (`sync`). Invoked directly as `root` because `CommandSpec` forbids `su`. Timeout 300 s. |
+| `lvm.pvs` | `/usr/sbin/pvs --noheadings -o pv_name` | no | no | 0 | `pvs(8)` (`dpkg -S`: `lvm2: /usr/sbin/pvs`): read-only listing of LVM physical volume device paths (`mutates=False`). Timeout 30 s. |
+| `lvm.pvcreate` | `/usr/sbin/pvcreate {device}` | yes | no | 0 | Guide (`cinder/2025.1/install/cinder-storage-install-ubuntu.html`): `pvcreate /dev/sdb` (`dpkg -S`: `lvm2: /usr/sbin/pvcreate`). Checked first via `lvm.pvs` because `pvcreate` fails if the PV is already in a volume group. Timeout 60 s. |
+| `lvm.vgs` | `/usr/sbin/vgs --noheadings -o vg_name` | no | no | 0 | `vgs(8)` (`dpkg -S`: `lvm2: /usr/sbin/vgs`): read-only listing of LVM volume group names (`mutates=False`). Timeout 30 s. |
+| `lvm.vgcreate-cinder-volumes` | `/usr/sbin/vgcreate cinder-volumes {device}` | yes | no | 0 | Guide (`cinder/2025.1/install/cinder-storage-install-ubuntu.html`): `vgcreate cinder-volumes /dev/sdb` (`dpkg -S`: `lvm2: /usr/sbin/vgcreate`). Checked first via `lvm.vgs` because `vgcreate` fails if `cinder-volumes` already exists. Timeout 60 s. |
 
 Each path is the one installed on Ubuntu 24.04 by the package named by `dpkg -S`: `apt`
 (`apt-get`, `apt-cache`), `software-properties-common` (`add-apt-repository`), `systemd`,
@@ -487,8 +497,10 @@ Each path is the one installed on Ubuntu 24.04 by the package named by `dpkg -S`
 `python3-openstackclient` (`/usr/bin/openstack`, installed via `update-alternatives` from
 `/usr/bin/python3-openstack`), `python3-glance` (`/usr/bin/glance-manage`),
 `python3-placement` (`/usr/bin/placement-manage`), `python3-nova`
-(`/usr/bin/nova-manage`), `python3-neutron` (`/usr/bin/neutron-db-manage`), and
-`openvswitch-switch` (`/usr/bin/ovs-vsctl`); `PATH` is never searched. No other
+(`/usr/bin/nova-manage`), `python3-neutron` (`/usr/bin/neutron-db-manage`),
+`openvswitch-switch` (`/usr/bin/ovs-vsctl`), `cinder-common` (`/usr/bin/cinder-manage`), and
+`lvm2` (`/usr/sbin/pvs`, `/usr/sbin/pvcreate`, `/usr/sbin/vgs`, `/usr/sbin/vgcreate`);
+`PATH` is never searched. No other
 apt or dpkg option is used: in particular no `--force-*`, no `-o Dpkg::Options`, no lock
 timeout, and no `upgrade`, `dist-upgrade` or `reboot` command exists in the registry. A
 configuration file prompt from dpkg therefore makes the command fail (stdin is `/dev/null`)
@@ -539,8 +551,9 @@ Every value must be a string and is checked **before** anything runs or is logge
 | `sql_stdin` | `[\x20-\x7e\n]{1,4096}` (printable ASCII plus LF only; no CR, NUL or tabs), **permitted only when declared as `stdin_param`** (never in `argv` or `env_params`), marked sensitive automatically |
 | `openstack_name` | `[a-z][a-z0-9_-]{0,63}`, e.g. `service`, `glance`, `compute`, `volumev3` |
 | `endpoint_interface` | `public`, `internal`, or `admin` |
-| `endpoint_url` | `http://controller:<port>[/<path>]` where `<port>` is 1–65535 and optional `/<path>` uses `[A-Za-z0-9._/-]` with no `..` or `//` (also permits the literal `%\(tenant_id\)s` token for Cinder v3 if needed) |
+| `endpoint_url` | `http://controller:<port>[/<path>]` where `<port>` is 1–65535 and optional `/<path>` uses `[A-Za-z0-9._/-]` with no `..` or `//` (also permits the literal `%(project_id)s` Keystone project-ID macro for Cinder v3 `http://controller:8776/v3/%(project_id)s` while rejecting `%`, `(`, `)` anywhere else) |
 | `interface_name` | `[A-Za-z0-9][A-Za-z0-9._:-]{0,14}` (Linux `IFNAMSIZ - 1` = 15 characters max), e.g. `eno2`, `enp3s0`, `eth0.100`, `br-provider` |
+| `device_path` | `/dev/(?:[A-Za-z0-9._:+@-]+/)*[A-Za-z0-9._:+@-]+` with `_is_clean_absolute_path` (no `.`, `..`, or `//`), e.g. `/dev/sdb`, `/dev/vdb`, `/dev/nvme0n1` |
 
 Missing or unexpected parameters are errors too. For sensitive parameters (including types
 `secret` and `sql_stdin`), `ParameterError` masks the rejected value as `'********'`. There
@@ -1674,5 +1687,112 @@ Deviations, trade-offs, and limits (`neutron-controller` and `neutron-compute`):
 - **What `verify()` does not check:** no live HTTP request to `http://controller:9696`, no
   `openstack network agent list` (`verify.html`), and no provider/self-service network creation
   (`verify-option2.html`) are performed.
+
+## Step: `horizon` (`openstack_forge.execution.horizon`)
+
+**Unverified, and never run on a real host.** Source:
+<https://docs.openstack.org/horizon/2025.1/install/install-ubuntu.html>
+(`doc/source/install/install-ubuntu.rst`), which for Ubuntu prescribes:
+
+1. `apt install openstack-dashboard`;
+2. Edit `/etc/openstack-dashboard/local_settings.py`:
+   - `OPENSTACK_HOST = "controller"`
+   - `ALLOWED_HOSTS = ['one.example.com', 'two.example.com']` (with note: *"Do not edit the
+     ALLOWED_HOSTS parameter under the Ubuntu configuration section."*)
+   - `SESSION_ENGINE = 'django.contrib.sessions.backends.cache'`
+   - `CACHES = {'default': {'BACKEND': 'django.core.cache.backends.memcached.PyMemcacheCache', 'LOCATION': 'controller:11211'}}`
+   - `OPENSTACK_KEYSTONE_URL = "http://%s:5000/v3" % OPENSTACK_HOST` (following the guide's
+     explicit note: *"In case your keystone run at 5000 port then you would mentioned keystone
+     port here as well"* so it matches the Keystone v3 endpoints `http://controller:5000/v3/`
+     bootstrapped by the `keystone` step)
+   - `OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT = True`
+   - `OPENSTACK_API_VERSIONS = {"identity": 3, "image": 2, "volume": 3}`
+   - `OPENSTACK_KEYSTONE_DEFAULT_DOMAIN = "Default"`
+   - `OPENSTACK_KEYSTONE_DEFAULT_ROLE = "member"`
+   - `TIME_ZONE = "UTC"`;
+3. Ensure `WSGIApplicationGroup %{GLOBAL}` in
+   `/etc/apache2/conf-available/openstack-dashboard.conf`;
+4. `systemctl reload apache2.service`.
+
+It runs only on the controller (constructing it for another role raises `ExecutionError`), and
+requires **no secrets** in `SecretStore`.
+
+| Phase | What happens |
+| ----- | ------------ |
+| `check()` | Pure first: both `/etc/openstack-dashboard/local_settings.py` and `/etc/apache2/conf-available/openstack-dashboard.conf` must exist and need no edit. Otherwise `True` only if `dpkg-query --status openstack-dashboard` reports it installed and `systemctl is-active apache2` prints `active`. |
+| `apply()` | Installs `openstack-dashboard`, appends/updates the `# BEGIN horizon` .. `# END horizon` managed block at the end of `/etc/openstack-dashboard/local_settings.py`, ensures `WSGIApplicationGroup %{GLOBAL}` in `/etc/apache2/conf-available/openstack-dashboard.conf` (leaving the file untouched when already present outside `# BEGIN horizon-wsgi`), and runs `systemctl reload apache2`. |
+| `verify()` | Checks the `# BEGIN horizon` .. `# END horizon` block in `/etc/openstack-dashboard/local_settings.py` (and verifies no later line overrides `ALLOWED_HOSTS` or `OPENSTACK_HOST`), checks `WSGIApplicationGroup %{GLOBAL}` in `/etc/apache2/conf-available/openstack-dashboard.conf`, and checks `openstack-dashboard` installed and `apache2` active. |
+
+Established on an Ubuntu 24.04 development machine with read-only commands
+(`openstack-dashboard` `4:25.3.0-0ubuntu1~cloud2` in `noble-updates/epoxy/main` and
+`4:24.0.0-0ubuntu1` in `noble/main`):
+
+- `/usr/lib/python3/dist-packages/openstack_dashboard/local/local_settings.py.example` (copied
+  to `/etc/openstack-dashboard/local_settings.py` by `openstack-dashboard.postinst`) ends with
+  an `# Ubuntu Settings` section containing `ALLOWED_HOSTS = ['*']` at the bottom of the file.
+  Appending a `# BEGIN horizon` managed block at the very end of `local_settings.py` overrides
+  `ALLOWED_HOSTS`, `OPENSTACK_HOST`, `CACHES`, `OPENSTACK_KEYSTONE_URL`, and the other Python
+  module variables cleanly without editing the `# Ubuntu Settings` line.
+- `/etc/apache2/conf-available/openstack-dashboard.conf` already contains
+  `WSGIApplicationGroup %{GLOBAL}` at line 4, so `edit_horizon_apache_conf()` is a no-op on a
+  default Ubuntu 24.04 installation and only appends `# BEGIN horizon-wsgi` if that directive
+  was removed.
+
+## Step: `cinder-controller` (`openstack_forge.execution.cinder`)
+
+**Unverified, and never run on a real host.** Source:
+<https://docs.openstack.org/cinder/2025.1/install/cinder-controller-install-ubuntu.html>
+(`doc/source/install/cinder-controller-install-ubuntu.rst`), which for Ubuntu prescribes:
+
+1. Create the `cinder` MariaDB database and grant all privileges on `cinder.*` to
+   `'cinder'@'localhost'` and `'cinder'@'%'` identified by `CINDER_DBPASS`;
+2. Create the `cinder` Keystone user (`CINDER_PASS`), add the `admin` role to `cinder` on the
+   `service` project, create the `cinderv3` (`volumev3`) service entity, and create its
+   `public`, `internal`, and `admin` endpoints in `RegionOne` at
+   `http://controller:8776/v3/%(project_id)s` (the guide's explicit `.. note::` states that the
+   Block Storage v2 API was deprecated inPike and removed; OpenStack Forge creates only the v3
+   `cinderv3` / `volumev3` service and endpoints);
+3. `apt install cinder-api cinder-scheduler`;
+4. Edit `/etc/cinder/cinder.conf` (14 keys across `[database]`, `[DEFAULT]`,
+   `[keystone_authtoken]`, and `[oslo_concurrency]`) and edit `/etc/nova/nova.conf` (`[cinder]
+   os_region_name = RegionOne`);
+5. Populate the Block Storage database: `su -s /bin/sh -c "cinder-manage db sync" cinder`;
+6. Restart `nova-api`, `cinder-scheduler`, and `apache2`.
+
+It runs only on the controller (constructing it for another role raises `ExecutionError`).
+
+| Phase | What happens |
+| ----- | ------------ |
+| `check()` | Pure first: `ADMIN_PASS`, `RABBIT_PASS`, `CINDER_DBPASS`, and `CINDER_PASS` must exist in `SecretStore(root)`, and both `/etc/cinder/cinder.conf` and `/etc/nova/nova.conf` must exist and need no edit. Otherwise `True` only if `cinder-api` and `cinder-scheduler` are installed, `nova-api`, `cinder-scheduler`, and `apache2` are active, the `cinder` MariaDB database and grants exist, the `cinder` Keystone user and `admin` role in `service` exist, and the `cinderv3` (`volumev3`) service and three `RegionOne` endpoints (`http://controller:8776/v3/%(project_id)s`) exist and are enabled. |
+| `apply()` | Precondition: loads `ADMIN_PASS`, `RABBIT_PASS`, `CINDER_DBPASS`, and `CINDER_PASS` from `SecretStore(root)` and verifies `/etc/nova/nova.conf` exists. Provisions the `cinder` MariaDB database and grants over `stdin`, converges the `cinder` Keystone user, `admin` role, `cinderv3` (`volumev3`) service, and three `RegionOne` endpoints, installs `cinder-api` and `cinder-scheduler`, edits `/etc/cinder/cinder.conf` and `/etc/nova/nova.conf`, runs `/usr/bin/cinder-manage db sync`, and restarts `nova-api`, `cinder-scheduler`, and `apache2`. |
+| `verify()` | Checks the 4 secrets in `SecretStore(root)`, `/etc/cinder/cinder.conf` and `/etc/nova/nova.conf` (redacting secret values), `cinder-api` and `cinder-scheduler` installed, `nova-api`, `cinder-scheduler`, and `apache2` active, the `cinder` MariaDB database and grants, and the `cinder` Keystone user, role, `cinderv3` (`volumev3`) service, and three `RegionOne` endpoints. |
+
+## Step: `cinder-storage` (`openstack_forge.execution.cinder`)
+
+**Unverified, and never run on a real host.** Source:
+<https://docs.openstack.org/cinder/2025.1/install/cinder-storage-install-ubuntu.html>
+(`doc/source/install/cinder-storage-install-ubuntu.rst`), which for Ubuntu prescribes:
+
+1. `apt install lvm2 thin-provisioning-tools`, configure `filter = [ "a/<rel_disk>/", "r/.*/"]`
+   in the `devices { ... }` section of `/etc/lvm/lvm.conf`, and create the LVM physical volume
+   (`pvcreate <disk>`) and `cinder-volumes` volume group (`vgcreate cinder-volumes <disk>`);
+2. `apt install cinder-volume tgt`;
+3. Edit `/etc/cinder/cinder.conf` (20 keys across `[database]`, `[DEFAULT]`, `[lvm]`,
+   `[keystone_authtoken]`, and `[oslo_concurrency]`, including `enabled_backends = lvm`,
+   `glance_api_servers = http://controller:9292`, `volume_driver =
+   cinder.volume.drivers.lvm.LVMVolumeDriver`, `volume_group = cinder-volumes`,
+   `target_protocol = iscsi`, `target_helper = tgtadm`) and ensure
+   `include /var/lib/cinder/volumes/*` in `/etc/tgt/conf.d/cinder.conf`;
+4. Restart `tgt` and `cinder-volume`.
+
+It runs only on `block` storage nodes (constructing it for another role raises
+`ExecutionError`).
+
+| Phase | What happens |
+| ----- | ------------ |
+| `check()` | Pure first: `RABBIT_PASS`, `CINDER_DBPASS`, and `CINDER_PASS` must exist in `SecretStore(root)` (`ADMIN_PASS` is never required on block storage nodes), `local_node["disk"]` must be a valid `/dev/...` device path, and `/etc/lvm/lvm.conf`, `/etc/cinder/cinder.conf`, and `/etc/tgt/conf.d/cinder.conf` must exist and need no edit. Otherwise `True` only if `lvm2`, `thin-provisioning-tools`, `cinder-volume`, and `tgt` are installed, `tgt` and `cinder-volume` are active, and `pvs` + `vgs` confirm the physical volume `<disk>` and volume group `cinder-volumes` exist. |
+| `apply()` | Precondition: loads `RABBIT_PASS`, `CINDER_DBPASS`, and `CINDER_PASS` from `SecretStore(root)` and validates `local_node["disk"]`. Installs `lvm2`, `thin-provisioning-tools`, `cinder-volume`, and `tgt`, edits `/etc/lvm/lvm.conf`, idempotently runs `pvcreate <disk>` (only if absent from `pvs`) and `vgcreate cinder-volumes <disk>` (only if absent from `vgs`), edits `/etc/cinder/cinder.conf` and `/etc/tgt/conf.d/cinder.conf`, and restarts `tgt` and `cinder-volume`. |
+| `verify()` | Checks the 3 secrets in `SecretStore(root)`, `/etc/lvm/lvm.conf`, `/etc/cinder/cinder.conf`, and `/etc/tgt/conf.d/cinder.conf`, all 4 packages installed, `tgt` and `cinder-volume` active, and the LVM physical volume `<disk>` and volume group `cinder-volumes` present in `pvs` and `vgs`. |
+
 
 

@@ -97,9 +97,10 @@ def _is_clean_absolute_path(value: str) -> bool:
 
 
 MAX_SQL_STDIN_LENGTH = 4096
+_KEYSTONE_PROJECT_ID_MACRO = "%(project_id)s"
 _ENDPOINT_URL_RE = re.compile(
     r"https?://(?P<host>[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?)"
-    r":(?P<port>[1-9][0-9]{0,4})(?P<path>(?:/[A-Za-z0-9._-]+)*/?)"
+    r":(?P<port>[1-9][0-9]{0,4})(?P<path>(?:/(?:[A-Za-z0-9._-]+|%\(project_id\)s))*/?)"
 )
 
 
@@ -192,6 +193,12 @@ PARAM_TYPES: Mapping[str, ParamType] = {
             re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,14}"),
             'a Linux network interface or bridge name (1-15 chars) such as "ens5" or "br-provider"',
         ),
+        ParamType(
+            "device_path",
+            re.compile(r"(?:/dev/(?:[A-Za-z0-9._:+@-]+/)*[A-Za-z0-9._:+@-]+)"),
+            'an absolute block device path under /dev such as "/dev/sdb" or "/dev/disk/by-id/..."',
+            extra_check=_is_clean_absolute_path,
+        ),
     )
 }
 
@@ -215,7 +222,10 @@ def validate_parameter(type_name: str, name: str, value: object, *, sensitive: b
         raise ParameterError(f"Parameter {name!r} must not start with '-': {shown}")
     if any(char.isspace() or not char.isprintable() for char in value):
         raise ParameterError(f"Parameter {name!r} contains whitespace or control characters")
-    bad = sorted(set(value) & _FORBIDDEN_CHARACTERS)
+    checked_for_forbidden = (
+        value.replace(_KEYSTONE_PROJECT_ID_MACRO, "") if type_name == "endpoint_url" else value
+    )
+    bad = sorted(set(checked_for_forbidden) & _FORBIDDEN_CHARACTERS)
     if bad:
         raise ParameterError(
             f"Parameter {name!r} contains forbidden character(s) {''.join(bad)!r}: {shown}"
@@ -488,6 +498,7 @@ APT_GET_UPDATE = "apt-get.update"
 ADD_APT_REPOSITORY_CLOUD_ARCHIVE = "add-apt-repository.cloud-archive"
 APT_CACHE_POLICY = "apt-cache.policy"
 SYSTEMCTL_RESTART = "systemctl.restart"
+SYSTEMCTL_RELOAD = "systemctl.reload"
 SYSTEMCTL_IS_ACTIVE = "systemctl.is-active"
 SYSTEMCTL_ENABLE = "systemctl.enable"
 SYSTEMCTL_IS_ENABLED = "systemctl.is-enabled"
@@ -526,6 +537,11 @@ OVS_VSCTL_ADD_BR = "ovs-vsctl.add-br"
 OVS_VSCTL_ADD_PORT = "ovs-vsctl.add-port"
 OVS_VSCTL_BR_EXISTS = "ovs-vsctl.br-exists"
 OVS_VSCTL_LIST_PORTS = "ovs-vsctl.list-ports"
+CINDER_MANAGE_DB_SYNC = "cinder-manage.db-sync"
+LVM_PVS = "lvm.pvs"
+LVM_PVCREATE = "lvm.pvcreate"
+LVM_VGS = "lvm.vgs"
+LVM_VGCREATE_CINDER_VOLUMES = "lvm.vgcreate-cinder-volumes"
 
 # Fixed literal admin authentication flags for /usr/bin/openstack (package
 # "python3-openstackclient", verified with `dpkg -S /usr/bin/openstack`).
@@ -645,6 +661,21 @@ OVS_VSCTL_FAILURE_HINT = (
     "openvswitch-switch'). OpenStack Forge does not attempt any automatic recovery."
 )
 
+CINDER_MANAGE_FAILURE_HINT = (
+    "cinder-manage reads /etc/cinder/cinder.conf and connects to the MariaDB 'cinder' "
+    "database at 'controller': check that 'systemctl is-active mariadb' is 'active', that "
+    "'controller' resolves in /etc/hosts ('hosts-file' step), and that "
+    "/etc/cinder/cinder.conf has the expected [database] connection. OpenStack Forge does "
+    "not attempt any automatic recovery."
+)
+
+LVM_FAILURE_HINT = (
+    "LVM commands (pvs, pvcreate, vgs, vgcreate) inspect or initialize the block storage "
+    "device configured in node.disk: check that the 'lvm2' package is installed, that the "
+    "block device exists and is not mounted or in use by another filesystem or volume group, "
+    "and inspect /etc/lvm/lvm.conf. OpenStack Forge does not attempt any automatic recovery."
+)
+
 SYSTEM_COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec(
         APT_GET_INSTALL,
@@ -718,6 +749,18 @@ SYSTEM_COMMANDS: tuple[CommandSpec, ...] = (
         timeout=120,
         mutates=True,
         description="Restart one systemd unit",
+    ),
+    CommandSpec(
+        SYSTEMCTL_RELOAD,
+        # /usr/bin/systemctl (package "systemd"). systemctl(1): "reload PATTERN... Asks all
+        # units listed on the command line to reload their configuration. Note that this will
+        # reload the service-specific configuration, not the unit configuration file of
+        # systemd." Used by the Horizon step ("systemctl reload apache2.service").
+        ("/usr/bin/systemctl", "reload", "{unit}"),
+        {"unit": "systemd_unit"},
+        timeout=60,
+        mutates=True,
+        description="Reload one systemd unit's service configuration",
     ),
     CommandSpec(
         SYSTEMCTL_IS_ACTIVE,
@@ -1387,6 +1430,68 @@ SYSTEM_COMMANDS: tuple[CommandSpec, ...] = (
         mutates=False,
         description="List ports attached to an Open vSwitch bridge (read-only)",
         failure_hint=OVS_VSCTL_FAILURE_HINT,
+    ),
+    CommandSpec(
+        CINDER_MANAGE_DB_SYNC,
+        # /usr/bin/cinder-manage (package "cinder-common", verified via apt-cache/dpkg).
+        # Guide (https://docs.openstack.org/cinder/2025.1/install/cinder-controller-install-ubuntu.html):
+        # 'su -s /bin/sh -c "cinder-manage db sync" cinder'.
+        # CommandSpec forbids `su` and `sudo`; `/usr/bin/cinder-manage db sync` is invoked
+        # directly as root after `/etc/cinder/cinder.conf` is configured with
+        # `[database] connection = mysql+pymysql://cinder:CINDER_DBPASS@controller/cinder`.
+        ("/usr/bin/cinder-manage", "db", "sync"),
+        timeout=300,
+        mutates=True,
+        description="Populate or upgrade the Cinder Block Storage SQL database schema",
+        failure_hint=CINDER_MANAGE_FAILURE_HINT,
+    ),
+    CommandSpec(
+        LVM_PVS,
+        # /usr/sbin/pvs (package "lvm2"). pvs(8): "--noheadings  Suppress the headings line
+        # that is normally the first line of output." "-o pv_name  Specify which output
+        # fields to display." Read-only check used before pvcreate and in check()/verify().
+        ("/usr/sbin/pvs", "--noheadings", "-o", "pv_name"),
+        timeout=30,
+        mutates=False,
+        description="List LVM physical volume device names (read-only)",
+        failure_hint=LVM_FAILURE_HINT,
+    ),
+    CommandSpec(
+        LVM_PVCREATE,
+        # /usr/sbin/pvcreate (package "lvm2").
+        # Guide (https://docs.openstack.org/cinder/2025.1/install/cinder-storage-install-ubuntu.html):
+        # "pvcreate /dev/sdb". Invoked only when `lvm.pvs` shows `{device}` is not yet an LVM
+        # physical volume.
+        ("/usr/sbin/pvcreate", "{device}"),
+        {"device": "device_path"},
+        timeout=60,
+        mutates=True,
+        description="Initialize a block device as an LVM physical volume",
+        failure_hint=LVM_FAILURE_HINT,
+    ),
+    CommandSpec(
+        LVM_VGS,
+        # /usr/sbin/vgs (package "lvm2"). vgs(8): "--noheadings -o vg_name" prints existing
+        # LVM volume group names one per line. Read-only check used before vgcreate and in
+        # check()/verify().
+        ("/usr/sbin/vgs", "--noheadings", "-o", "vg_name"),
+        timeout=30,
+        mutates=False,
+        description="List LVM volume group names (read-only)",
+        failure_hint=LVM_FAILURE_HINT,
+    ),
+    CommandSpec(
+        LVM_VGCREATE_CINDER_VOLUMES,
+        # /usr/sbin/vgcreate (package "lvm2").
+        # Guide (https://docs.openstack.org/cinder/2025.1/install/cinder-storage-install-ubuntu.html):
+        # "vgcreate cinder-volumes /dev/sdb". Invoked only when `lvm.vgs` shows
+        # `cinder-volumes` does not yet exist.
+        ("/usr/sbin/vgcreate", "cinder-volumes", "{device}"),
+        {"device": "device_path"},
+        timeout=60,
+        mutates=True,
+        description="Create the 'cinder-volumes' LVM volume group on a physical volume",
+        failure_hint=LVM_FAILURE_HINT,
     ),
 )
 

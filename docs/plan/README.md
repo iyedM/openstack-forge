@@ -5,14 +5,15 @@ each node would go through to prepare an OpenStack 2025.1 (Epoxy) deployment.
 
 It is strictly read-only. It reads the configuration file and the step catalog bundled
 with the package, and nothing else: it runs no command, opens no network connection,
-connects to no node and changes nothing. In `openstack-forge apply`, all fifteen catalog
+connects to no node and changes nothing. In `openstack-forge apply`, all eighteen catalog
 steps are implemented: `hosts-file` (confined file operations only, no external command,
 no network), `time-sync-controller`, `time-sync-other`, `openstack-packages`, `mariadb`,
 `rabbitmq`, `memcached`, `etcd`, `keystone`, `glance`, `placement`, `nova-controller`,
-`nova-compute`, `neutron-controller`, and `neutron-compute`. All but `hosts-file` run
+`nova-compute`, `neutron-controller`, `neutron-compute`, `horizon`, `cinder-controller`,
+and `cinder-storage`. All but `hosts-file` run
 reviewed system commands; OpenStack Forge's Python code opens no connection, but the apt
 commands they run (`apt-get update`, `apt-get install`, `add-apt-repository`) use the
-network. All fifteen remain marked **unverified** in the catalog and none has been run on a
+network. All eighteen remain marked **unverified** in the catalog and none has been run on a
 real host; see [`docs/engine/README.md`](../engine/README.md).
 
 ## Usage
@@ -121,18 +122,24 @@ All steps are **unverified**.
 | `nova-compute` | compute | `/etc/nova/nova.conf`, `/etc/nova/nova-compute.conf` | [Nova compute for Ubuntu (2025.1)](https://docs.openstack.org/nova/2025.1/install/compute-install-ubuntu.html) |
 | `neutron-controller` | controller | `/etc/neutron/neutron.conf`, `/etc/neutron/plugins/ml2/ml2_conf.ini`, `/etc/neutron/plugins/ml2/openvswitch_agent.ini`, `/etc/neutron/l3_agent.ini`, `/etc/neutron/dhcp_agent.ini`, `/etc/neutron/metadata_agent.ini`, `/etc/nova/nova.conf` | [Neutron controller for Ubuntu (2025.1)](https://docs.openstack.org/neutron/2025.1/install/controller-install-ubuntu.html) |
 | `neutron-compute` | compute | `/etc/neutron/neutron.conf`, `/etc/neutron/plugins/ml2/openvswitch_agent.ini`, `/etc/nova/nova.conf` | [Neutron compute for Ubuntu (2025.1)](https://docs.openstack.org/neutron/2025.1/install/compute-install-ubuntu.html) |
+| `horizon` | controller | `/etc/openstack-dashboard/local_settings.py`, `/etc/apache2/conf-available/openstack-dashboard.conf` | [Horizon for Ubuntu (2025.1)](https://docs.openstack.org/horizon/2025.1/install/install-ubuntu.html) |
+| `cinder-controller` | controller | `/etc/cinder/cinder.conf`, `/etc/nova/nova.conf` | [Cinder controller for Ubuntu (2025.1)](https://docs.openstack.org/cinder/2025.1/install/cinder-controller-install-ubuntu.html) |
+| `cinder-storage` | block | `/etc/lvm/lvm.conf`, `/etc/cinder/cinder.conf`, `/etc/tgt/conf.d/cinder.conf` | [Cinder storage node for Ubuntu (2025.1)](https://docs.openstack.org/cinder/2025.1/install/cinder-storage-install-ubuntu.html) |
 
 The `depends_on` chain follows the order of the "Environment" chapter of the installation
-guide and the Keystone, Glance, Placement, Nova, and Neutron 2025.1 guides, and is itself
-unverified:
+guide and the Keystone, Glance, Placement, Nova, Neutron, Horizon, and Cinder 2025.1 guides,
+and is itself unverified:
 
 - `hosts-file` → `time-sync-controller` → `openstack-packages` → each controller environment
   service (`mariadb`, `rabbitmq`, `memcached`, `etcd`), `keystone` waits for `mariadb`
   and `memcached` on the controller, `glance` and `placement` wait for `mariadb`,
   `memcached`, and `keystone` on the controller, `nova-controller` waits for
   `mariadb`, `rabbitmq`, `memcached`, `keystone`, `glance`, and `placement` on the
-  controller, and `neutron-controller` waits for `mariadb`, `rabbitmq`, `memcached`,
-  `keystone`, and `nova-controller` on the controller;
+  controller, `neutron-controller` waits for `mariadb`, `rabbitmq`, `memcached`,
+  `keystone`, and `nova-controller` on the controller, `horizon` waits for `memcached`,
+  `keystone`, `glance`, `nova-controller`, and `neutron-controller` on the controller, and
+  `cinder-controller` waits for `mariadb`, `rabbitmq`, `memcached`, `keystone`, and
+  `nova-controller` on the controller;
 - `hosts-file` → `time-sync-other` → `openstack-packages` on compute, block and object
   nodes, where `time-sync-other` also waits for `time-sync-controller` on the controller,
   because those nodes synchronize their clocks from it. It waits for the node's own
@@ -140,7 +147,9 @@ unverified:
   that `hosts-file` writes to `/etc/hosts`. On compute nodes, `nova-compute` waits for
   that compute node's `openstack-packages` and for `nova-controller` on the controller, and
   `neutron-compute` waits for that compute node's `openstack-packages` and `nova-compute`
-  and for `neutron-controller` on the controller.
+  and for `neutron-controller` on the controller. On block storage nodes, `cinder-storage`
+  waits for that block node's `openstack-packages` and for `cinder-controller` on the
+  controller.
 
 `openstack-packages` uses role-scoped dependencies:
 
@@ -157,10 +166,12 @@ that same node (which in turn waited for the controller's `time-sync-controller`
 
 `time-sync-controller`, `time-sync-other`, `openstack-packages`, `mariadb`, `rabbitmq`,
 `memcached`, `etcd`, `keystone`, `glance`, `placement`, `nova-controller`, `nova-compute`,
-`neutron-controller`, and `neutron-compute` are implemented by `openstack-forge apply` (see
+`neutron-controller`, `neutron-compute`, `horizon`, `cinder-controller`, and `cinder-storage`
+are implemented by `openstack-forge apply` (see
 [`docs/engine`](../engine/README.md)). `mariadb`, `rabbitmq`, `memcached`, `etcd`,
 `keystone`, `glance`, `placement`, `nova-controller`, `nova-compute`, `neutron-controller`,
-and `neutron-compute` do not update the package lists themselves: they rely on running
+`neutron-compute`, `horizon`, `cinder-controller`, and `cinder-storage` do not update the
+package lists themselves: they rely on running
 after `openstack-packages`, as their `depends_on` chain says; `rabbitmq` requires
 `RABBIT_PASS`, `keystone` requires `KEYSTONE_DBPASS` and `ADMIN_PASS`, `glance` requires
 `ADMIN_PASS`, `GLANCE_DBPASS`, and `GLANCE_PASS`, `placement` requires `ADMIN_PASS`,
@@ -168,7 +179,10 @@ after `openstack-packages`, as their `depends_on` chain says; `rabbitmq` require
 `RABBIT_PASS`, `NOVA_DBPASS`, `NOVA_PASS`, and `PLACEMENT_PASS`, `nova-compute` requires
 `RABBIT_PASS`, `NOVA_PASS`, and `PLACEMENT_PASS`, `neutron-controller` requires
 `ADMIN_PASS`, `RABBIT_PASS`, `NEUTRON_DBPASS`, `NEUTRON_PASS`, `NOVA_PASS`, and
-`METADATA_SECRET`, and `neutron-compute` requires `RABBIT_PASS` and `NEUTRON_PASS` in
+`METADATA_SECRET`, `neutron-compute` requires `RABBIT_PASS` and `NEUTRON_PASS`,
+`cinder-controller` requires `ADMIN_PASS`, `RABBIT_PASS`, `CINDER_DBPASS`, and `CINDER_PASS`,
+and `cinder-storage` requires `RABBIT_PASS`, `CINDER_DBPASS`, and `CINDER_PASS` (`horizon`
+reads no secrets) in
 `/etc/openstack-forge/secrets.json` (`openstack-forge secrets init`).
 `memcached` and `etcd` listen unauthenticated on the management IP and `rabbitmq` listens
 for AMQP without TLS, so the management network must be trusted (see the security section of
