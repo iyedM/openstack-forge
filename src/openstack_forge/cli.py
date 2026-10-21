@@ -121,13 +121,19 @@ def _apply(args: argparse.Namespace) -> int:
     # Lazy import so that importing the CLI or running read-only commands never imports
     # openstack_forge.execution.
     from openstack_forge.execution import (
+        DEFAULT_AUDIT_TARGET,
+        DEFAULT_REGISTRY,
         DEFAULT_STATE_TARGET,
         IMPLEMENTED_STEPS,
+        AuditLog,
+        CommandExecutor,
         Engine,
         ExecutionError,
         StateStore,
         UnsafePathError,
+        build_step,
         format_report,
+        is_host_root,
         resolve_apply_node,
         resolve_target,
     )
@@ -143,20 +149,17 @@ def _apply(args: argparse.Namespace) -> int:
         return 1
 
     step_id = args.step
+    implemented = ", ".join(sorted(IMPLEMENTED_STEPS))
     try:
         catalog_step = catalog.step(step_id)
     except KeyError:
-        implemented = ", ".join(sorted(IMPLEMENTED_STEPS))
         print(
             f"Error: Step {step_id!r} is not implemented "
             f"(unknown step id; implemented steps: {implemented}).",
             file=sys.stderr,
         )
         return 1
-
-    step_factory = IMPLEMENTED_STEPS.get(step_id)
-    if step_factory is None:
-        implemented = ", ".join(sorted(IMPLEMENTED_STEPS))
+    if step_id not in IMPLEMENTED_STEPS:
         print(
             f"Error: Step {step_id!r} is not implemented yet (implemented steps: {implemented}).",
             file=sys.stderr,
@@ -164,8 +167,8 @@ def _apply(args: argparse.Namespace) -> int:
         return 1
 
     root_path = Path(args.root) if args.root is not None else Path("/")
-    is_real_root = args.root is None or (root_path.exists() and root_path.resolve() == Path("/"))
-    if args.yes and is_real_root and os.geteuid() != 0:
+    host_root = args.root is None or (root_path.exists() and is_host_root(root_path))
+    if args.yes and host_root and os.geteuid() != 0:
         print(
             "Error: Writing to '/' with --yes requires root privileges (effective uid 0). "
             "Re-run as root, or pass --root PATH to target an alternate directory.",
@@ -174,6 +177,13 @@ def _apply(args: argparse.Namespace) -> int:
         return 1
 
     try:
+        audit_path, _ = resolve_target(root_path, DEFAULT_AUDIT_TARGET)
+        executor = CommandExecutor(
+            DEFAULT_REGISTRY,
+            root=root_path,
+            audit_log=AuditLog(audit_path),
+            dry_run=not args.yes,
+        )
         local_node = resolve_apply_node(config, root=root_path, node_hostname=args.node)
         if local_node["role"] not in catalog_step.roles:
             print(
@@ -182,10 +192,20 @@ def _apply(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
-        step = step_factory(root_path, config, local_node)
-        preview = step.preview()
+        step = build_step(step_id, root_path, config, local_node, executor=executor)
+        preview = step.dry_run_preview()
     except ExecutionError as exc:
         print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    if args.yes and step.declares_commands and not host_root:
+        print(
+            f"Error: Step {step_id!r} runs system commands (package installation, service "
+            f"restart), which would act on this host and not on {root_path}. --yes with "
+            "--root other than '/' is refused for such steps; run without --yes to see the "
+            "dry run.",
+            file=sys.stderr,
+        )
         return 1
 
     if not catalog_step.verified:
@@ -195,14 +215,12 @@ def _apply(args: argparse.Namespace) -> int:
         )
 
     if not args.yes:
+        what = "no files modified and no commands run" if preview.commands else "no files modified"
         print(
             f"Dry run for step '{step_id}' on node '{local_node['hostname']}' "
-            f"(role: {local_node['role']}): no files modified."
+            f"(role: {local_node['role']}): {what}."
         )
-        if preview.changed:
-            print(preview.diff, end="" if preview.diff.endswith("\n") else "\n")
-        else:
-            print("No changes needed.")
+        _print_preview(preview, executor.registry)
         return 0
 
     try:
@@ -211,18 +229,39 @@ def _apply(args: argparse.Namespace) -> int:
             raise UnsafePathError(
                 f"Refusing to use state file {DEFAULT_STATE_TARGET}: it is a symlink"
             )
-        if not state_path.parent.exists():
-            state_path.parent.mkdir(parents=True, exist_ok=True)
-        engine = Engine(StateStore(state_path))
-        report = engine.run([step])
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        if step.declares_commands:
+            audit_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        report = Engine(StateStore(state_path)).run([step])
     except ExecutionError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    if preview.changed and report.ok:
-        print(preview.diff, end="" if preview.diff.endswith("\n") else "\n")
+    if preview.files_changed and report.ok:
+        for change in preview.file_changes:
+            if change.changed:
+                print(change.diff, end="" if change.diff.endswith("\n") else "\n")
     print(format_report(report))
     return 0 if report.ok else 1
+
+
+def _print_preview(preview: Any, registry: Any) -> None:
+    """Print a step's dry-run preview: file diffs, notes and the exact command argv."""
+    changed = [change for change in preview.file_changes if change.changed]
+    for change in changed:
+        print(change.diff, end="" if change.diff.endswith("\n") else "\n")
+    if not changed and not preview.notes:
+        print("No changes needed.")
+    for note in preview.notes:
+        print(note if note.endswith("\n") else f"{note}\n", end="")
+    if preview.commands:
+        print("Commands apply() would run, in order, if check() finds the step not done:")
+        for command in preview.commands:
+            print(f"  {command.describe(registry)}")
+    if preview.read_only_commands:
+        print("Read-only commands check() and verify() would run (not run in a dry run):")
+        for command in preview.read_only_commands:
+            print(f"  {command.describe(registry)}")
 
 
 def build_parser(runner: CommandRunner | None = None) -> argparse.ArgumentParser:
@@ -310,7 +349,7 @@ def build_parser(runner: CommandRunner | None = None) -> argparse.ArgumentParser
         "--step",
         required=True,
         metavar="STEP_ID",
-        help="Catalog step id to run (currently only 'hosts-file' is implemented).",
+        help="Catalog step id to run (implemented: hosts-file, time-sync-controller).",
     )
     apply_parser.add_argument(
         "--node",

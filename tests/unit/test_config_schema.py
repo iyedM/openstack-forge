@@ -119,7 +119,7 @@ def test_wrong_types_and_unknown_fields(fixture_path, schema) -> None:
     data = load_config_file(fixture_path("wrong_types.yaml"))
     assert _messages(validate_schema(data, schema)) == [
         "cluster.region: unknown field "
-        "(allowed fields: name, ubuntu_version, openstack_release, topology)",
+        "(allowed fields: name, ubuntu_version, openstack_release, topology, ntp_servers)",
         "cluster.ubuntu_version: expected string, got number; "
         "quote the value in YAML so it is read as text",
         "nodes: expected list, got mapping",

@@ -93,16 +93,32 @@ All steps are **unverified**.
 | Step | Roles | Files modified | Documentation |
 | ---- | ----- | -------------- | ------------- |
 | `hosts-file` | all | `/etc/hosts` | [Host networking](https://docs.openstack.org/install-guide/environment-networking.html) |
-| `time-sync` (chrony) | all | `/etc/chrony/chrony.conf` | [Network Time Protocol](https://docs.openstack.org/install-guide/environment-ntp.html) |
+| `time-sync-controller` (chrony) | controller | `/etc/chrony/chrony.conf` | [NTP: controller node](https://docs.openstack.org/install-guide/environment-ntp-controller.html) |
+| `time-sync-other` (chrony) | compute, block, object | `/etc/chrony/chrony.conf` | [NTP: other nodes](https://docs.openstack.org/install-guide/environment-ntp-other.html) |
 | `openstack-packages` (enable `cloud-archive:epoxy`, install `python3-openstackclient`) | all | none listed | [OpenStack packages for Ubuntu](https://docs.openstack.org/install-guide/environment-packages-ubuntu.html) |
 | `mariadb` | controller | `/etc/mysql/mariadb.conf.d/99-openstack.cnf` | [SQL database for Ubuntu](https://docs.openstack.org/install-guide/environment-sql-database-ubuntu.html) |
 | `rabbitmq` | controller | none listed | [Message queue for Ubuntu](https://docs.openstack.org/install-guide/environment-messaging-ubuntu.html) |
 | `memcached` | controller | `/etc/memcached.conf` | [Memcached for Ubuntu](https://docs.openstack.org/install-guide/environment-memcached-ubuntu.html) |
 | `etcd` | controller | `/etc/default/etcd` | [Etcd for Ubuntu](https://docs.openstack.org/install-guide/environment-etcd-ubuntu.html) |
 
-The `depends_on` chain (`hosts-file` → `time-sync` → `openstack-packages` → each
-controller service) follows the order of the "Environment" chapter of the installation
-guide. That ordering is part of each step and is just as unverified as the rest.
+The `depends_on` chain follows the order of the "Environment" chapter of the installation
+guide and is itself unverified:
+
+- `hosts-file` → `time-sync-controller` → `openstack-packages` → each controller service;
+- `time-sync-other` (on compute, block and object nodes) waits for `time-sync-controller`
+  on the controller, because those nodes synchronize their clocks from it.
+
+`openstack-packages` depends on `time-sync-controller` only. On the controller this is a
+local wait; on every other node it is a wait for the controller's `time-sync-controller`.
+**Non-controller nodes therefore do not wait for their own `time-sync-other` before
+`openstack-packages`.** A step's `depends_on` applies to all of its roles, so making
+`openstack-packages` depend on `time-sync-other` would leave the controller (which never
+runs `time-sync-other`) waiting for a step it does not run. Supporting per-role
+dependencies (for example `depends_on` keyed by role) is future work.
+
+`time-sync-controller` is implemented by `openstack-forge apply` (see
+[`docs/engine`](../engine/README.md)); `time-sync-other` is not, and its documentation page
+has not been read yet.
 
 ### Open decision: network configuration
 

@@ -7,7 +7,7 @@ the environment is replaced by a minimal one, output is redacted then truncated,
 mutating command refuses to run unless the root is ``/`` and the process is root (sudo is
 never used). Every executed command is recorded in an :class:`AuditLog`.
 
-No real system command is registered: :data:`DEFAULT_REGISTRY` is empty.
+:data:`DEFAULT_REGISTRY` holds exactly the reviewed :data:`SYSTEM_COMMANDS`.
 """
 
 from __future__ import annotations
@@ -176,6 +176,8 @@ class CommandSpec:
     allowed_exit_codes: frozenset[int] = frozenset({0})
     mutates: bool = True
     description: str = ""
+    # Appended to the engine's suggested next action when this command fails.
+    failure_hint: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "argv", tuple(self.argv))
@@ -263,8 +265,78 @@ class CommandRegistry:
         return tuple(sorted(self._specs))
 
 
-# Real commands will be registered here by future steps, each with a reviewed spec.
-DEFAULT_REGISTRY = CommandRegistry()
+# --- reviewed system commands ---------------------------------------------------------
+#
+# The only real commands OpenStack Forge may run. Each argv[0] is the literal path that
+# the named Ubuntu 24.04 package installs (checked with `dpkg -S`), so PATH is never
+# searched. Options are limited to ones justified by the tools' manual pages.
+
+APT_GET_INSTALL = "apt-get.install"
+SYSTEMCTL_RESTART = "systemctl.restart"
+SYSTEMCTL_IS_ACTIVE = "systemctl.is-active"
+DPKG_QUERY_STATUS = "dpkg-query.status"
+
+APT_FAILURE_HINT = (
+    "apt-get may have stopped part-way, leaving packages half-installed or "
+    "half-configured: inspect the package state with 'dpkg --audit' before retrying. If "
+    "apt-get reported that it could not get the dpkg lock, another package manager (for "
+    "example unattended-upgrades) is running: wait for it to finish; do not delete lock "
+    "files. OpenStack Forge does not attempt any automatic recovery."
+)
+
+SYSTEM_COMMANDS: tuple[CommandSpec, ...] = (
+    CommandSpec(
+        APT_GET_INSTALL,
+        # /usr/bin/apt-get (package "apt"). apt(8), "SCRIPT USAGE", says scripts should use
+        # apt-get rather than apt. --yes: apt-get(8) "assume yes to all prompts and run
+        # non-interactively", still aborting on held, unauthenticated or essential packages.
+        # DEBIAN_FRONTEND=noninteractive comes from the sanitized environment.
+        ("/usr/bin/apt-get", "install", "--yes", "{package}"),
+        {"package": "package_name"},
+        timeout=900,
+        mutates=True,
+        description="Install one Debian package",
+        failure_hint=APT_FAILURE_HINT,
+    ),
+    CommandSpec(
+        SYSTEMCTL_RESTART,
+        # /usr/bin/systemctl (package "systemd"). systemctl(1): "restart: stop and then
+        # start one or more units ... If the units are not running yet, they will be started."
+        ("/usr/bin/systemctl", "restart", "{unit}"),
+        {"unit": "systemd_unit"},
+        timeout=120,
+        mutates=True,
+        description="Restart one systemd unit",
+    ),
+    CommandSpec(
+        SYSTEMCTL_IS_ACTIVE,
+        # systemctl(1): is-active "returns an exit code 0 if at least one is active, or
+        # non-zero otherwise" and prints the unit state. The LSB codes 1-4 all mean "not
+        # active"; callers must also check that the printed state is exactly "active".
+        ("/usr/bin/systemctl", "is-active", "{unit}"),
+        {"unit": "systemd_unit"},
+        timeout=30,
+        allowed_exit_codes={0, 1, 2, 3, 4},
+        mutates=False,
+        description="Report whether one systemd unit is active",
+    ),
+    CommandSpec(
+        DPKG_QUERY_STATUS,
+        # /usr/bin/dpkg-query (package "dpkg"). dpkg-query(1): --status "displays the entry
+        # in the installed package status database"; exit status 1 means "no ... package
+        # being found", 2 is a fatal error.
+        ("/usr/bin/dpkg-query", "--status", "{package}"),
+        {"package": "package_name"},
+        timeout=30,
+        allowed_exit_codes={0, 1},
+        mutates=False,
+        description="Show the dpkg status entry of one package",
+    ),
+)
+
+DEFAULT_REGISTRY = CommandRegistry(SYSTEM_COMMANDS)
+
+DEFAULT_TERM_GRACE_PERIOD = 5.0  # seconds between SIGTERM and SIGKILL on timeout
 
 
 # --- process backend ------------------------------------------------------------------
@@ -286,7 +358,16 @@ class ProcessBackend(Protocol):
 
 
 class SubprocessBackend:
-    """Run argv with ``subprocess`` (never a shell) in its own session, stdin closed."""
+    """Run argv with ``subprocess`` (never a shell) in its own session, stdin closed.
+
+    On timeout the whole process group gets SIGTERM; if it is still running after
+    ``term_grace_period`` seconds it gets SIGKILL.
+    """
+
+    def __init__(self, term_grace_period: float = DEFAULT_TERM_GRACE_PERIOD) -> None:
+        if term_grace_period < 0:
+            raise ValueError("term_grace_period must not be negative")
+        self.term_grace_period = term_grace_period
 
     def run(
         self, argv: tuple[str, ...], *, env: Mapping[str, str], timeout: float
@@ -310,18 +391,33 @@ class SubprocessBackend:
         try:
             stdout, stderr = process.communicate(timeout=timeout)
         except subprocess.TimeoutExpired as exc:
-            # The command runs in its own session: kill it and anything it started.
+            # The command runs in its own session: signal it and anything it started.
+            _signal_group(process.pid, signal.SIGTERM)
             try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            process.communicate()
-            raise CommandTimeoutError(f"{argv[0]} timed out after {timeout:g}s") from exc
+                process.communicate(timeout=self.term_grace_period)
+            except subprocess.TimeoutExpired:
+                _signal_group(process.pid, signal.SIGKILL)
+                process.communicate()
+                raise CommandTimeoutError(
+                    f"{argv[0]} timed out after {timeout:g}s and was killed (SIGKILL) "
+                    f"after ignoring SIGTERM for {self.term_grace_period:g}s",
+                    killed=True,
+                ) from exc
+            raise CommandTimeoutError(
+                f"{argv[0]} timed out after {timeout:g}s and was terminated (SIGTERM)"
+            ) from exc
         return ProcessOutput(
             returncode=process.returncode,
             stdout=stdout.decode("utf-8", errors="replace"),
             stderr=stderr.decode("utf-8", errors="replace"),
         )
+
+
+def _signal_group(pid: int, signum: int) -> None:
+    try:
+        os.killpg(pid, signum)
+    except ProcessLookupError:
+        pass
 
 
 # --- executor --------------------------------------------------------------------------
@@ -400,10 +496,12 @@ class CommandExecutor:
         except CommandError as exc:
             outcome = "timeout" if isinstance(exc, CommandTimeoutError) else "not_found"
             self._finish(base, outcome, None, started)
+            _with_hint(exc, spec)
             raise
         except Exception as exc:
             self._finish(base, "error", None, started)
-            raise CommandError(f"Command {spec.id!r} could not be run: {exc}") from exc
+            error = CommandError(f"Command {spec.id!r} could not be run: {exc}")
+            raise _with_hint(error, spec) from exc
 
         duration = self._finish(
             base,
@@ -414,7 +512,7 @@ class CommandExecutor:
         stdout, stdout_cut = self._clean(output.stdout)
         stderr, stderr_cut = self._clean(output.stderr)
         if output.returncode not in spec.allowed_exit_codes:
-            raise UnexpectedExitError(spec.id, output.returncode, stderr)
+            raise _with_hint(UnexpectedExitError(spec.id, output.returncode, stderr), spec)
         return CommandResult(
             spec.id,
             shown_argv,
@@ -460,6 +558,12 @@ class CommandExecutor:
             return redacted, False
         removed = len(redacted) - self.output_limit
         return TRUNCATION_MARKER.format(count=removed) + redacted[-self.output_limit :], True
+
+
+def _with_hint(error: CommandError, spec: CommandSpec) -> CommandError:
+    if spec.failure_hint:
+        error.hint = spec.failure_hint
+    return error
 
 
 # --- helpers for steps ----------------------------------------------------------------

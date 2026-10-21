@@ -12,20 +12,30 @@
       "status": "unverified"
     },
     {
-      "id": "time-sync",
-      "title": "Configure time synchronization with chrony",
-      "roles": ["controller", "compute", "block", "object"],
+      "id": "time-sync-controller",
+      "title": "Install chrony on the controller and let the other nodes synchronize from it",
+      "roles": ["controller"],
       "depends_on": ["hosts-file"],
       "files_modified": ["/etc/chrony/chrony.conf"],
+      "verification": "chrony is installed and active on the controller, and chrony.conf allows the management subnet (plus the configured ntp_servers, if any).",
+      "doc_url": "https://docs.openstack.org/install-guide/environment-ntp-controller.html",
+      "status": "unverified"
+    },
+    {
+      "id": "time-sync-other",
+      "title": "Configure time synchronization with chrony on the non-controller nodes",
+      "roles": ["compute", "block", "object"],
+      "depends_on": ["time-sync-controller"],
+      "files_modified": ["/etc/chrony/chrony.conf"],
       "verification": "chrony reports a synchronized time source on this node.",
-      "doc_url": "https://docs.openstack.org/install-guide/environment-ntp.html",
+      "doc_url": "https://docs.openstack.org/install-guide/environment-ntp-other.html",
       "status": "unverified"
     },
     {
       "id": "openstack-packages",
       "title": "Enable the cloud-archive:epoxy repository and install python3-openstackclient",
       "roles": ["controller", "compute", "block", "object"],
-      "depends_on": ["time-sync"],
+      "depends_on": ["time-sync-controller"],
       "files_modified": [],
       "verification": "The cloud-archive:epoxy repository is enabled and python3-openstackclient is installed on this node.",
       "doc_url": "https://docs.openstack.org/install-guide/environment-packages-ubuntu.html",

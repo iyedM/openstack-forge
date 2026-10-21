@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import re
 import socket
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from openstack_forge.execution.engine import VerifyResult
 from openstack_forge.execution.errors import ExecutionError
@@ -30,6 +30,7 @@ from openstack_forge.execution.fsutil import (
     resolve_target,
     unified_diff,
 )
+from openstack_forge.execution.preview import StepPreview
 
 HOSTS_STEP_ID = "hosts-file"
 HOSTS_TARGET = "/etc/hosts"
@@ -225,6 +226,7 @@ class HostsFileStep:
     nodes: NodesOrConfig
     local_node: NodeOrHostname
     id: str = HOSTS_STEP_ID
+    declares_commands: ClassVar[bool] = False
 
     def __post_init__(self) -> None:
         extracted_nodes = _extract_nodes(self.nodes)
@@ -236,6 +238,10 @@ class HostsFileStep:
     def preview(self) -> FileChange:
         """Compute the dry-run :class:`FileChange` without writing anything."""
         return apply_hosts_file(self.root, self.nodes, self.local_node, dry_run=True)
+
+    def dry_run_preview(self) -> StepPreview:
+        """The ``/etc/hosts`` diff; this step runs no command."""
+        return StepPreview(file_changes=(self.preview(),))
 
     def check(self) -> bool:
         """Return True when ``/etc/hosts`` needs no edit and passes verification."""
@@ -256,22 +262,19 @@ def make_hosts_file_step(
     root: Path,
     config: NodesOrConfig,
     local_node: NodeOrHostname,
+    *,
+    executor: object = None,
 ) -> HostsFileStep:
-    """Construct a :class:`HostsFileStep` for ``local_node`` under ``root``."""
+    """Construct a :class:`HostsFileStep` for ``local_node`` under ``root``.
+
+    ``executor`` is accepted for a uniform factory signature and ignored: this step runs
+    no command.
+    """
     return HostsFileStep(
         root=Path(root),
         nodes=config,
         local_node=local_node,
     )
-
-
-StepFactory = Callable[[Path, Mapping[str, Any], Mapping[str, Any]], HostsFileStep]
-
-# Explicit registry of implemented catalog steps. Any catalog step absent from this
-# mapping is refused by ``openstack-forge apply`` with exit code 1.
-IMPLEMENTED_STEPS: dict[str, StepFactory] = {
-    HOSTS_STEP_ID: make_hosts_file_step,
-}
 
 
 def resolve_apply_node(

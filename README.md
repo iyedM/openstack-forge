@@ -39,7 +39,7 @@ The CLI currently provides a scaffold for the following commands:
 - `openstack-forge config validate [PATH]` - validate a cluster YAML file against the schema and semantic rules (implemented).
 - `openstack-forge doctor --config PATH [--node HOSTNAME] [--json]` - run read-only local host preflight checks against the cluster configuration (implemented; see [`docs/doctor/README.md`](docs/doctor/README.md)).
 - `openstack-forge plan --config PATH [--node HOSTNAME] [--json]` - show the ordered deployment steps each node would go through, without running anything (implemented, read-only; every step is currently unverified; see [`docs/plan/README.md`](docs/plan/README.md)).
-- `openstack-forge apply --config PATH --step hosts-file [--node HOSTNAME] [--root PATH] [--yes]` - apply a single implemented step (dry-run by default; writes only with `--yes`). Only `hosts-file` is implemented, it remains marked **unverified** in the step catalog, and it has not been run on a real VM; see [`docs/engine/README.md`](docs/engine/README.md).
+- `openstack-forge apply --config PATH --step STEP_ID [--node HOSTNAME] [--root PATH] [--yes]` - apply a single implemented step, `hosts-file` or `time-sync-controller`, both unverified and never run on a real host (dry-run by default; writes only with `--yes`). Only `hosts-file` is implemented, it remains marked **unverified** in the step catalog, and it has not been run on a real VM; see [`docs/engine/README.md`](docs/engine/README.md).
 
 Apart from `config validate`, `doctor`, `plan`, and `apply --step hosts-file`, the implementation of deployment workflows is intentionally deferred. `apply` runs no external commands, no `sudo`, and uses no network.
 

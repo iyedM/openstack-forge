@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import time
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -250,8 +251,42 @@ def test_duplicate_registration_is_rejected() -> None:
         registry.register(CommandSpec("test.status", (TOOL, "status")))
 
 
-def test_no_real_command_is_registered_yet() -> None:
-    assert DEFAULT_REGISTRY.ids() == ()
+def test_default_registry_contains_exactly_the_reviewed_commands() -> None:
+    # Deliberately updated in milestone 8: these are the only real commands, and any new
+    # one must be added here on purpose after review.
+    specs = {spec_id: DEFAULT_REGISTRY.get(spec_id) for spec_id in DEFAULT_REGISTRY.ids()}
+    assert {
+        spec_id: (spec.argv, dict(spec.params), spec.mutates, spec.allowed_exit_codes)
+        for spec_id, spec in specs.items()
+    } == {
+        "apt-get.install": (
+            ("/usr/bin/apt-get", "install", "--yes", "{package}"),
+            {"package": "package_name"},
+            True,
+            frozenset({0}),
+        ),
+        "systemctl.restart": (
+            ("/usr/bin/systemctl", "restart", "{unit}"),
+            {"unit": "systemd_unit"},
+            True,
+            frozenset({0}),
+        ),
+        "systemctl.is-active": (
+            ("/usr/bin/systemctl", "is-active", "{unit}"),
+            {"unit": "systemd_unit"},
+            False,
+            frozenset({0, 1, 2, 3, 4}),
+        ),
+        "dpkg-query.status": (
+            ("/usr/bin/dpkg-query", "--status", "{package}"),
+            {"package": "package_name"},
+            False,
+            frozenset({0, 1}),
+        ),
+    }
+    assert all(spec.timeout > 0 for spec in specs.values())
+    assert "--yes" in specs["apt-get.install"].argv
+    assert specs["apt-get.install"].failure_hint
 
 
 def test_executor_has_no_free_form_entry_point() -> None:
@@ -515,3 +550,84 @@ def test_real_command_timeout_kills_the_process(tmp_path: Path) -> None:
     finish = audit.read()[-1]
     assert finish["outcome"] == "timeout"
     assert finish["duration_s"] < 10
+
+
+# --- REAL: SIGTERM, grace period, then SIGKILL (harmless sys.executable one-liners) ----------
+
+
+def _sleeper_registry(code: str, timeout: float) -> CommandRegistry:
+    return CommandRegistry(
+        [
+            CommandSpec(
+                "test.python-sleeper",
+                (sys.executable, "-I", "-c", code),
+                timeout=timeout,
+                mutates=False,
+            )
+        ]  # fmt: skip
+    )
+
+
+def test_real_timeout_sends_sigterm_first(tmp_path: Path) -> None:
+    marker = tmp_path / "got-sigterm"
+    code = (
+        "import signal, sys, time\n"
+        "def stop(signum, frame):\n"
+        f"    open({str(marker)!r}, 'w').write('TERM')\n"
+        "    sys.exit(0)\n"
+        "signal.signal(signal.SIGTERM, stop)\n"
+        "time.sleep(30)\n"
+    )
+    executor = CommandExecutor(
+        _sleeper_registry(code, timeout=1.0), root=tmp_path,
+        audit_log=AuditLog(tmp_path / "commands.log"),
+        backend=SubprocessBackend(term_grace_period=10.0),
+    )  # fmt: skip
+    started = time.monotonic()
+    with pytest.raises(CommandTimeoutError, match=r"terminated \(SIGTERM\)") as excinfo:
+        executor.run("test.python-sleeper")
+    elapsed = time.monotonic() - started
+    assert excinfo.value.killed is False
+    assert marker.read_text() == "TERM"  # the process handled SIGTERM itself
+    assert elapsed < 6  # it did not wait for the 10s grace period
+
+
+def test_real_timeout_kills_a_process_that_ignores_sigterm(tmp_path: Path) -> None:
+    code = "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)"
+    executor = CommandExecutor(
+        _sleeper_registry(code, timeout=1.0), root=tmp_path,
+        audit_log=AuditLog(tmp_path / "commands.log"),
+        backend=SubprocessBackend(term_grace_period=0.5),
+    )  # fmt: skip
+    started = time.monotonic()
+    with pytest.raises(CommandTimeoutError, match="killed \\(SIGKILL\\) after ignoring SIGTERM"):
+        executor.run("test.python-sleeper")
+    elapsed = time.monotonic() - started
+    assert 1.4 <= elapsed < 10  # timeout plus the grace period, then SIGKILL
+    assert executor.audit_log.read()[-1]["outcome"] == "timeout"
+
+
+def test_term_grace_period_must_not_be_negative() -> None:
+    with pytest.raises(ValueError):
+        SubprocessBackend(term_grace_period=-1)
+
+
+def test_executor_attaches_the_spec_failure_hint(tmp_path: Path, backend: FakeBackend) -> None:
+    registry = CommandRegistry(
+        [
+            CommandSpec(
+                "test.hinted",
+                (TOOL, "go"),
+                timeout=5,
+                mutates=False,
+                failure_hint="Check the thing by hand.",
+            )
+        ]  # fmt: skip
+    )
+    backend.default = ProcessOutput(2, "", "boom")
+    executor = CommandExecutor(
+        registry, root=tmp_path, audit_log=AuditLog(tmp_path / "log"), backend=backend
+    )
+    with pytest.raises(UnexpectedExitError) as excinfo:
+        executor.run("test.hinted")
+    assert excinfo.value.hint == "Check the thing by hand."

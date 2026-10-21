@@ -18,6 +18,8 @@ from openstack_forge.execution.errors import AuditLogError
 from openstack_forge.execution.redaction import redact_data
 
 AUDIT_FILE_MODE = 0o600
+# Default location of the command audit log on a managed host (mapped under the root).
+DEFAULT_AUDIT_TARGET = "/var/log/openstack-forge/commands.log"
 
 
 def _utc_now() -> datetime:

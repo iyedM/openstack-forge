@@ -8,6 +8,7 @@ intentionally not repeated here.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Hashable, Mapping, Sequence
 from dataclasses import dataclass
 from ipaddress import IPv4Address, IPv4Network
@@ -18,6 +19,8 @@ from openstack_forge.config import releases
 from openstack_forge.config.errors import ValidationIssue
 
 MANAGEMENT_NETWORK = "management"
+# An NTP server name made only of digits and dots must be an IPv4 address.
+_NUMERIC_NAME_RE = re.compile(r"[0-9.]+")
 PROVIDER_NETWORK = "provider"
 PROVIDER_RANGES = ("floating_ip_range", "dhcp_range")
 
@@ -66,6 +69,7 @@ def validate_semantics(config: Mapping[str, Any]) -> list[ValidationIssue]:
     """Return cross-field problems in a schema-valid configuration."""
     nodes = config["nodes"]
     issues = _check_release(config["cluster"])
+    issues += _check_ntp_servers(config["cluster"].get("ntp_servers", ()))
     networks, network_issues = _parse_networks(config["networks"])
     issues += network_issues
     issues += _check_overlapping_networks(networks)
@@ -114,6 +118,31 @@ def _check_release(cluster: Mapping[str, Any]) -> list[ValidationIssue]:
                 f"supported combinations: {pairs}",
             )
         )
+    return issues
+
+
+def _check_ntp_servers(servers: Sequence[str]) -> list[ValidationIssue]:
+    """Numeric names must be real IPv4 addresses; names are unique case-insensitively."""
+    issues: list[ValidationIssue] = []
+    first_seen: dict[str, int] = {}
+    for index, server in enumerate(servers):
+        location = f"cluster.ntp_servers[{index}]"
+        if _NUMERIC_NAME_RE.fullmatch(server):
+            try:
+                IPv4Address(server)
+            except ValueError:
+                issues.append(ValidationIssue(location, f"{server!r} is not a valid IPv4 address"))
+        key = server.lower()
+        if key in first_seen:
+            issues.append(
+                ValidationIssue(
+                    location,
+                    f"duplicate NTP server {server!r}; already listed at "
+                    f"cluster.ntp_servers[{first_seen[key]}]",
+                )
+            )
+        else:
+            first_seen[key] = index
     return issues
 
 

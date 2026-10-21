@@ -33,7 +33,13 @@ ALL_ROLES = ["controller", "compute", "block", "object"]
 # a step becomes "verified" only after it has been compared with the official page.
 EXPECTED_STEPS: list[tuple[str, list[str], list[str], str]] = [
     ("hosts-file", ALL_ROLES, ["/etc/hosts"], STATUS_UNVERIFIED),
-    ("time-sync", ALL_ROLES, ["/etc/chrony/chrony.conf"], STATUS_UNVERIFIED),
+    ("time-sync-controller", ["controller"], ["/etc/chrony/chrony.conf"], STATUS_UNVERIFIED),
+    (
+        "time-sync-other",
+        ["compute", "block", "object"],
+        ["/etc/chrony/chrony.conf"],
+        STATUS_UNVERIFIED,
+    ),  # fmt: skip
     ("openstack-packages", ALL_ROLES, [], STATUS_UNVERIFIED),
     ("mariadb", ["controller"], ["/etc/mysql/mariadb.conf.d/99-openstack.cnf"], STATUS_UNVERIFIED),
     ("rabbitmq", ["controller"], [], STATUS_UNVERIFIED),
@@ -139,26 +145,27 @@ def test_catalog_files_ship_as_package_data() -> None:
 def test_duplicate_step_id(raw_catalog, catalog_schema) -> None:
     raw_catalog["steps"].append(copy.deepcopy(raw_catalog["steps"][0]))
     assert _messages(raw_catalog, catalog_schema) == [
-        "steps[7].id: duplicate id 'hosts-file'; already used by steps[0]"
+        "steps[8].id: duplicate id 'hosts-file'; already used by steps[0]"
     ]
 
 
 def test_unknown_dependency(raw_catalog, catalog_schema) -> None:
-    raw_catalog["steps"][3]["depends_on"] = ["openstack-packages", "keystone"]
+    raw_catalog["steps"][4]["depends_on"] = ["openstack-packages", "keystone"]
     assert _messages(raw_catalog, catalog_schema) == [
-        "steps[3].depends_on[1]: unknown step 'keystone'"
+        "steps[4].depends_on[1]: unknown step 'keystone'"
     ]
 
 
 def test_dependency_cycle(raw_catalog, catalog_schema) -> None:
     raw_catalog["steps"][0]["depends_on"] = ["openstack-packages"]
     assert _messages(raw_catalog, catalog_schema) == [
-        "steps: dependency cycle: hosts-file -> openstack-packages -> time-sync -> hosts-file"
+        "steps: dependency cycle: "
+        "hosts-file -> openstack-packages -> time-sync-controller -> hosts-file"
     ]
 
 
 def test_self_dependency_is_a_cycle(raw_catalog, catalog_schema) -> None:
-    raw_catalog["steps"][4]["depends_on"] = ["rabbitmq"]
+    raw_catalog["steps"][5]["depends_on"] = ["rabbitmq"]
     assert _messages(raw_catalog, catalog_schema) == [
         "steps: dependency cycle: rabbitmq -> rabbitmq"
     ]

@@ -6,17 +6,35 @@ never import it. The file edits and the ``hosts-file`` step run no external comm
 use no network; they write only below an explicitly given root directory.
 
 External commands can only run through :class:`CommandExecutor` and an allowlist
-:class:`CommandRegistry`. No real command is registered yet (:data:`DEFAULT_REGISTRY` is
-empty).
+:class:`CommandRegistry`; :data:`DEFAULT_REGISTRY` holds the four reviewed system commands
+used by the (unverified) ``time-sync-controller`` step.
 """
 
-from openstack_forge.execution.audit import AUDIT_FILE_MODE, AuditLog
+from openstack_forge.execution.audit import AUDIT_FILE_MODE, DEFAULT_AUDIT_TARGET, AuditLog
+from openstack_forge.execution.chrony import (
+    CHRONY_BLOCK_NAME,
+    CHRONY_CONF_TARGET,
+    TIME_SYNC_CONTROLLER_STEP_ID,
+    TimeSyncControllerStep,
+    build_chrony_block,
+    edit_chrony_conf,
+    make_time_sync_controller_step,
+    parse_dpkg_status,
+    verify_chrony_text,
+)
 from openstack_forge.execution.commands import (
+    APT_FAILURE_HINT,
+    APT_GET_INSTALL,
     DEFAULT_OUTPUT_LIMIT,
     DEFAULT_REGISTRY,
+    DEFAULT_TERM_GRACE_PERIOD,
+    DPKG_QUERY_STATUS,
     FORBIDDEN_EXECUTABLES,
     PARAM_TYPES,
     SANITIZED_ENV,
+    SYSTEM_COMMANDS,
+    SYSTEMCTL_IS_ACTIVE,
+    SYSTEMCTL_RESTART,
     CommandExecutor,
     CommandRegistry,
     CommandResult,
@@ -74,7 +92,6 @@ from openstack_forge.execution.hosts import (
     HOSTS_BLOCK_NAME,
     HOSTS_STEP_ID,
     HOSTS_TARGET,
-    IMPLEMENTED_STEPS,
     LOOPBACK_127_0_1_1,
     HostsFileStep,
     apply_hosts_file,
@@ -87,6 +104,7 @@ from openstack_forge.execution.hosts import (
     verify_hosts_file,
     verify_hosts_text,
 )
+from openstack_forge.execution.preview import PlannedCommand, StepPreview
 from openstack_forge.execution.redaction import MASK, redact_data, redact_text
 from openstack_forge.execution.state import (
     STATE_FILE_MODE,
@@ -94,8 +112,29 @@ from openstack_forge.execution.state import (
     StepRecord,
     StepStatus,
 )
+from openstack_forge.execution.steps import IMPLEMENTED_STEPS, build_step
 
 __all__ = [
+    "APT_FAILURE_HINT",
+    "APT_GET_INSTALL",
+    "CHRONY_BLOCK_NAME",
+    "CHRONY_CONF_TARGET",
+    "DEFAULT_AUDIT_TARGET",
+    "DEFAULT_TERM_GRACE_PERIOD",
+    "DPKG_QUERY_STATUS",
+    "SYSTEMCTL_IS_ACTIVE",
+    "SYSTEMCTL_RESTART",
+    "SYSTEM_COMMANDS",
+    "TIME_SYNC_CONTROLLER_STEP_ID",
+    "PlannedCommand",
+    "StepPreview",
+    "TimeSyncControllerStep",
+    "build_chrony_block",
+    "build_step",
+    "edit_chrony_conf",
+    "make_time_sync_controller_step",
+    "parse_dpkg_status",
+    "verify_chrony_text",
     "AUDIT_FILE_MODE",
     "DEFAULT_OUTPUT_LIMIT",
     "DEFAULT_REGISTRY",

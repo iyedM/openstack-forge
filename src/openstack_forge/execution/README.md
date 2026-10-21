@@ -16,8 +16,12 @@ step used by `openstack-forge apply`. Imported lazily by the `apply` CLI handler
 - `state.py` - `StateStore`, the 0600 JSON step-status file.
 - `engine.py` - `Engine.run()` / `Engine.resume()` over check/apply/verify steps.
 - `commands.py` - allowlisted `CommandSpec`s, typed parameter validation,
-  `CommandRegistry` (no real command registered), and `CommandExecutor` with an injectable
-  backend, sanitized environment, timeouts, redacted and truncated output.
+  `CommandRegistry` (`DEFAULT_REGISTRY` holds the four reviewed system commands), and
+  `CommandExecutor` with an injectable backend, sanitized environment, SIGTERM-then-SIGKILL
+  timeouts, redacted and truncated output.
+- `chrony.py` - the `time-sync-controller` step (unverified, never run on a real host).
+- `preview.py` - `StepPreview` / `PlannedCommand` used by `apply` dry runs.
+- `steps.py` - `IMPLEMENTED_STEPS` and `build_step()`.
 - `audit.py` - `AuditLog`, the append-only 0600 JSON-lines record of executed commands.
 - `errors.py` - `ExecutionError` and its subclasses.
 

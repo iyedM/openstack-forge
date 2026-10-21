@@ -65,12 +65,19 @@ def test_every_dependency_comes_before_its_dependent(valid_config, catalog) -> N
 def test_plan_is_ordered_by_step_then_controller_first(valid_config, catalog) -> None:
     plan = build_plan(valid_config, catalog)
     assert [item.sequence for item in plan.items] == list(range(1, len(plan.items) + 1))
-    assert _order(plan)[:5] == [
+    assert _order(plan)[:12] == [
         ("ctl-01", "hosts-file"),
         ("cmp-01", "hosts-file"),
         ("blk-01", "hosts-file"),
         ("obj-01", "hosts-file"),
-        ("ctl-01", "time-sync"),
+        ("ctl-01", "time-sync-controller"),
+        ("cmp-01", "time-sync-other"),
+        ("blk-01", "time-sync-other"),
+        ("obj-01", "time-sync-other"),
+        ("ctl-01", "openstack-packages"),
+        ("cmp-01", "openstack-packages"),
+        ("blk-01", "openstack-packages"),
+        ("obj-01", "openstack-packages"),
     ]
     assert _order(plan)[-4:] == [
         ("ctl-01", "mariadb"),
@@ -93,8 +100,28 @@ def test_controller_is_ordered_first_regardless_of_config_order(valid_config, ca
 
 def test_local_dependencies_wait_on_the_same_node(valid_config, catalog) -> None:
     plan = build_plan(valid_config, catalog)
-    item = next(i for i in plan.items if (i.node, i.step.id) == ("cmp-01", "openstack-packages"))
-    assert item.waits_for == (Dependency("time-sync", "cmp-01"),)
+    item = next(i for i in plan.items if (i.node, i.step.id) == ("ctl-01", "openstack-packages"))
+    assert item.waits_for == (Dependency("time-sync-controller", "ctl-01"),)
+
+
+def test_time_sync_controller_comes_before_every_dependent_step(valid_config, catalog) -> None:
+    plan = build_plan(valid_config, catalog)
+    order = _order(plan)
+    controller_sync = order.index(("ctl-01", "time-sync-controller"))
+    for node in ("cmp-01", "blk-01", "obj-01"):
+        assert order.index((node, "time-sync-other")) > controller_sync
+        assert order.index((node, "openstack-packages")) > controller_sync
+
+
+def test_other_nodes_wait_for_the_controller_time_sync(valid_config, catalog) -> None:
+    plan = build_plan(valid_config, catalog)
+    waits = {(i.node, i.step.id): i.waits_for for i in plan.items}
+    for node in ("cmp-01", "blk-01", "obj-01"):
+        assert waits[(node, "time-sync-other")] == (Dependency("time-sync-controller", "ctl-01"),)
+        # Documented limitation: packages do not wait for the node's own time-sync-other.
+        assert waits[(node, "openstack-packages")] == (
+            Dependency("time-sync-controller", "ctl-01"),
+        )
 
 
 def test_cross_node_dependency_waits_for_the_controller(valid_config) -> None:
@@ -152,7 +179,7 @@ def test_dependency_not_run_by_any_node_is_reported(valid_config) -> None:
             "ctl-01",
             [
                 "hosts-file",
-                "time-sync",
+                "time-sync-controller",
                 "openstack-packages",
                 "mariadb",
                 "rabbitmq",
@@ -160,9 +187,9 @@ def test_dependency_not_run_by_any_node_is_reported(valid_config) -> None:
                 "etcd",
             ],
         ),
-        ("cmp-01", ["hosts-file", "time-sync", "openstack-packages"]),
-        ("blk-01", ["hosts-file", "time-sync", "openstack-packages"]),
-        ("obj-01", ["hosts-file", "time-sync", "openstack-packages"]),
+        ("cmp-01", ["hosts-file", "time-sync-other", "openstack-packages"]),
+        ("blk-01", ["hosts-file", "time-sync-other", "openstack-packages"]),
+        ("obj-01", ["hosts-file", "time-sync-other", "openstack-packages"]),
     ],
 )
 def test_steps_are_filtered_by_role(
@@ -266,8 +293,10 @@ def test_json_output(valid_config, catalog) -> None:
         "waits_for": [],
     }
     assert second["node"] == "cmp-01"
-    time_sync = next(s for s in payload["steps"] if s["id"] == "time-sync")
+    time_sync = next(s for s in payload["steps"] if s["id"] == "time-sync-controller")
     assert time_sync["waits_for"] == [{"step": "hosts-file", "node": "ctl-01"}]
+    other = next(s for s in payload["steps"] if s["id"] == "time-sync-other")
+    assert other["waits_for"] == [{"step": "time-sync-controller", "node": "ctl-01"}]
     assert [note["id"] for note in payload["notes"]] == ["network-configuration"]
 
 

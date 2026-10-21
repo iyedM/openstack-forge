@@ -29,6 +29,13 @@
         "topology": {
           "type": "string",
           "minLength": 1
+        },
+        "ntp_servers": {
+          "type": "array",
+          "description": "upstream NTP servers for the controller; when absent, the distribution's default pool is kept",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/ntp_server" }
         }
       }
     },
@@ -69,6 +76,11 @@
     }
   },
   "$defs": {
+    "ntp_server": {
+      "type": "string",
+      "description": "a hostname, a fully qualified domain name or an IPv4 address, such as \"ntp.example.internal\"",
+      "pattern": "^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$"
+    },
     "ipv4_address": {
       "type": "string",
       "format": "ipv4"

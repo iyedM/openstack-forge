@@ -28,7 +28,13 @@ class EngineError(ExecutionError):
 
 
 class CommandError(ExecutionError):
-    """Base class for errors of the allowlisted command layer."""
+    """Base class for errors of the allowlisted command layer.
+
+    ``hint`` is set by the executor from the command's ``failure_hint`` and is appended
+    to the engine's suggested next action.
+    """
+
+    hint: str | None = None
 
 
 class CommandSpecError(CommandError):
@@ -52,7 +58,14 @@ class CommandNotFoundError(CommandError):
 
 
 class CommandTimeoutError(CommandError):
-    """The command did not finish within its timeout and was killed."""
+    """The command did not finish within its timeout and was stopped.
+
+    ``killed`` is True when it ignored SIGTERM for the grace period and got SIGKILL.
+    """
+
+    def __init__(self, message: str, *, killed: bool = False) -> None:
+        self.killed = killed
+        super().__init__(message)
 
 
 class UnexpectedExitError(CommandError):

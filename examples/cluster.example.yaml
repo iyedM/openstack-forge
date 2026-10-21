@@ -8,6 +8,10 @@ cluster:
   ubuntu_version: "24.04"       # the only supported Ubuntu release
   openstack_release: "2025.1"   # Epoxy, installed from the cloud-archive:epoxy repository
   topology: "private-cloud"
+  # Optional upstream NTP servers for the controller (time-sync-controller step). When
+  # absent, the controller keeps the distribution's default pool of public servers.
+  # ntp_servers:
+  #   - "ntp1.example.internal"
 
 networks:
   management:

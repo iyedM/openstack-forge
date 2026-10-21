@@ -1,17 +1,16 @@
 # Execution engine and `openstack-forge apply`
 
 `openstack_forge.execution` contains the confined file-editing primitives, redaction helper,
-state store, step engine, and the first implemented deployment step (`hosts-file`).
+state store, step engine, an allowlisted command layer, and two implemented deployment
+steps: `hosts-file` and `time-sync-controller`.
 
-**Only `hosts-file` is implemented, it remains marked `unverified` in the step catalog, and
-it has not been run on a real VM.** Every other catalog step is rejected as "not
-implemented" by `openstack-forge apply`. The file primitives, the `hosts-file` step and
-`apply` run no external command (`subprocess`), use no `sudo` and touch no network: all
-their work is pure Python file operations confined to the target root directory.
-
-The package also contains an allowlisted [command execution layer](#command-execution-layer)
-for future mutating steps. **No real system command is registered in it yet** (the default
-registry is empty; only test fixtures register commands), and nothing in `apply` uses it.
+**Both steps are marked `unverified` in the step catalog, and neither has ever run on a
+real host.** Every other catalog step is rejected as "not implemented" by
+`openstack-forge apply`. `hosts-file` is pure Python file operations confined to the target
+root. [`time-sync-controller`](#step-time-sync-controller-openstack_forgeexecutionchrony)
+is the first step that runs system commands (`apt-get`, `systemctl`, `dpkg-query`), only
+through the [command execution layer](#command-execution-layer), whose registry contains
+exactly four reviewed commands. Nothing uses `sudo` or the network.
 
 ## Why a separate package
 
@@ -179,20 +178,27 @@ validated `ClusterConfig`, the target node's hostname, and a target `root` direc
 ## CLI: `openstack-forge apply`
 
 ```sh
-openstack-forge apply --config cluster.yaml --step hosts-file [--node HOSTNAME] [--root PATH] [--yes]
+openstack-forge apply --config cluster.yaml --step STEP_ID [--node HOSTNAME] [--root PATH] [--yes]
 ```
 
 | Option | Meaning |
 | ------ | ------- |
 | `--config PATH` | Cluster configuration (default: `cluster.yaml`), validated before use. |
-| `--step STEP_ID` | Catalog step ID to apply (required). Only steps registered in `IMPLEMENTED_STEPS` (`hosts-file`) can run; any other catalog step exits with code 1 and `"not implemented"`. |
+| `--step STEP_ID` | Catalog step ID to apply (required). Only steps registered in `IMPLEMENTED_STEPS` (`hosts-file`, `time-sync-controller`) can run; any other catalog step exits with code 1 and `"not implemented"`. |
 | `--node HOSTNAME` | Target node hostname. If omitted, matched against the local machine's hostname (`socket.gethostname()`). |
 | `--root PATH` | Target filesystem root (default: `/`). Used by tests to confine all writes to a temporary directory. |
-| `--yes` | Write changes and update the state file. Without `--yes`, `apply` runs in **dry-run** mode: it prints the redacted unified diff, writes nothing, and exits 0. |
+| `--yes` | Write changes, run the step's commands and update the state file. Without `--yes`, `apply` runs in **dry-run** mode: it prints the redacted unified diff and the exact argv of every command the step would run, writes nothing, runs nothing, and exits 0. |
 
-- **Catalog status warning:** `apply` always prints a visible warning to `stderr` when a
-  step is marked `unverified` in `steps.json`. `hosts-file` remains `unverified` in the
-  catalog and has not been run on a real VM.
+- **Catalog status warning:** `apply` prints a visible `WARNING` line when a step is marked
+  `unverified` in `steps.json`, which both implemented steps are.
+- **Dry run:** shows the file diff (or, when the file does not exist yet because its
+  package is not installed, the block that will be appended), then the mutating commands
+  `apply()` would run in order, then the read-only commands `check()` and `verify()` would
+  run. A dry run does not evaluate `check()`, because that would run commands.
+- **Steps that run commands and `--root`:** for a step that declares commands, `--yes`
+  with a `--root` that does not resolve to `/` is refused with exit code 1 before anything
+  is written: those commands would act on the real host, not on the root directory. (The
+  command executor refuses mutating commands under such a root as a second safeguard.)
 - **Root check:** writing to the real `/` root (`--yes` without `--root`, or `--root /`)
   requires effective UID 0 (`os.geteuid() == 0`); otherwise `apply` fails with a clear
   message and exits 1. Passing `--root PATH` (where `PATH` does not resolve to `/`)
@@ -200,6 +206,9 @@ openstack-forge apply --config cluster.yaml --step hosts-file [--node HOSTNAME] 
 - **State file location:** `<root>/var/lib/openstack-forge/state.json` (so `/var/lib/openstack-forge/state.json`
   on `/`, or `<tmp>/var/lib/openstack-forge/state.json` under `--root <tmp>`), written
   atomically with mode `0600` only when `--yes` is given.
+- **Audit log location:** `<root>/var/log/openstack-forge/commands.log` (mode `0600`; its
+  directory is created with mode `0700` on the first `--yes` run of a step that declares
+  commands). Nothing uses `sudo`: writing to `/` requires running the tool as root.
 
 ## Redaction
 
@@ -276,9 +285,23 @@ locking against two engines sharing a state file, and no timeout around a step's
 `openstack_forge.execution.commands` (with `audit.py`) is the only code in the project that
 may start a process on behalf of a deployment step. It exists so that future steps (for
 example installing a package or restarting a service) have one reviewed path for doing so.
-**No real command is registered yet:** `DEFAULT_REGISTRY` is empty and a test keeps it
-that way until a step adds a reviewed spec. The tests only ever run two harmless
-`sys.executable` one-liners; everything else uses a fake backend.
+`DEFAULT_REGISTRY` contains exactly the four reviewed commands below, and a test pins
+their argv, parameter types, exit codes and `mutates` flags, so adding or changing one is a
+deliberate edit. The tests only ever run harmless `sys.executable` one-liners; everything
+else uses a fake backend.
+
+| Id | argv | Mutates | Allowed exit codes | Justification |
+| -- | ---- | ------- | ------------------ | ------------- |
+| `apt-get.install` | `/usr/bin/apt-get install --yes {package}` | yes | 0 | apt(8) "SCRIPT USAGE": scripts should use `apt-get`, not `apt`. apt-get(8) `--yes`: "assume yes ... run non-interactively", still aborting on held, unauthenticated or essential packages. Timeout 900 s. |
+| `systemctl.restart` | `/usr/bin/systemctl restart {unit}` | yes | 0 | systemctl(1): stops and starts the unit, starting it if it was not running. Timeout 120 s. |
+| `systemctl.is-active` | `/usr/bin/systemctl is-active {unit}` | no | 0-4 | systemctl(1): exit 0 if active, non-zero otherwise; the LSB codes 1-4 all mean "not active", and the man page advises reading the printed state, so callers also require the output `active`. |
+| `dpkg-query.status` | `/usr/bin/dpkg-query --status {package}` | no | 0, 1 | dpkg-query(1): `--status` shows the status database entry; exit 1 means the package was not found, 2 is fatal. |
+
+Each path is the one installed by the `apt`, `systemd` and `dpkg` packages on Ubuntu 24.04
+(checked with `dpkg -S`); `PATH` is never searched. No other apt or dpkg option is used:
+in particular no `--force-*`, no `-o Dpkg::Options` and no lock timeout. A configuration
+file prompt from dpkg therefore makes the command fail (stdin is `/dev/null`) instead of
+being answered automatically.
 
 ### Allowlist, not command strings
 
@@ -331,8 +354,14 @@ Missing or unexpected parameters are errors too. There is no free-text type.
 - **Sanitized environment.** The child gets exactly `PATH=/usr/sbin:/usr/bin:/sbin:/bin`,
   `LC_ALL=C`, `LANG=C` and `DEBIAN_FRONTEND=noninteractive`; nothing is inherited (no
   `LD_PRELOAD`, no credentials, no `HOME`).
-- **Timeout.** On expiry the whole process group is killed (`SIGKILL`) and
-  `CommandTimeoutError` is raised.
+- **Timeout.** On expiry the whole process group gets `SIGTERM`; if it is still running
+  after a grace period (`SubprocessBackend(term_grace_period=...)`, default 5 s) it gets
+  `SIGKILL`. `CommandTimeoutError.killed` says which happened.
+- **Failure hints.** A spec may carry a `failure_hint`; the executor attaches it to the
+  error, and the engine appends it to the suggested next action. `apt-get.install` uses
+  it to say that apt may have left packages half-installed or half-configured (inspect
+  with `dpkg --audit`) and that a "could not get lock" error means another package manager
+  is running (wait; do not delete lock files). No recovery is attempted automatically.
 - **Typed errors.** `CommandNotFoundError` (missing or non-executable binary),
   `CommandTimeoutError`, `UnexpectedExitError` (exit code not in `allowed_exit_codes`; carries
   the code and redacted stderr), `ParameterError`, `UnknownCommandError`,
@@ -379,4 +408,44 @@ details, `VerifyResult` details, the state file and the audit log all stay redac
   (as the tests use) can run anything, so real specs must name the real tool.
 - No retries, no locking between concurrent executors, and the audit log is local and not
   tamper-proof against root.
+
+## Step: `time-sync-controller` (`openstack_forge.execution.chrony`)
+
+**Unverified, and never run on a real host.** It follows the official controller page,
+<https://docs.openstack.org/install-guide/environment-ntp-controller.html>, which for Ubuntu
+says to install `chrony`, edit `/etc/chrony/chrony.conf` with `server NTP_SERVER iburst`
+lines and `allow <subnet>`, and restart the service.
+
+| Phase | What happens |
+| ----- | ------------ |
+| `check()` | True only if `chrony.conf` needs no edit (pure) **and** `dpkg-query --status chrony` reports `install ok installed`. The file is checked first, so `dpkg-query` is only run when the file is already correct. |
+| `apply()` | `apt-get install --yes chrony`; then the file edit; then `systemctl restart chrony`. |
+| `verify()` | Pure check that the managed block exists with the expected content and contains `allow <networks.management.subnet>` (and, with `ntp_servers`, that no active `pool`/`server` line is left outside it), plus `systemctl is-active chrony` printing `active`. |
+
+The file edit, in `chrony.conf` only, between `# BEGIN openstack-forge time-sync` and
+`# END openstack-forge time-sync`:
+
+- with `cluster.ntp_servers`: every active `pool` and `server` line outside the block is
+  commented out with the `# openstack-forge disabled: ` prefix, and the block contains one
+  `server <name> iburst` line per server;
+- without `cluster.ntp_servers`: the distribution's default pool is kept, and lines this
+  step disabled earlier are restored;
+- in both cases the block ends with `allow <networks.management.subnet>`.
+
+Everything else in the file (comments, `confdir`, `sourcedir`, `driftfile`, ...) is left as
+it is; `comment_out_lines(..., exclude_block=...)` never touches the block's own lines, so
+re-running writes nothing. The file must already exist (it is installed by the package); the
+step never creates it. The step requires a `management` network and only runs on the
+controller.
+
+Deviations from the page, and limits:
+
+- The page restarts with `service chrony restart`; this step uses `systemctl restart chrony`.
+- The page says to "add, change, or remove" keys as necessary; commenting out the existing
+  sources when servers are configured is this project's reading of it.
+- `sourcedir` directives (for example servers learned from DHCP) are not touched.
+- **Time synchronization itself is not checked**, because the guide's NTP verification page
+  has not been reviewed yet; `verify()` says so in its details.
+- `time-sync-other` (the other nodes) is in the catalog but not implemented; its page has
+  not been read.
 

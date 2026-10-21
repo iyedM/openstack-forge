@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Protocol
 
@@ -204,7 +204,12 @@ class Engine:
         return _failure(step.id, Phase.VERIFY, "verification did not pass", result.details)
 
     def _error(self, step: ExecutableStep, phase: Phase, exc: Exception) -> FailureReport:
-        return _failure(step.id, phase, f"{phase.value}() raised {type(exc).__name__}", str(exc))
+        failure = _failure(step.id, phase, f"{phase.value}() raised {type(exc).__name__}", str(exc))
+        # Errors may carry a command-specific hint (e.g. apt-get and the dpkg state).
+        hint = getattr(exc, "hint", None)
+        if isinstance(hint, str) and hint:
+            failure = replace(failure, next_action=f"{failure.next_action} {hint}")
+        return failure
 
     def _stop(
         self,

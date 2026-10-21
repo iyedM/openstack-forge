@@ -109,6 +109,22 @@ All notable changes to this project will be documented in this file.
     start and finish (outcome, exit code, duration) of every executed command, redacted.
   - `command_succeeds()` / `verify_command()` helpers for steps; engine failure details,
     `VerifyResult` details and state stay redacted.
+- `time-sync-controller` step (`openstack_forge.execution.chrony`), the first step that
+  runs system commands. **Unverified and never run on a real host.** Following the official
+  controller NTP page: install `chrony`, add a managed block to `/etc/chrony/chrony.conf`
+  with `server <name> iburst` per `cluster.ntp_servers` entry (existing `pool`/`server`
+  lines are commented out only when servers are configured) and
+  `allow <networks.management.subnet>`, then `systemctl restart chrony`. `verify()` checks
+  the file and `systemctl is-active`; actual time synchronization is not checked yet.
+- The first real command specs in `DEFAULT_REGISTRY`: `apt-get install --yes`,
+  `systemctl restart`, `systemctl is-active` and `dpkg-query --status`, with literal
+  absolute paths and justifications from their manual pages.
+- Optional `cluster.ntp_servers` in the configuration schema (see
+  `docs/configuration/README.md`).
+- `apply` dry runs show the exact argv of every command a step would run; `--yes` with a
+  `--root` other than `/` is refused for steps that run commands; command audit log at
+  `<root>/var/log/openstack-forge/commands.log` (0600).
+- `comment_out_lines(..., exclude_block=...)` to leave a managed block's own lines alone.
 
 ### Changed
 
@@ -126,6 +142,17 @@ All notable changes to this project will be documented in this file.
 - Minimum `jsonschema` lowered from 4.23 to 4.10.3, the version packaged by Ubuntu 24.04;
   the test suite passes against it.
 - `setuptools` and `wheel` added to the `dev` extra for the offline packaging test.
+- The catalog's `time-sync` step is split into `time-sync-controller` (controller) and
+  `time-sync-other` (compute, block, object; depends on `time-sync-controller`; not
+  implemented). `openstack-packages` now depends on `time-sync-controller` only, so other
+  nodes do not wait for their own `time-sync-other` (documented; per-role dependencies are
+  future work).
+- Command timeouts now send SIGTERM to the process group, wait a configurable grace period
+  (default 5 s), then send SIGKILL.
+- Engine failure reports append command-specific hints; an `apt-get` failure mentions a
+  possible half-configured dpkg state and the dpkg lock, without any automatic recovery.
+- The registry test now pins the four reviewed commands instead of asserting an empty
+  registry; `IMPLEMENTED_STEPS` moved to `openstack_forge.execution.steps`.
 
 ### Fixed
 

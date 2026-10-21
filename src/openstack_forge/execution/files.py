@@ -101,15 +101,18 @@ def comment_out_lines(
     pattern: str | re.Pattern[str],
     *,
     prefix: str = DISABLED_LINE_PREFIX,
+    exclude_block: str | None = None,
     dry_run: bool = False,
     new_file_mode: int = DEFAULT_FILE_MODE,
 ) -> FileChange:
     """Comment out active lines matching ``pattern`` by prepending ``prefix``.
 
     Lines that already start with ``prefix`` or are already ``#`` comments are not
-    modified, so repeated calls are idempotent. A missing target file is left absent.
+    modified, so repeated calls are idempotent. Lines inside the ``exclude_block``
+    managed block (markers included) are never touched. A missing target file is left
+    absent.
     """
-    edit = _comment_out_editor(pattern, prefix=prefix)
+    edit = _comment_out_editor(pattern, prefix=prefix, exclude_block=exclude_block)
     return _edit_file(
         root,
         target,
@@ -124,14 +127,18 @@ def _comment_out_editor(
     pattern: str | re.Pattern[str],
     *,
     prefix: str = DISABLED_LINE_PREFIX,
+    exclude_block: str | None = None,
 ) -> Callable[[list[str], str], list[str]]:
     _validate_comment_prefix(prefix)
     regex = _compile_line_pattern(pattern)
+    if exclude_block is not None:
+        _require_single_line("block name", exclude_block)
 
     def edit(lines: list[str], _display: str) -> list[str]:
+        protected = _block_line_indexes(lines, exclude_block) if exclude_block else set()
         result: list[str] = []
-        for line in lines:
-            if line.startswith(prefix) or line.lstrip().startswith("#"):
+        for index, line in enumerate(lines):
+            if index in protected or line.startswith(prefix) or line.lstrip().startswith("#"):
                 result.append(line)
             elif regex.search(line):
                 result.append(f"{prefix}{line}")
@@ -157,6 +164,22 @@ def uncomment_lines(
     ``pattern`` are restored; when ``pattern`` is ``None``, every line starting with
     ``prefix`` is restored. A missing target file is left absent.
     """
+    edit = _uncomment_editor(pattern, prefix=prefix)
+    return _edit_file(
+        root,
+        target,
+        edit,
+        dry_run=dry_run,
+        new_file_mode=new_file_mode,
+        create_if_missing=False,
+    )
+
+
+def _uncomment_editor(
+    pattern: str | re.Pattern[str] | None = None,
+    *,
+    prefix: str = DISABLED_LINE_PREFIX,
+) -> Callable[[list[str], str], list[str]]:
     _validate_comment_prefix(prefix)
     regex = _compile_line_pattern(pattern) if pattern is not None else None
 
@@ -171,14 +194,23 @@ def uncomment_lines(
             result.append(line)
         return result
 
-    return _edit_file(
-        root,
-        target,
-        edit,
-        dry_run=dry_run,
-        new_file_mode=new_file_mode,
-        create_if_missing=False,
-    )
+    return edit
+
+
+def _block_line_indexes(lines: list[str], name: str, comment: str = "#") -> set[int]:
+    """Indexes of the lines of the ``name`` managed block, markers included."""
+    begin, end = f"{comment} BEGIN {name}", f"{comment} END {name}"
+    protected: set[int] = set()
+    inside = False
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped == begin:
+            inside = True
+        if inside:
+            protected.add(index)
+        if stripped == end:
+            inside = False
+    return protected
 
 
 def ini_set(

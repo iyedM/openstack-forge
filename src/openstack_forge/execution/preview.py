@@ -1,0 +1,51 @@
+"""What a step would do, for dry runs: file diffs, planned commands and notes.
+
+Building a preview never runs a command and never writes a file.
+"""
+
+from __future__ import annotations
+
+import shlex
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+from openstack_forge.execution.files import FileChange
+from openstack_forge.execution.redaction import redact_text
+
+if TYPE_CHECKING:  # avoid importing the command layer from file-only steps
+    from openstack_forge.execution.commands import CommandRegistry
+
+
+@dataclass(frozen=True)
+class PlannedCommand:
+    """An allowlisted command a step would run, with its parameters."""
+
+    command_id: str
+    params: Mapping[str, str] = field(default_factory=dict)
+
+    def argv(self, registry: CommandRegistry) -> tuple[str, ...]:
+        """The exact, validated argv (redacted), without running anything."""
+        built = registry.get(self.command_id).build_argv(self.params)
+        return tuple(redact_text(element) for element in built)
+
+    def describe(self, registry: CommandRegistry) -> str:
+        return shlex.join(self.argv(registry))
+
+
+@dataclass(frozen=True)
+class StepPreview:
+    """Dry-run description of a step.
+
+    ``commands`` are the mutating commands ``apply()`` would run, in order;
+    ``read_only_commands`` are those ``check()`` and ``verify()`` would run.
+    """
+
+    file_changes: tuple[FileChange, ...] = ()
+    commands: tuple[PlannedCommand, ...] = ()
+    read_only_commands: tuple[PlannedCommand, ...] = ()
+    notes: tuple[str, ...] = ()
+
+    @property
+    def files_changed(self) -> bool:
+        return any(change.changed for change in self.file_changes)

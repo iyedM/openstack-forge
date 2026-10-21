@@ -38,6 +38,7 @@ contains a secret is not printed.
 | `ubuntu_version` | `"24.04"`, the only supported Ubuntu release. Quote it: unquoted `24.04` is read as a number. |
 | `openstack_release` | `"2025.1"` (Epoxy), the only supported OpenStack release. |
 | `topology` | Non-empty string. |
+| `ntp_servers` | Optional. List of at least one hostname, FQDN or IPv4 address, with no duplicates (compared case-insensitively). When absent, the controller keeps the distribution's default NTP pool. |
 
 Supported releases come from a table in
 [`releases.py`](../../src/openstack_forge/config/releases.py):
@@ -125,6 +126,7 @@ Validation runs in three stages. Each stage only runs if the previous one succee
 | Each provider range must have `start <= end`, and both ends must be usable host addresses in the provider subnet. | `networks.provider.floating_ip_range: start 203.0.113.199 is after end 203.0.113.100` |
 | Provider ranges must not include the provider gateway or any node's `management_ip`. | `networks.provider.floating_ip_range: 192.0.2.1-192.0.2.30 includes nodes[0].management_ip 192.0.2.11` |
 | `dhcp_range` must not overlap `floating_ip_range`. | `networks.provider.dhcp_range: 192.0.2.25-192.0.2.60 overlaps floating_ip_range 192.0.2.1-192.0.2.30` |
+| `cluster.ntp_servers` entries made only of digits and dots must be valid IPv4 addresses, and entries must be unique case-insensitively. | `cluster.ntp_servers[1]: duplicate NTP server 'ntp.example'; already listed at cluster.ntp_servers[0]` |
 | `hostname`, `fqdn` and `management_ip` must each be unique across nodes. Names are compared case-insensitively. | `nodes[2].hostname: duplicate hostname 'CMP-01'; already used by nodes[1]` |
 | The first label of a node's `fqdn` must equal its `hostname`. | `nodes[0].fqdn: 'ctl-02.cluster.test' does not start with hostname 'ctl-01'` |
 | Every key in `nodes[].interfaces` must name a network defined under `networks`. | `nodes[0].interfaces.external: refers to undefined network 'external' (defined networks: ...)` |
@@ -135,6 +137,12 @@ network/broadcast address checks are skipped. The gateway and node-address check
 also applied to `dhcp_range`, because a static address inside a DHCP pool is a conflict.
 
 ## Changes to the public format
+
+### Milestone 8
+
+| Change | Reason |
+| ------ | ------ |
+| Optional `cluster.ntp_servers`: a non-empty list of hostnames, FQDNs or IPv4 addresses (format checked by the schema; IPv4 validity and case-insensitive duplicates by the semantic rules). | The `time-sync-controller` step writes `server <name> iburst` lines for them. The installation guide notes that by default the controller synchronizes with a pool of public servers; when the list is absent that default is kept. IPv6 addresses and trailing-dot names are not accepted. |
 
 ### Milestone 2
 
