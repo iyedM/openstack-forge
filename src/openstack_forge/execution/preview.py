@@ -11,7 +11,6 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from openstack_forge.execution.files import FileChange
-from openstack_forge.execution.redaction import redact_text
 
 if TYPE_CHECKING:  # avoid importing the command layer from file-only steps
     from openstack_forge.execution.commands import CommandRegistry
@@ -24,10 +23,17 @@ class PlannedCommand:
     command_id: str
     params: Mapping[str, str] = field(default_factory=dict)
 
+    def __repr__(self) -> str:
+        from openstack_forge.execution.redaction import redact_data
+
+        return (
+            f"PlannedCommand(command_id={self.command_id!r}, "
+            f"params={redact_data(dict(self.params))!r})"
+        )
+
     def argv(self, registry: CommandRegistry) -> tuple[str, ...]:
         """The exact, validated argv (redacted), without running anything."""
-        built = registry.get(self.command_id).build_argv(self.params)
-        return tuple(redact_text(element) for element in built)
+        return registry.get(self.command_id).build_shown_argv(self.params)
 
     def describe(self, registry: CommandRegistry) -> str:
         return shlex.join(self.argv(registry))

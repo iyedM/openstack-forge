@@ -145,6 +145,8 @@ def test_nothing_outside_the_root_is_touched(tmp_path: Path) -> None:
                 "--yes",
             ]
         )
+        rc_secrets_init = main(["secrets", "init", "--root", str(root)])
+        rc_secrets_show = main(["secrets", "show", "ADMIN_PASS", "--root", str(root)])
         for target in escapes:
             with pytest.raises(RootEscapeError):
                 managed_block(root, target, "forge", "x\n")
@@ -156,7 +158,14 @@ def test_nothing_outside_the_root_is_touched(tmp_path: Path) -> None:
     finally:
         _recording = None
 
-    assert first.ok and second.ok and third.ok and rc == 0
+    assert (
+        first.ok
+        and second.ok
+        and third.ok
+        and rc == 0
+        and rc_secrets_init == 0
+        and rc_secrets_show == 0
+    )
     assert recorded, "the audit hook saw no write at all; the test would prove nothing"
     escaped = [(event, path) for event, path in recorded if not _inside(path, root)]
     assert escaped == []

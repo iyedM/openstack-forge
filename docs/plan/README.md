@@ -5,13 +5,13 @@ each node would go through to prepare an OpenStack 2025.1 (Epoxy) deployment.
 
 It is strictly read-only. It reads the configuration file and the step catalog bundled
 with the package, and nothing else: it runs no command, opens no network connection,
-connects to no node and changes nothing. In `openstack-forge apply`, five steps are
-implemented: `hosts-file` (confined file operations only, no external command, no
-network), `time-sync-controller`, `time-sync-other`, `openstack-packages` and `mariadb`.
-The last four run reviewed system commands; OpenStack Forge's Python code opens no
-connection, but the apt commands they run (`apt-get update`, `apt-get install`,
-`add-apt-repository`) use the network. All five remain marked **unverified** in the
-catalog and none has been run on a real host; see
+connects to no node and changes nothing. In `openstack-forge apply`, all nine catalog
+steps are implemented: `hosts-file` (confined file operations only, no external command,
+no network), `time-sync-controller`, `time-sync-other`, `openstack-packages`, `mariadb`,
+`rabbitmq`, `memcached`, `etcd`, and `keystone`. All but `hosts-file` run reviewed system
+commands; OpenStack Forge's Python code opens no connection, but the apt commands they run
+(`apt-get update`, `apt-get install`, `add-apt-repository`) use the network. All nine
+remain marked **unverified** in the catalog and none has been run on a real host; see
 [`docs/engine/README.md`](../engine/README.md).
 
 ## Usage
@@ -113,12 +113,14 @@ All steps are **unverified**.
 | `rabbitmq` | controller | none listed | [Message queue for Ubuntu](https://docs.openstack.org/install-guide/environment-messaging-ubuntu.html) |
 | `memcached` | controller | `/etc/memcached.conf` | [Memcached for Ubuntu](https://docs.openstack.org/install-guide/environment-memcached-ubuntu.html) |
 | `etcd` | controller | `/etc/default/etcd` | [Etcd for Ubuntu](https://docs.openstack.org/install-guide/environment-etcd-ubuntu.html) |
+| `keystone` | controller | `/etc/keystone/keystone.conf`, `/etc/apache2/apache2.conf` | [Keystone for Ubuntu (2025.1)](https://docs.openstack.org/keystone/2025.1/install/keystone-install-ubuntu.html) |
 
 The `depends_on` chain follows the order of the "Environment" chapter of the installation
-guide and is itself unverified:
+guide and the Keystone 2025.1 guide, and is itself unverified:
 
-- `hosts-file` → `time-sync-controller` → `openstack-packages` → each controller service
-  (on the controller);
+- `hosts-file` → `time-sync-controller` → `openstack-packages` → each controller environment
+  service (`mariadb`, `rabbitmq`, `memcached`, `etcd`), and `keystone` waits for `mariadb`
+  and `memcached` on the controller;
 - `hosts-file` → `time-sync-other` → `openstack-packages` on compute, block and object
   nodes, where `time-sync-other` also waits for `time-sync-controller` on the controller,
   because those nodes synchronize their clocks from it. It waits for the node's own
@@ -138,13 +140,19 @@ So on the controller it waits only for `time-sync-controller on <controller>` an
 for another node; on a compute, block or object node it waits for `time-sync-other` on
 that same node (which in turn waited for the controller's `time-sync-controller`).
 
-`time-sync-controller`, `time-sync-other`, `openstack-packages` and `mariadb` are
-implemented by `openstack-forge apply` (see [`docs/engine`](../engine/README.md)).
-`mariadb` does not update the package lists itself: it relies on running after
-`openstack-packages` on the controller, as its `depends_on` says. `openstack-packages`
-takes its Ubuntu Cloud Archive pocket from the supported release table, not from the
-catalog title. `plan` only orders the steps; `apply` runs one step on one node and does
-not check that the steps it waits for were applied.
+`time-sync-controller`, `time-sync-other`, `openstack-packages`, `mariadb`, `rabbitmq`,
+`memcached`, `etcd`, and `keystone` are implemented by `openstack-forge apply` (see
+[`docs/engine`](../engine/README.md)). `mariadb`, `rabbitmq`, `memcached`, `etcd`, and
+`keystone` do not update the package lists themselves: they rely on running after
+`openstack-packages` on the controller, as their `depends_on` chain says; `rabbitmq`
+requires `RABBIT_PASS` and `keystone` requires `KEYSTONE_DBPASS` and `ADMIN_PASS` in
+`/etc/openstack-forge/secrets.json` (`openstack-forge secrets init`). `memcached` and `etcd`
+listen unauthenticated on the management IP and `rabbitmq` listens for AMQP without TLS, so
+the management network must be trusted (see the security section of
+[`docs/engine`](../engine/README.md)). `openstack-packages` takes its Ubuntu Cloud Archive
+pocket from the supported release table, not from the catalog title. `plan` only orders the
+steps; `apply` runs one step on one node and does not check that the steps it waits for were
+applied.
 
 ### Open decision: network configuration
 

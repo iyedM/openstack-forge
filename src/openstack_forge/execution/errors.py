@@ -23,6 +23,10 @@ class StateError(ExecutionError):
     """The state file cannot be read, parsed or written."""
 
 
+class SecretError(ExecutionError):
+    """The secrets store cannot be read, validated or written safely."""
+
+
 class EngineError(ExecutionError):
     """The engine was called with steps that do not match its recorded state."""
 

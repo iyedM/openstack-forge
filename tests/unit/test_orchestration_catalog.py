@@ -45,6 +45,12 @@ EXPECTED_STEPS: list[tuple[str, list[str], list[str], str]] = [
     ("rabbitmq", ["controller"], [], STATUS_UNVERIFIED),
     ("memcached", ["controller"], ["/etc/memcached.conf"], STATUS_UNVERIFIED),
     ("etcd", ["controller"], ["/etc/default/etcd"], STATUS_UNVERIFIED),
+    (
+        "keystone",
+        ["controller"],
+        ["/etc/keystone/keystone.conf", "/etc/apache2/apache2.conf"],
+        STATUS_UNVERIFIED,
+    ),
 ]
 
 
@@ -145,14 +151,14 @@ def test_catalog_files_ship_as_package_data() -> None:
 def test_duplicate_step_id(raw_catalog, catalog_schema) -> None:
     raw_catalog["steps"].append(copy.deepcopy(raw_catalog["steps"][0]))
     assert _messages(raw_catalog, catalog_schema) == [
-        "steps[8].id: duplicate id 'hosts-file'; already used by steps[0]"
+        "steps[9].id: duplicate id 'hosts-file'; already used by steps[0]"
     ]
 
 
 def test_unknown_dependency(raw_catalog, catalog_schema) -> None:
-    raw_catalog["steps"][4]["depends_on"] = ["openstack-packages", "keystone"]
+    raw_catalog["steps"][4]["depends_on"] = ["openstack-packages", "glance"]
     assert _messages(raw_catalog, catalog_schema) == [
-        "steps[4].depends_on[1]: unknown step 'keystone'"
+        "steps[4].depends_on[1]: unknown step 'glance'"
     ]
 
 
@@ -263,9 +269,9 @@ def test_role_scoped_dependency_must_name_the_steps_own_roles(raw_catalog, catal
 
 
 def test_role_scoped_dependency_on_an_unknown_step(raw_catalog, catalog_schema) -> None:
-    raw_catalog["steps"][4]["depends_on"] = [{"step": "keystone", "roles": ["controller"]}]
+    raw_catalog["steps"][4]["depends_on"] = [{"step": "glance", "roles": ["controller"]}]
     assert _messages(raw_catalog, catalog_schema) == [
-        "steps[4].depends_on[0].step: unknown step 'keystone'"
+        "steps[4].depends_on[0].step: unknown step 'glance'"
     ]
 
 

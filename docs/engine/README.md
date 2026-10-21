@@ -1,20 +1,26 @@
 # Execution engine and `openstack-forge apply`
 
 `openstack_forge.execution` contains the confined file-editing primitives, redaction helper,
-state store, step engine, an allowlisted command layer, and five implemented deployment
-steps: `hosts-file`, `time-sync-controller`, `time-sync-other`, `openstack-packages` and
-`mariadb`.
+secrets store, state store, step engine, an allowlisted command layer, a reusable MariaDB
+SQL provisioning brick, and nine implemented deployment steps: `hosts-file`,
+`time-sync-controller`, `time-sync-other`, `openstack-packages`, `mariadb`, `rabbitmq`,
+`memcached`, `etcd`, and `keystone`.
 
-**All five steps are marked `unverified` in the step catalog, and none has ever run on a
+**All nine steps are marked `unverified` in the step catalog, and none has ever run on a
 real host.** Every other catalog step is rejected as "not implemented" by
 `openstack-forge apply`. `hosts-file` is pure Python file operations confined to the target
 root. [`time-sync-controller`](#step-time-sync-controller-openstack_forgeexecutionchrony),
 [`time-sync-other`](#step-time-sync-other-openstack_forgeexecutionchrony),
-[`openstack-packages`](#step-openstack-packages-openstack_forgeexecutionopenstack_packages)
-and [`mariadb`](#step-mariadb-openstack_forgeexecutionmariadb)
+[`openstack-packages`](#step-openstack-packages-openstack_forgeexecutionopenstack_packages),
+[`mariadb`](#step-mariadb-openstack_forgeexecutionmariadb),
+[`rabbitmq`](#step-rabbitmq-openstack_forgeexecutionrabbitmq),
+[`memcached`](#step-memcached-openstack_forgeexecutionmemcached),
+[`etcd`](#step-etcd-openstack_forgeexecutionetcd),
+and [`keystone`](#step-keystone-openstack_forgeexecutionkeystone)
 run system commands (`apt-get`, `add-apt-repository`, `apt-cache`, `systemctl`,
-`dpkg-query`), only through the [command execution layer](#command-execution-layer), whose
-registry contains exactly seven reviewed commands. Nothing uses `sudo`.
+`dpkg-query`, `rabbitmqctl`, `mariadb`, `keystone-manage`), only through the
+[command execution layer](#command-execution-layer), whose registry contains exactly twenty
+reviewed commands. Nothing uses `sudo` or `su`.
 
 **Network:** OpenStack Forge's Python code opens no network connection. Some of the
 commands it runs do: `apt-get update`, `apt-get install` and `add-apt-repository` download
@@ -107,6 +113,15 @@ because it drops comments. In order:
 
 A repeated `[section]` header is treated as the same section. Comments, blank lines and
 ordering are preserved, and the call never adds a second line for the same key.
+
+### `disable_lines_and_set_block`
+
+`disable_lines_and_set_block(root, target, pattern, name, content)` is `comment_out_lines`
+(with `exclude_block=name`) followed by `managed_block`, done as **one** edit: one write,
+one `.orig` backup, one diff. It exists for the `memcached` and `etcd` steps: with two
+separate writes, a crash between them would leave the old lines disabled and no block, and
+for memcached that means no `-l` line at all, i.e. listening on every interface. The file
+must already exist (a missing file is left absent), and re-running it writes nothing.
 
 ### `ini_set_many`
 
@@ -212,10 +227,10 @@ openstack-forge apply --config cluster.yaml --step STEP_ID [--node HOSTNAME] [--
 | Option | Meaning |
 | ------ | ------- |
 | `--config PATH` | Cluster configuration (default: `cluster.yaml`), validated before use. |
-| `--step STEP_ID` | Catalog step ID to apply (required). Only steps registered in `IMPLEMENTED_STEPS` (`hosts-file`, `time-sync-controller`, `time-sync-other`, `openstack-packages`, `mariadb`) can run; any other catalog step exits with code 1 and `"not implemented"`. A step whose catalog `roles` do not include the node's role (for example `time-sync-other` on the controller) exits with code 1. |
+| `--step STEP_ID` | Catalog step ID to apply (required). Only steps registered in `IMPLEMENTED_STEPS` (`hosts-file`, `time-sync-controller`, `time-sync-other`, `openstack-packages`, `mariadb`, `rabbitmq`, `memcached`, `etcd`, `keystone`) can run; any other catalog step exits with code 1 and `"not implemented"`. A step whose catalog `roles` do not include the node's role (for example `time-sync-other` on the controller) exits with code 1. |
 | `--node HOSTNAME` | Target node hostname. If omitted, matched against the local machine's hostname (`socket.gethostname()`). |
 | `--root PATH` | Target filesystem root (default: `/`). Used by tests to confine all writes to a temporary directory. |
-| `--yes` | Write changes, run the step's commands and update the state file. The commands of `time-sync-controller`, `time-sync-other`, `openstack-packages` and `mariadb` use the network through apt. Without `--yes`, `apply` runs in **dry-run** mode: it prints the redacted unified diff and the exact argv of every command the step would run, writes nothing, runs nothing, and exits 0. |
+| `--yes` | Write changes, run the step's commands and update the state file. The commands of every step except `hosts-file` use the network through apt. Without `--yes`, `apply` runs in **dry-run** mode: it prints the redacted unified diff and the exact argv of every command the step would run, writes nothing, runs nothing, and exits 0. |
 
 - **Catalog status warning:** `apply` prints a visible `WARNING` line when a step is marked
   `unverified` in `steps.json`, which all implemented steps are.
@@ -239,20 +254,106 @@ openstack-forge apply --config cluster.yaml --step STEP_ID [--node HOSTNAME] [--
   directory is created with mode `0700` on the first `--yes` run of a step that declares
   commands). Nothing uses `sudo`: writing to `/` requires running the tool as root.
 
+## Secrets store and threat model (`openstack_forge.execution.secrets`)
+
+**Nothing in this module has been run on a real host.** `SecretStore` manages 16 named
+OpenStack passwords (`SECRET_SPECS` / `SECRET_NAMES`):
+
+1. The 15 named variables from the "Passwords" table on
+   <https://docs.openstack.org/install-guide/environment-security.html> (`ADMIN_PASS`,
+   `CINDER_DBPASS`, `CINDER_PASS`, `DASH_DBPASS`, `DEMO_PASS`, `GLANCE_DBPASS`,
+   `GLANCE_PASS`, `KEYSTONE_DBPASS`, `METADATA_SECRET`, `NEUTRON_DBPASS`, `NEUTRON_PASS`,
+   `NOVA_DBPASS`, `NOVA_PASS`, `PLACEMENT_PASS`, `RABBIT_PASS`; row 1 of that table is
+   "Database password (no variable used)", unused on Ubuntu where MariaDB's `root` uses
+   `unix_socket`).
+2. Explicit documented extras (`EXTRA_SECRET_SPECS`): `PLACEMENT_DBPASS` ("Database password
+   for the Placement service"), which is omitted from the `environment-security.html` summary
+   table but required by the Placement 2025.1 Ubuntu installation guide
+   (<https://docs.openstack.org/placement/2025.1/install/install-ubuntu.html>) in both the
+   MariaDB `GRANT ... IDENTIFIED BY 'PLACEMENT_DBPASS'` statement and
+   `/etc/placement/placement.conf` (`[placement_database] connection`).
+3. **Mechanism for future secrets (`SecretSpec`):** secret names are never invented silently.
+   When a future service installation guide uses a password variable absent from
+   `environment-security.html` (for example `SWIFT_PASS` in the Object Storage guide), add a
+   `SecretSpec(name, description, source_url)` entry to `EXTRA_SECRET_SPECS` (or pass
+   `extra_specs` to `build_secret_specs()` / `SecretStore`). `SecretSpec` enforces an
+   uppercase `^[A-Z][A-Z0-9_]*$` name, a non-empty description, and an official
+   `https://docs.openstack.org/` source URL.
+
+- **Where secrets live and permissions:** a single JSON file under the execution `root`,
+  by default `<root>/etc/openstack-forge/secrets.json` (configurable with `--file`). The
+  parent directory must have mode `0700` (or stricter: `mode & 0o077 == 0`) and the file
+  must have mode `0600` (or stricter: `mode & 0o177 == 0`). Both must be owned by the
+  current effective user (`euid`), and symlinks are refused on the file and every directory
+  under `root`. `load()`, `get()` and `ensure()` refuse to read or write if any of those
+  checks fails.
+- **No `.orig` backup or leftover temporary file:** `SecretStore.ensure()` writes through
+  `atomic_write_text()` without calling `backup_once()`, so `secrets.json.orig` is never
+  created, and the `0600` temporary file `.secrets.json.*.tmp` is either atomically renamed
+  over `secrets.json` or unlinked on error.
+- **No-overwrite rule and idempotence:** `ensure()` generates only the missing names (with
+  `secrets.choice` from `[A-Za-z0-9]`, 32 characters, ~190.5 bits of entropy) and keeps
+  every existing value untouched. Once all 16 secrets exist, a second `ensure()` writes
+  nothing (`wrote_file=False`). Operators may pre-populate their own values in the JSON
+  file; `load()` and `ensure()` validate that every value is 32–256 ASCII alphanumeric
+  characters (`[A-Za-z0-9]`) without ever echoing a rejected value in an error message.
+- **Why `[A-Za-z0-9]{32,}`:** `.ini` files treat `#`, `;` and `$` specially; database and
+  broker URLs (`mysql+pymysql://user:PASSWORD@controller/db`,
+  `rabbit://openstack:PASSWORD@controller`) break on `:`, `@`, `/`, `?`, `#` and `%`; and
+  `CommandSpec` parameter validation rejects leading `-` (option injection), whitespace and
+  shell/punctuation metacharacters. Restricting secrets to `[A-Za-z0-9]` of length >= 32
+  avoids escaping across all three layers.
+- **CLI (`openstack-forge secrets`):**
+  - `openstack-forge secrets init [--root PATH] [--file PATH]` creates missing secrets and
+    prints **secret names only**, never values. Writing to `/` requires effective UID 0.
+  - `openstack-forge secrets show NAME [--root PATH] [--file PATH]` prints the single named
+    secret value to `stdout` and nothing else. It is the only command that outputs a secret.
+- **Passing secrets to commands (`stdin_param`, `env_params`, `argv`) and the `ps` limitation:**
+  - `CommandSpec` supports three explicit delivery modes for sensitive parameters:
+    1. `stdin_param`: passes one sensitive parameter on standard input (`stdin=subprocess.PIPE`)
+       instead of `argv`.
+    2. `env_params`: maps `{param_name: ENV_VAR_NAME}` to pass sensitive parameters through
+       environment variables added to `SANITIZED_ENV` instead of `argv` (validated against
+       `^[A-Z][A-Z0-9_]*$` and forbidden from colliding with `SANITIZED_ENV` keys `PATH`,
+       `LC_ALL`, `LANG`, `DEBIAN_FRONTEND`). On Linux, `/proc/<pid>/environ` is readable only
+       by the same user and `root`, unlike `/proc/<pid>/cmdline` (`ps`) which is
+       world-readable by default. No spec in `DEFAULT_REGISTRY` uses `env_params` yet.
+    3. `argv` placeholder with `sensitive_params` / type `"secret"`: used only when an
+       external tool offers no `stdin`, environment variable, or `0600` file option.
+  - When an external tool only accepts a password as a command-line argument in `argv` (for
+    example `rabbitmqctl add_user openstack RABBIT_PASS` and
+    `rabbitmqctl change_password openstack RABBIT_PASS`), any local user on the machine can
+    read `/proc/<pid>/cmdline` (`ps`) while that child process is running. **OpenStack Forge
+    cannot prevent this OS-level `ps` exposure when a tool leaves no `stdin`, environment, or
+    file option**, although `CommandSpec(sensitive_params=...)` masks the argument in
+    `build_shown_argv()`, dry runs, `PlannedCommand`, `CommandResult.argv`, the audit log and
+    error messages.
+- **Multi-node secret distribution is not implemented:** `SecretStore` is local to one root.
+  Copying secrets to other nodes (such as `RABBIT_PASS`, `NOVA_PASS`, `NEUTRON_PASS`, or
+  `METADATA_SECRET` on compute, block or object nodes) is **not** automated yet and must be
+  performed manually by the operator while preserving `0700`/`0600` permissions and owner.
+
 ## Redaction
 
-`redact_text()` masks, with `********`:
+`redact_text()` masks secrets with `********` in two ways:
 
-- values of keys whose name contains `password`, `passwd`, `secret` or `token`
-  (`key = value`, `key: value`, `"key": "value"`, `KEY=value`), quoted values up to the
-  closing quote, unquoted values up to the end of the line;
-- the same keys as command-line flags (`--os-password VALUE`, `--token=VALUE`);
-- passwords in URLs (`mysql+pymysql://nova:********@controller/nova`).
+1. **Exact-value redaction (`register_secret` / `register_secrets`):** whenever
+   `SecretStore.ensure()`, `load()` or `get()` runs, every secret value in the store is
+   registered in memory (values shorter than 8 characters or containing whitespace/control
+   characters are rejected so common words can never be masked by accident). `redact_text()`
+   replaces any exact occurrence of a registered secret (longest first) with `********`,
+   even when it appears bare without a `password=` key (for example inside a command
+   argument, a log line or an error message).
+2. **Pattern-based redaction:**
+   - values of keys whose name contains `password`, `passwd`, `secret` or `token`
+     (`key = value`, `key: value`, `"key": "value"`, `KEY=value`), quoted values up to the
+     closing quote, unquoted values up to the end of the line;
+   - the same keys as command-line flags (`--os-password VALUE`, `--token=VALUE`);
+   - passwords in URLs (`mysql+pymysql://nova:********@controller/nova`).
 
-`redact_data()` applies the same to JSON-like structures. Redaction is used for every diff,
-every stored error and every failure detail. It is deliberately over-eager (an unquoted
-match masks the rest of the line), and it cannot recognise a secret that has no telltale
-key, such as a bare password printed by a tool.
+`redact_data()` applies both to JSON-like structures (keys and values). Redaction is used
+for every diff, every stored error, every `VerifyResult` detail, command output, the state
+file and the audit log.
 
 ## State store
 
@@ -314,7 +415,7 @@ locking against two engines sharing a state file, and no timeout around a step's
 `openstack_forge.execution.commands` (with `audit.py`) is the only code in the project that
 may start a process on behalf of a deployment step. It exists so that steps (for example
 installing a package or restarting a service) have one reviewed path for doing so.
-`DEFAULT_REGISTRY` contains exactly the seven reviewed commands below, and a test pins
+`DEFAULT_REGISTRY` contains exactly the twenty reviewed commands below, and a test pins
 their argv, parameter types, exit codes and `mutates` flags, so adding or changing one is a
 deliberate edit. The tests only ever run harmless `sys.executable` one-liners; everything
 else uses a fake backend.
@@ -327,14 +428,30 @@ else uses a fake backend.
 | `apt-cache.policy` | `/usr/bin/apt-cache policy {package}` | no | no | 0 | apt-cache(8): "does not manipulate the state of the system", works from the local lists "(e.g. offline)"; `policy pkg` prints the package's versions and the sources providing them. DIAGNOSTICS: 0 normally, 100 on error; an unknown package exits 0 with empty stdout and an `N:` notice on stderr. |
 | `systemctl.restart` | `/usr/bin/systemctl restart {unit}` | yes | no | 0 | systemctl(1): stops and starts the unit, starting it if it was not running. Timeout 120 s. |
 | `systemctl.is-active` | `/usr/bin/systemctl is-active {unit}` | no | no | 0-4 | systemctl(1): exit 0 if active, non-zero otherwise; the LSB codes 1-4 all mean "not active", and the man page advises reading the printed state, so callers also require the output `active`. |
+| `systemctl.enable` | `/usr/bin/systemctl enable {unit}` | yes | no | 0 | systemctl(1): enable "will create a set of symlinks, as encoded in the [Install] sections", reloads the manager configuration, and does "not have the effect of also starting" the unit. Needed because the etcd page runs `systemctl enable etcd`. Timeout 60 s. |
+| `systemctl.is-enabled` | `/usr/bin/systemctl is-enabled {unit}` | no | no | 0-4 | systemctl(1): exit 0 "if at least one is enabled, non-zero otherwise", and prints the status; its table gives 0 for several statuses (`static`, `alias`, `indirect`, ...), so callers require the output `enabled`. Added so that `check()` of `etcd` does not report a configured but disabled unit as done. |
 | `dpkg-query.status` | `/usr/bin/dpkg-query --status {package}` | no | no | 0, 1 | dpkg-query(1): `--status` shows the status database entry; exit 1 means the package was not found, 2 is fatal. |
+| `rabbitmqctl.add-user` | `/usr/sbin/rabbitmqctl add_user openstack {password}` | yes | no | 0 | Guide (`environment-messaging-ubuntu.html`): `rabbitmqctl add_user openstack RABBIT_PASS`; `rabbitmqctl(8)`: `add_user username password` (`password` is type `secret`, masked everywhere in output/logs). Timeout 60 s. |
+| `rabbitmqctl.change-password` | `/usr/sbin/rabbitmqctl change_password openstack {password}` | yes | no | 0 | `rabbitmqctl(8)`: `change_password username newpassword`. Used by `rabbitmq` `apply()` when `list_users` shows `openstack` already exists (`add_user` fails non-zero on an existing user). Timeout 60 s. |
+| `rabbitmqctl.set-permissions` | `/usr/sbin/rabbitmqctl set_permissions openstack .* .* .*` | yes | no | 0 | Guide (`environment-messaging-ubuntu.html`): `rabbitmqctl set_permissions openstack ".*" ".*" ".*"`; `rabbitmqctl(8)`: `set_permissions [-p vhost] user conf write read` (`-p vhost` defaults to `/`). The `".*"` regexes contain `*` and are fixed literals in `argv`. Timeout 60 s. |
+| `rabbitmqctl.list-users` | `/usr/sbin/rabbitmqctl list_users` | no | no | 0 | `rabbitmqctl(8)`: `list_users` lists user names and tags; used by `check()`, `apply()`, and `verify()`. Timeout 30 s. |
+| `rabbitmqctl.list-user-permissions` | `/usr/sbin/rabbitmqctl list_user_permissions openstack` | no | no | 0 | `rabbitmqctl(8)`: `list_user_permissions username` lists vhost, configure, write, and read permissions; used by `check()` and `verify()`. Timeout 30 s. |
+| `mariadb.execute-sql` | `/usr/bin/mariadb --batch --skip-column-names` (`stdin_param="sql"`) | yes | no | 0 | `mariadb(1)` (`mariadb-client-core`, where `/usr/bin/mariadb` is the ELF binary and `/usr/bin/mysql -> mariadb` is a symlink): reads SQL statements (`CREATE DATABASE IF NOT EXISTS`, `GRANT ALL PRIVILEGES ... IDENTIFIED BY '<password>'`, `FLUSH PRIVILEGES`) from `stdin` (`sql_stdin`) so database passwords never appear in `argv` or `/proc/<pid>/cmdline` (`ps`). Timeout 60 s. |
+| `mariadb.query-sql` | `/usr/bin/mariadb --batch --skip-column-names --execute "SELECT 'DB', SCHEMA_NAME, '', '' FROM information_schema.SCHEMATA UNION ALL SELECT 'GRANT', User, Host, Db FROM mysql.db;"` | no | no | 0 | `mariadb(1)`: fixed literal read-only `SELECT` over `information_schema.SCHEMATA` and `mysql.db` with `params={}` (`mutates=False`), reusable by `check()` and `verify()` of all controller services without passing any parameter or touching `stdin`. Timeout 30 s. |
+| `keystone-manage.db-sync` | `/usr/bin/keystone-manage db_sync` | yes | no | 0 | Guide (`keystone-install-ubuntu.html`): `keystone-manage db_sync` (`dpkg -S`: `python3-keystone: /usr/bin/keystone-manage`). Invoked directly as `root` instead of `su -s /bin/sh -c ...` because `CommandSpec` forbids `su`. Timeout 300 s. |
+| `keystone-manage.fernet-setup` | `/usr/bin/keystone-manage fernet_setup --keystone-user keystone --keystone-group keystone` | yes | no | 0 | Guide (`keystone-install-ubuntu.html`): initializes `/etc/keystone/fernet-keys` owned by `keystone:keystone` (`FernetUtils.initialize_key_repository` is idempotent if key `0` exists). Timeout 60 s. |
+| `keystone-manage.credential-setup` | `/usr/bin/keystone-manage credential_setup --keystone-user keystone --keystone-group keystone` | yes | no | 0 | Guide (`keystone-install-ubuntu.html`): initializes `/etc/keystone/credential-keys` owned by `keystone:keystone`. Timeout 60 s. |
+| `keystone-manage.bootstrap` | `/usr/bin/keystone-manage bootstrap --bootstrap-password {password} --bootstrap-admin-url http://controller:5000/v3/ --bootstrap-internal-url http://controller:5000/v3/ --bootstrap-public-url http://controller:5000/v3/ --bootstrap-region-id RegionOne` | yes | no | 0 | Guide (`keystone-install-ubuntu.html`): idempotently bootstraps the `Default` domain, `admin` project/user/role, `RegionOne`, and `http://controller:5000/v3/` endpoints (`password` is type `secret`, masked everywhere). Timeout 120 s. |
 
 Each path is the one installed on Ubuntu 24.04 by the package named by `dpkg -S`: `apt`
-(`apt-get`, `apt-cache`), `software-properties-common` (`add-apt-repository`), `systemd`
-and `dpkg`; `PATH` is never searched. No other apt or dpkg option is used: in particular no
-`--force-*`, no `-o Dpkg::Options`, no lock timeout, and no `upgrade`, `dist-upgrade` or
-`reboot` command exists in the registry. A configuration file prompt from dpkg therefore
-makes the command fail (stdin is `/dev/null`) instead of being answered automatically.
+(`apt-get`, `apt-cache`), `software-properties-common` (`add-apt-repository`), `systemd`,
+`dpkg`, `rabbitmq-server` (`/usr/sbin/rabbitmqctl`), `mariadb-client-core`
+(`/usr/bin/mariadb`), and `python3-keystone` (`/usr/bin/keystone-manage`); `PATH` is never
+searched. No other
+apt or dpkg option is used: in particular no `--force-*`, no `-o Dpkg::Options`, no lock
+timeout, and no `upgrade`, `dist-upgrade` or `reboot` command exists in the registry. A
+configuration file prompt from dpkg therefore makes the command fail (stdin is `/dev/null`)
+instead of being answered automatically.
 
 ### Allowlist, not command strings
 
@@ -344,10 +461,13 @@ A command is a `CommandSpec`:
 | ----- | ------- |
 | `id` | Stable name, e.g. `chrony.restart`. |
 | `argv` | Template tuple. `argv[0]` must be a literal **absolute path** (no `PATH` lookup). Every other element is a literal or exactly `{name}`. |
-| `params` | `{name: type}` for every placeholder; each placeholder appears exactly once. |
+| `params` | `{name: type}` for every placeholder; each parameter not in `stdin_param` or `env_params` appears in `argv` exactly once. |
 | `timeout` | Seconds; required to be positive. |
 | `allowed_exit_codes` | Exit codes that count as success for the caller (default `{0}`). |
 | `mutates` | Whether the command changes the system. |
+| `sensitive_params` | Parameter names whose real values are sent to the process while `build_shown_argv()`, `build_shown_env()`, `PlannedCommand`, dry runs, `CommandResult.argv`, the audit log and error messages show `********` (any parameter of type `secret` is included automatically). |
+| `stdin_param` | Optional name of one sensitive parameter delivered on `stdin` (`stdin=subprocess.PIPE`) instead of `argv`; must not appear in `argv`. |
+| `env_params` | Optional mapping `{param_name: ENV_VAR_NAME}` of sensitive parameters delivered via environment variables added to `SANITIZED_ENV` instead of `argv`; variable names must match `^[A-Z][A-Z0-9_]*$` and must not collide with `SANITIZED_ENV`. |
 
 Specs are checked when created: shells (`sh`, `bash`, ...), `env`, `xargs`, `chroot`,
 `timeout`, `sudo`, `su`, `doas`, `pkexec` and `runuser` cannot be the executable, `sudo`/`su`
@@ -374,15 +494,20 @@ Every value must be a string and is checked **before** anything runs or is logge
 | `hostname` | one DNS label |
 | `ipv4_address` | dotted quad, also checked with `ipaddress` |
 | `absolute_path` | `/`-separated segments of `[A-Za-z0-9._@+-]`, no empty, `.` or `..` segment |
+| `secret` | `[A-Za-z0-9]{32,256}`, marked sensitive automatically |
+| `sql_stdin` | `[\x20-\x7e\n]{1,4096}` (printable ASCII plus LF only; no CR, NUL or tabs), **permitted only when declared as `stdin_param`** (never in `argv` or `env_params`), marked sensitive automatically |
 
-Missing or unexpected parameters are errors too. There is no free-text type.
+Missing or unexpected parameters are errors too. For sensitive parameters (including types
+`secret` and `sql_stdin`), `ParameterError` masks the rejected value as `'********'`. There
+is no free-text `argv` type.
 
 ### Running a command
 
 `CommandExecutor(registry, root=..., audit_log=..., backend=..., dry_run=...)`:
 
 - **No shell.** The default `SubprocessBackend` passes the argv list to `subprocess.Popen`
-  with `shell=False`, stdin from `/dev/null`, `cwd="/"`, and a new session; the backend is
+  with `shell=False`, `stdin=subprocess.DEVNULL` by default (or `stdin=subprocess.PIPE`
+  only for specs that opt into `stdin_param`), `cwd="/"`, and a new session; the backend is
   injectable (`ProcessBackend`), like `diagnostics.CommandRunner`.
 - **Sanitized environment.** The child gets exactly `PATH=/usr/sbin:/usr/bin:/sbin:/bin`,
   `LC_ALL=C`, `LANG=C` and `DEBIAN_FRONTEND=noninteractive`; nothing is inherited (no
@@ -433,8 +558,12 @@ details, `VerifyResult` details, the state file and the audit log all stay redac
 
 ### Limits
 
-- Redaction only recognises secrets next to a telltale key, flag or URL; a tool that
-  prints a bare password is not protected.
+- Registered secrets (loaded from `SecretStore` or passed as `sensitive_params`) are masked
+  by exact value anywhere they appear, and telltale key/flag/URL patterns are masked even
+  without registration; a secret that was neither registered nor next to a telltale key
+  cannot be recognised.
+- When an external tool only accepts a password in `argv`, local users on the host can see
+  it in `/proc/<pid>/cmdline` (`ps`) for the duration of the command.
 - Output is captured in memory before truncation, so a command that prints gigabytes
   uses that much memory.
 - Read-only commands (`mutates=False`) run whatever the root is, and they inspect the real
@@ -637,4 +766,315 @@ Decisions and limits:
   `mariadb.conf.d` and its other option files; a file read after `99-openstack.cnf` could
   override these keys. Keys are compared by exact name (MariaDB may also accept `_` for
   `-` in option names; this is not relied on), and values exactly (`ON` is not `on`).
+
+## Security of the controller services
+
+`memcached` and `etcd`, configured as on the official pages, have **no authentication and
+no encryption** and listen on the controller's management IP (etcd's peer port listens on
+all interfaces, as on its page). `rabbitmq` authenticates with the `openstack` account and
+`RABBIT_PASS`, but as on the official page it listens for AMQP on TCP port 5672 **without
+TLS**. Anyone who can reach the management network can read and change Memcached/etcd data
+or observe unencrypted AMQP traffic. The management network must therefore be a trusted,
+isolated network; the Memcached page itself recommends firewalling, authentication and
+encryption for production. OpenStack Forge adds no firewall rule and changes no firewall.
+
+## Step: `rabbitmq` (`openstack_forge.execution.rabbitmq`)
+
+**Unverified, and never run on a real host.** Source:
+<https://docs.openstack.org/install-guide/environment-messaging-ubuntu.html>, which for
+Ubuntu says:
+
+1. `apt install rabbitmq-server`;
+2. `rabbitmqctl add_user openstack RABBIT_PASS` ("Replace `RABBIT_PASS` with a suitable
+   password");
+3. `rabbitmqctl set_permissions openstack ".*" ".*" ".*"` ("Permit configuration, write,
+   and read access for the `openstack` user").
+
+It runs only on the controller (constructing it for another role raises `ExecutionError`).
+
+| Phase | What happens |
+| ----- | ------------ |
+| `check()` | Pure first: `RABBIT_PASS` must exist in `SecretStore(root)` (`<root>/etc/openstack-forge/secrets.json`); if the store is missing, unreadable, overly permissive or lacks `RABBIT_PASS`, `False` without running any command. Otherwise `True` only if, in order: `dpkg-query --status rabbitmq-server` reports it installed, `systemctl is-active rabbitmq-server` prints `active`, `rabbitmqctl list_users` lists `openstack`, and `rabbitmqctl list_user_permissions openstack` shows `.* .* .*` in vhost `/`. |
+| `apply()` | Precondition: `SecretStore(root).get("RABBIT_PASS")` must succeed; otherwise `PreconditionError` tells the operator to run `openstack-forge secrets init` first (the step never generates secrets itself). Then `apt-get install --yes rabbitmq-server`; then `rabbitmqctl list_users`; if `openstack` does not exist yet it runs `rabbitmqctl add_user openstack {password}`, whereas if `openstack` already exists it converges the password with `rabbitmqctl change_password openstack {password}`; then `rabbitmqctl set_permissions openstack .* .* .*`. |
+| `verify()` | Checks that `RABBIT_PASS` exists in `SecretStore(root)`, `rabbitmq-server` is installed, `systemctl is-active rabbitmq-server` is `active`, `rabbitmqctl list_users` includes `openstack`, and `rabbitmqctl list_user_permissions openstack` has `.* .* .*` in vhost `/`. |
+
+Established on an Ubuntu 24.04 development machine with read-only commands (`rabbitmq-server`
+`3.12.1-1ubuntu1.2` in `noble-updates/main` and `noble-security/main`):
+
+- `/usr/sbin/rabbitmqctl` (`dpkg -S`: `rabbitmq-server`) is a symlink to
+  `../lib/rabbitmq/bin/rabbitmq-script-wrapper`; when invoked as `root`, that wrapper runs
+  `su rabbitmq -s /bin/sh -c "/usr/lib/rabbitmq/bin/rabbitmqctl ${CMDLINE}"`;
+- `/usr/lib/systemd/system/rabbitmq-server.service` runs
+  `ExecStart=/usr/lib/rabbitmq/bin/rabbitmq-server` as `User=rabbitmq`, and
+  `/var/lib/dpkg/info/rabbitmq-server.postinst` creates `/var/lib/rabbitmq/.erlang.cookie`
+  (mode `0400`), installs `/etc/rabbitmq/rabbitmq-env.conf` (default `#NODENAME=rabbit`),
+  and enables and starts `rabbitmq-server.service` on package `configure`;
+- `rabbitmqctl(8)` documents `add_user username password`,
+  `change_password username newpassword`, `set_permissions [-p vhost] user conf write read`
+  (default vhost `/`), `list_users`, and `list_user_permissions username`.
+
+Deviations, trade-offs, and limits:
+
+- **Idempotence and `change_password` trade-off:** `rabbitmqctl add_user` fails non-zero if
+  `openstack` already exists, and `rabbitmqctl list_users` returns user names and tags only
+  (never password hashes). In `apply()`, when `check()` returned `False` and `list_users`
+  shows that `openstack` already exists (for example after an earlier partial run where
+  `add_user` succeeded before `set_permissions`, or after `RABBIT_PASS` was updated in
+  `secrets.json`), the step runs `rabbitmqctl change_password openstack {password}` before
+  `set_permissions`. Trade-off: converging with `change_password` guarantees the broker's
+  `openstack` password matches `RABBIT_PASS` in `secrets.json` rather than leaving a stale
+  password or failing on a rerun, at the cost of one mutating `rabbitmqctl` call whenever
+  `apply()` runs on a host where `openstack` already exists.
+- **Password delivery and `/proc/<pid>/cmdline` (`ps`) exposure:** `rabbitmqctl(8)` on
+  Ubuntu 24.04 (`3.12.1-1ubuntu1.2`) documents only positional `argv` (`add_user username
+  password` and `change_password username newpassword`) — neither `--stdin` nor an
+  environment variable is documented, and `rabbitmq-script-wrapper` interpolates
+  `${CMDLINE}` into `su rabbitmq -s /bin/sh -c ...`. OpenStack Forge masks `{password}` as
+  `********` in `build_shown_argv()`, `PlannedCommand`, dry-run output, `CommandResult.argv`,
+  the audit log and error messages, and registers `RABBIT_PASS` with `register_secrets()`,
+  but **local users on the host can read `RABBIT_PASS` from `/proc/<pid>/cmdline` (`ps`) for
+  the duration of `rabbitmqctl add_user` or `change_password`**.
+- **Permission regexes (`".*"`):** `*` is forbidden in command parameter values, so the
+  three `".*"` arguments in `rabbitmqctl.set-permissions` are fixed literals in the
+  `CommandSpec.argv` tuple, never parameters.
+- **Hostname resolution (`hosts-file`):** RabbitMQ names its local Erlang node
+  `rabbit@<short-hostname>` by default; if the short hostname does not resolve in
+  `/etc/hosts`, `rabbitmq-server.service` and `rabbitmqctl` fail. Both dry-run notes,
+  `verify()` details and `RABBITMQCTL_FAILURE_HINT` point to the `hosts-file` step (this
+  step never edits `/etc/hosts`).
+- **What `verify()` does not check:** no AMQP login test with `RABBIT_PASS` and no TCP
+  check on port 5672 are performed, and the exact tabular output format of `rabbitmqctl
+  list_users` / `list_user_permissions` is an assumption from `rabbitmqctl(8)` not confirmed
+  on a live broker.
+
+## Step: `memcached` (`openstack_forge.execution.memcached`)
+
+**Unverified, and never run on a real host.** Source:
+<https://docs.openstack.org/install-guide/environment-memcached-ubuntu.html>, which for
+Ubuntu 18.04 and newer says `apt install memcached python3-memcache`, edit
+`/etc/memcached.conf` to use the controller's management IP with `-l 10.0.0.11` ("Change
+the existing line that had -l 127.0.0.1"), then `service memcached restart`.
+
+| Phase | What happens |
+| ----- | ------------ |
+| `check()` | Pure first: if `/etc/memcached.conf` is missing or the edit would change it, `False` without any command. Otherwise `True` only if `dpkg-query` reports both `memcached` and `python3-memcache` installed. |
+| `apply()` | `apt-get install --yes memcached`; `apt-get install --yes python3-memcache`; the file edit; `systemctl restart memcached`. |
+| `verify()` | Pure check that the managed block contains exactly `-l <management_ip>` and no active `-l`/`--listen` line is left outside it; `python3-memcache` installed; `systemctl is-active memcached` printing `active`. |
+
+The edit comments out every active `-l` / `--listen` line outside the managed block
+`openstack-forge memcached` and puts `-l <management_ip>` in it, in one atomic edit
+(`disable_lines_and_set_block`); other lines (including `--listen-backlog` and comments)
+are untouched. memcached(1) says addresses may be given "by using -l multiple times", so
+the old line has to be disabled rather than left next to the new one.
+
+Established on an Ubuntu 24.04 development machine with read-only commands (`memcached`
+`1.6.24-1ubuntu0.3` and `python3-memcache` in `noble/main`):
+
+- `/usr/lib/systemd/system/memcached.service` (`dpkg -S`: `memcached`) runs
+  `ExecStart=/usr/share/memcached/scripts/systemd-memcached-wrapper /etc/memcached.conf`,
+  and `/usr/share/memcached/scripts/systemd-memcached-wrapper` reads `/etc/memcached.conf`,
+  strips comments and whitespace, ignores `-d`, `-h` and `logfile`, and passes every
+  remaining line as an argument to `/usr/bin/memcached`;
+- `/etc/memcached.conf` is not in dpkg's conffile database: `/var/lib/dpkg/info/memcached.postinst`
+  creates it on `configure` by copying `/usr/share/memcached/memcached.conf.default` if
+  `/etc/memcached.conf` does not exist yet;
+- `/usr/share/memcached/memcached.conf.default` (52 lines, MD5
+  `feb97c5e3f225f42e852f1c568cc8ad7`) contains **two** default listen lines (lines 35–36),
+  `-l 127.0.0.1` and `-l ::1` (whereas the OpenStack page mentions only `-l 127.0.0.1`; on
+  the development machine `/etc/memcached.conf` had line 35 already edited to the machine's
+  local IP — sanitized to the RFC 5737 documentation address `-l 192.0.2.170` for the
+  repository — and line 36 still at `-l ::1`). Disabling every active `-l` /
+  `--listen` line outside the managed block comments out both `-l 127.0.0.1` and `-l ::1`.
+
+Deviations: two `apt-get install` commands instead of one `apt install`, and
+`systemctl restart` instead of `service ... restart`.
+
+`verify()` details always say that no TCP connection to `<management_ip>:11211` is
+attempted, and what memcached actually listens on at runtime is not checked (unconfirmed on
+a live service).
+
+## Step: `etcd` (`openstack_forge.execution.etcd`)
+
+**Unverified, and never run on a real host.** Source:
+<https://docs.openstack.org/install-guide/environment-etcd-ubuntu.html>, which says
+`apt install etcd` (needing the Universe repository since Ubuntu 18.04) and, "as for Ubuntu
+24.04", `apt install etcd-server`; then nine keys in `/etc/default/etcd`; then
+`systemctl enable etcd` and `systemctl restart etcd`.
+
+```sh
+ETCD_NAME="controller"
+ETCD_DATA_DIR="/var/lib/etcd"
+ETCD_INITIAL_CLUSTER_STATE="new"
+ETCD_INITIAL_CLUSTER_TOKEN="etcd-cluster-01"
+ETCD_INITIAL_CLUSTER="controller=http://<management_ip>:2380"
+ETCD_INITIAL_ADVERTISE_PEER_URLS="http://<management_ip>:2380"
+ETCD_ADVERTISE_CLIENT_URLS="http://<management_ip>:2379"
+ETCD_LISTEN_PEER_URLS="http://0.0.0.0:2380"
+ETCD_LISTEN_CLIENT_URLS="http://<management_ip>:2379"
+```
+
+`<management_ip>` is the controller's `management_ip` and `controller` is the alias the
+`hosts-file` step writes to `/etc/hosts`; the data directory, token, state and ports are the
+page's literal values. It is a single-node cluster, as on the page.
+
+| Phase | What happens |
+| ----- | ------------ |
+| `check()` | Pure first: if `/etc/default/etcd` is missing or the edit would change it, `False` without any command. Otherwise `True` only if `etcd-server` is installed and `systemctl is-enabled etcd` prints `enabled`. |
+| `apply()` | Precondition: `apt-cache policy etcd-server` must report a candidate (`policy.candidate is not None`); otherwise `PreconditionError` explains that on Ubuntu 24.04 `etcd-server` is in the `universe` repository (probably disabled) and enables no repository. Then `apt-get install --yes etcd-server`; the file edit; `systemctl enable etcd`; `systemctl restart etcd`. |
+| `verify()` | Pure check that the managed block has exactly the nine values and no other active assignment of those keys exists in the file; `systemctl is-enabled etcd` printing `enabled`; `systemctl is-active etcd` printing `active`. |
+
+The edit comments out active assignments (`KEY=` or `export KEY=`) of the nine keys outside
+the managed block `openstack-forge etcd` and writes the block, in one atomic edit; other
+`ETCD_*` variables and comments are kept.
+
+Established on an Ubuntu 24.04 development machine with read-only commands (`etcd-server`
+`3.4.30-1ubuntu0.24.04.3` in `noble-updates/universe`, no candidate for `etcd`):
+
+- `/usr/lib/systemd/system/etcd.service` (`dpkg -S`: `etcd-server`) sets
+  `Environment=DAEMON_ARGS=`, `Environment=ETCD_NAME=%H` and
+  `Environment=ETCD_DATA_DIR=/var/lib/etcd/default`, then loads
+  `EnvironmentFile=-/etc/default/%p` (`/etc/default/etcd`, overriding the unit's
+  `Environment=` settings) before `ExecStart=/usr/bin/etcd $DAEMON_ARGS`;
+- `/etc/default/etcd` (`dpkg -S`: `etcd-server`, dpkg conffile MD5
+  `b7921986da4a49739814359cc296d2fb`) contains in the pristine package only a five-line
+  `##` comment header (`## Use environment to override, for example: ETCD_NAME=default`) and
+  **no** default `ETCD_*` assignments (on the development machine `/etc/default/etcd` had
+  already been hand-edited to append the nine OpenStack guide `ETCD_*` lines after that
+  header).
+- What remains **unconfirmed** without starting `etcd` (`etcd(1)` lists only command-line
+  flags, and `/usr/share/doc/etcd-server/op-guide/configuration.md.gz` is gzipped) is that
+  `/usr/bin/etcd` honors the seven `ETCD_*` environment variables beyond `ETCD_NAME` and
+  `ETCD_DATA_DIR` at runtime; `verify()` details state this along with the fact that no TCP
+  connection to `http://<management_ip>:2379` is attempted and cluster health is not
+  checked.
+
+Read-only checks that go beyond the page: `apt-cache policy etcd-server` as an `apply()`
+precondition (reusing the existing `apt-cache.policy` spec), and `systemctl is-enabled` (so
+that a configured but disabled unit is not reported as done) in `check()` and `verify()`.
+
+## Reusable MariaDB SQL provisioning brick (`openstack_forge.execution.sql`)
+
+Every OpenStack controller service in the 2025.1 (Epoxy) Ubuntu installation guide
+(Keystone, Glance, Placement, Nova, Neutron, Cinder) begins with a "Prerequisites" database
+section that creates one or more MariaDB databases and grants `ALL PRIVILEGES` to
+`'<user>'@'localhost'` and `'<user>'@'%'` identified by `<SERVICE>_DBPASS`.
+
+- **Why SQL is delivered over `stdin` (`mariadb.execute-sql`), never `argv`:** passing
+  `-p<password>` or `--execute="... IDENTIFIED BY '<password>' ..."` in `argv` exposes the
+  database password to every local user in `/proc/<pid>/cmdline` (`ps`). Instead,
+  `MARIADB_EXECUTE_SQL` invokes `/usr/bin/mariadb --batch --skip-column-names` with
+  `stdin_param="sql"` (`"sql_stdin"`), piping the SQL over `stdin=subprocess.PIPE` and
+  keeping `argv` completely free of SQL or passwords.
+- **Why `mariadb.query-sql` uses a fixed literal `--execute` query in `argv`:**
+  `MARIADB_QUERY_SQL` embeds a fixed literal read-only `SELECT` over
+  `information_schema.SCHEMATA` and `mysql.db` in `argv` with `params={}` (`mutates=False`),
+  requiring zero user parameters and never touching `stdin`. `service_database_ready()` and
+  `service_database_problems()` reuse it across `check()` and `verify()` for any controller
+  service.
+- **Idempotence (`CREATE DATABASE IF NOT EXISTS`):** `build_service_database_sql(databases,
+  user, password)` validates every database and user name against `^[a-z][a-z0-9_]*$` and
+  `password` with `validate_secret_value()`, and emits:
+  ```sql
+  CREATE DATABASE IF NOT EXISTS `keystone`;
+  GRANT ALL PRIVILEGES ON `keystone`.* TO 'keystone'@'localhost' IDENTIFIED BY '<password>';
+  GRANT ALL PRIVILEGES ON `keystone`.* TO 'keystone'@'%' IDENTIFIED BY '<password>';
+  FLUSH PRIVILEGES;
+  ```
+  whereas the guide pages write `CREATE DATABASE keystone;` interactively, which would fail
+  on a rerun if a previous run created the database before a later command failed.
+- **Ubuntu 24.04 package facts:** `dpkg -S /usr/bin/mariadb /usr/bin/mysql` maps both paths
+  to `mariadb-client-core` (`1:10.11.14-0ubuntu0.24.04.1`, installed as a dependency of
+  `mariadb-server`); `/usr/bin/mariadb` is the ELF binary and `/usr/bin/mysql -> mariadb` is
+  a symlink. On Ubuntu, MariaDB's local `root` account uses the `unix_socket` authentication
+  plugin by default, so `/usr/bin/mariadb` run as effective UID 0 connects over the local
+  Unix socket without a root password.
+
+## Step: `keystone` (`openstack_forge.execution.keystone`)
+
+**Unverified, and never run on a real host.** Source:
+<https://docs.openstack.org/keystone/2025.1/install/keystone-install-ubuntu.html> (raw
+source: `doc/source/install/keystone-install-ubuntu.rst` on `stable/2025.1` in
+`openstack/keystone`), which prescribes for Ubuntu:
+
+1. Prerequisites — create the `keystone` MariaDB database and grant `ALL PRIVILEGES ON
+   keystone.*` to `'keystone'@'localhost'` and `'keystone'@'%'` identified by
+   `KEYSTONE_DBPASS`;
+2. `apt install keystone`;
+3. Edit `/etc/keystone/keystone.conf`:
+   - `[database] connection = mysql+pymysql://keystone:KEYSTONE_DBPASS@controller/keystone`
+   - `[token] provider = fernet`
+4. Populate the Identity service database:
+   `su -s /bin/sh -c "keystone-manage db_sync" keystone`;
+5. Initialize Fernet key repositories:
+   - `keystone-manage fernet_setup --keystone-user keystone --keystone-group keystone`
+   - `keystone-manage credential_setup --keystone-user keystone --keystone-group keystone`
+6. Bootstrap the Identity service:
+   `keystone-manage bootstrap --bootstrap-password ADMIN_PASS --bootstrap-admin-url http://controller:5000/v3/ --bootstrap-internal-url http://controller:5000/v3/ --bootstrap-public-url http://controller:5000/v3/ --bootstrap-region-id RegionOne`;
+7. Edit `/etc/apache2/apache2.conf` to configure `ServerName controller`;
+8. Restart the Apache service (`service apache2 restart`).
+
+It runs only on the controller (constructing it for another role raises `ExecutionError`).
+
+| Phase | What happens |
+| ----- | ------------ |
+| `check()` | Pure first (runs zero external commands if any fails): `KEYSTONE_DBPASS` and `ADMIN_PASS` must exist in `SecretStore(root)`; `/etc/keystone/keystone.conf` and `/etc/apache2/apache2.conf` must exist and need no edit; and `/etc/keystone/fernet-keys/0` and `/etc/keystone/credential-keys/0` must exist and be non-empty. Otherwise `True` only if, in order: `dpkg-query --status keystone` reports it installed, `systemctl is-active apache2` prints `active`, and `mariadb.query-sql` confirms the `keystone` database and `'keystone'@'localhost'` + `'keystone'@'%'` grants exist. |
+| `apply()` | Precondition: loads `KEYSTONE_DBPASS` and `ADMIN_PASS` from `SecretStore(root)` (`PreconditionError` telling the operator to run `openstack-forge secrets init`). Then provisions the `keystone` MariaDB database and grants via `mariadb.execute-sql` (`stdin`); runs `apt-get install --yes keystone`; edits `/etc/keystone/keystone.conf` (`ini_set_many`) and `/etc/apache2/apache2.conf` (`disable_lines_and_set_block`); runs `keystone-manage db_sync`, `keystone-manage fernet_setup --keystone-user keystone --keystone-group keystone`, `keystone-manage credential_setup --keystone-user keystone --keystone-group keystone`, and `keystone-manage bootstrap ...`; then runs `systemctl restart apache2`. |
+| `verify()` | Checks `KEYSTONE_DBPASS` and `ADMIN_PASS` in `SecretStore(root)`, `/etc/keystone/keystone.conf` (`[database] connection` and `[token] provider = fernet`), `/etc/apache2/apache2.conf` (`ServerName controller` in the managed block with no active `ServerName` outside it), `/etc/keystone/fernet-keys/0` and `/etc/keystone/credential-keys/0`, `keystone` installed, `apache2` active, and the `keystone` MariaDB database and grants. |
+
+Established on an Ubuntu 24.04 development machine with read-only commands:
+
+- `apt-cache policy keystone`: `2:27.0.0-0ubuntu1.1~cloud2` in
+  `noble-updates/epoxy/main` (Ubuntu Cloud Archive for OpenStack 2025.1 Epoxy) and
+  `2:25.0.0-0ubuntu1.4` in `noble-updates/main`.
+- `apt-cache show keystone`: `Depends: adduser, apache2 | httpd, libapache2-mod-wsgi-py3,
+  python3-keystone (= 2:27.0.0-0ubuntu1.1~cloud2), ssl-cert (>= 1.0.12)`; `python3-keystone`
+  depends on `keystone-common` and `python3-pymysql`.
+- `dpkg -S` confirms:
+  - `python3-keystone: /usr/bin/keystone-manage`;
+  - `keystone-common: /etc/keystone` (`/etc/keystone/keystone.conf` is in
+    `keystone-common.conffiles`; `keystone-common.postinst` sets `/etc/keystone` to `0750`
+    `keystone:keystone` and `/etc/keystone/keystone.conf` to `0640` `keystone:keystone`);
+  - `keystone: /etc/apache2/sites-available/keystone.conf` (enabled by `keystone.postinst`
+    via `apache2_invoke ensite keystone.conf` on port `5000`);
+  - `apache2: /etc/apache2/apache2.conf` (`2.4.58-1ubuntu8.15`) and
+    `/usr/lib/systemd/system/apache2.service`. The pristine `/etc/apache2/apache2.conf`
+    conffile (MD5 `354c9e6d2b88a0a3e0548f853840674c`) contains no `ServerName` line (on the
+    development machine `ServerName controller` had been added on line 1).
+- Inspection of `/usr/lib/python3/dist-packages/keystone/` confirms:
+  - `[fernet_tokens] key_repository` defaults to `/etc/keystone/fernet-keys/` and
+    `[credential] key_repository` defaults to `/etc/keystone/credential-keys/`;
+  - `FernetUtils.initialize_key_repository()` is idempotent (returns immediately with exit 0
+    if key `0` already exists, and otherwise creates keys `0` and `1` owned by
+    `--keystone-user` / `--keystone-group` with `umask(0o177)`);
+  - `Bootstrapper.bootstrap()` is idempotent (ensures the `Default` domain, `admin` project,
+    default roles, role assignments, `RegionOne`, and `http://controller:5000/v3/`
+    `identity` endpoints, and creates or updates the `admin` user password).
+
+Deviations, trade-offs, and scope boundary:
+
+- **`keystone-manage db_sync` invoked directly as `root` instead of `su`:** the guide runs
+  `su -s /bin/sh -c "keystone-manage db_sync" keystone`, whereas `CommandSpec` forbids `su`
+  and `sudo`. Because `/etc/keystone/keystone.conf` is edited before `db_sync` to point
+  `[database] connection` at MariaDB (`mysql+pymysql://...`), `db_sync` does not create a
+  root-owned SQLite file in `/var/lib/keystone`. Caveat: if `log_file` or `log_dir` is
+  enabled in `keystone.conf`, running `keystone-manage` as `root` can create a root-owned
+  log file in `/var/log/keystone`.
+- **Apache `ServerName controller` managed block:** `/etc/apache2/apache2.conf` is edited
+  with `disable_lines_and_set_block` using `# BEGIN openstack-forge keystone-apache` /
+  `ServerName controller` / `# END openstack-forge keystone-apache` while commenting out any
+  active `ServerName` lines outside the block so no earlier `ServerName` directive conflicts
+  with it.
+- **Password delivery and `/proc/<pid>/cmdline` (`ps`) exposure:** `KEYSTONE_DBPASS` is sent
+  to `/usr/bin/mariadb` over `stdin` and written to `/etc/keystone/keystone.conf`, so it
+  never appears in `argv`. `ADMIN_PASS` is passed in `argv` to `keystone-manage bootstrap
+  --bootstrap-password {password}` as on the guide page (masked as `********` everywhere by
+  OpenStack Forge, but readable in `/proc/<pid>/cmdline` (`ps`) by local users on the host
+  for the duration of the command).
+- **Scope boundary (`keystone-users-ubuntu.html` and `keystone-openrc-ubuntu.html`):**
+  creating the `service` project and non-admin domain/project/user/role and writing
+  `admin-openrc` / `demo-openrc` belong to the next milestone, not this step.
+- **What `verify()` does not check:** no HTTP `/v3` token request against
+  `http://controller:5000/v3/` is performed, and the SQL schema version from `db_sync` and
+  bootstrap catalog rows inside the `keystone` database are not queried directly.
+
 

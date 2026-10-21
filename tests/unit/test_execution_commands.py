@@ -120,6 +120,7 @@ VALID = {
     "hostname": ["ctl-01", "forge-compute-02", "a"],
     "ipv4_address": ["192.0.2.11", "10.0.0.1", "255.255.255.255"],
     "absolute_path": ["/etc/hosts", "/etc/chrony/chrony.conf", "/var/lib/openstack-forge"],
+    "secret": ["A" * 32, "aB3x9K" * 6, "9" * 64],
 }
 
 # Shell metacharacters and option injection, rejected for every parameter type.
@@ -157,6 +158,7 @@ INVALID_FORMAT = {
     "hostname": ["ctl_01", "ctl.example.com", "ctl-", "a" * 64],
     "ipv4_address": ["256.1.1.1", "1.2.3", "01.2.3.4.5", "1.2.3.4/24", "::1"],
     "absolute_path": ["etc/hosts", "/etc/../shadow", "/etc/./hosts", "/", "/etc//hosts"],
+    "secret": ["A" * 31, "A" * 257, "a" * 31 + "_", "a" * 31 + "-"],
 }
 
 
@@ -165,7 +167,7 @@ def test_valid_parameters(type_name: str, value: str) -> None:
     assert validate_parameter(type_name, "p", value) == value
 
 
-@pytest.mark.parametrize("type_name", sorted(PARAM_TYPES))
+@pytest.mark.parametrize("type_name", sorted(set(PARAM_TYPES) - {"sql_stdin"}))
 @pytest.mark.parametrize("value", INJECTIONS)
 def test_injection_attempts_are_rejected_for_every_type(type_name: str, value: str) -> None:
     with pytest.raises(ParameterError):
@@ -253,8 +255,11 @@ def test_duplicate_registration_is_rejected() -> None:
 
 def test_default_registry_contains_exactly_the_reviewed_commands() -> None:
     # Deliberately updated in milestone 8, then in milestone 9 (apt-get update,
-    # add-apt-repository --cloud, apt-cache policy): these are the only real commands, and
-    # any new one must be added here on purpose after review.
+    # add-apt-repository --cloud, apt-cache policy), milestone 12 (systemctl enable,
+    # systemctl is-enabled, for the etcd page), milestone 14 (five /usr/sbin/rabbitmqctl
+    # specs for the rabbitmq page), and milestone 15 (two /usr/bin/mariadb specs and four
+    # /usr/bin/keystone-manage specs for the keystone page): these are the only real
+    # commands, and any new one must be added here on purpose after review.
     specs = {spec_id: DEFAULT_REGISTRY.get(spec_id) for spec_id in DEFAULT_REGISTRY.ids()}
     assert {
         spec_id: (spec.argv, dict(spec.params), spec.mutates, spec.allowed_exit_codes)
@@ -296,14 +301,133 @@ def test_default_registry_contains_exactly_the_reviewed_commands() -> None:
             False,
             frozenset({0, 1, 2, 3, 4}),
         ),
+        "systemctl.enable": (
+            ("/usr/bin/systemctl", "enable", "{unit}"),
+            {"unit": "systemd_unit"},
+            True,
+            frozenset({0}),
+        ),
+        "systemctl.is-enabled": (
+            ("/usr/bin/systemctl", "is-enabled", "{unit}"),
+            {"unit": "systemd_unit"},
+            False,
+            frozenset({0, 1, 2, 3, 4}),
+        ),
         "dpkg-query.status": (
             ("/usr/bin/dpkg-query", "--status", "{package}"),
             {"package": "package_name"},
             False,
             frozenset({0, 1}),
         ),
+        "rabbitmqctl.add-user": (
+            ("/usr/sbin/rabbitmqctl", "add_user", "openstack", "{password}"),
+            {"password": "secret"},
+            True,
+            frozenset({0}),
+        ),
+        "rabbitmqctl.change-password": (
+            ("/usr/sbin/rabbitmqctl", "change_password", "openstack", "{password}"),
+            {"password": "secret"},
+            True,
+            frozenset({0}),
+        ),
+        "rabbitmqctl.set-permissions": (
+            ("/usr/sbin/rabbitmqctl", "set_permissions", "openstack", ".*", ".*", ".*"),
+            {},
+            True,
+            frozenset({0}),
+        ),
+        "rabbitmqctl.list-users": (
+            ("/usr/sbin/rabbitmqctl", "list_users"),
+            {},
+            False,
+            frozenset({0}),
+        ),
+        "rabbitmqctl.list-user-permissions": (
+            ("/usr/sbin/rabbitmqctl", "list_user_permissions", "openstack"),
+            {},
+            False,
+            frozenset({0}),
+        ),
+        "mariadb.execute-sql": (
+            ("/usr/bin/mariadb", "--batch", "--skip-column-names"),
+            {"sql": "sql_stdin"},
+            True,
+            frozenset({0}),
+        ),
+        "mariadb.query-sql": (
+            (
+                "/usr/bin/mariadb",
+                "--batch",
+                "--skip-column-names",
+                "--execute",
+                "SELECT 'DB', SCHEMA_NAME, '', '' FROM information_schema.SCHEMATA "
+                "UNION ALL "
+                "SELECT 'GRANT', User, Host, Db FROM mysql.db;",
+            ),
+            {},
+            False,
+            frozenset({0}),
+        ),
+        "keystone-manage.db-sync": (
+            ("/usr/bin/keystone-manage", "db_sync"),
+            {},
+            True,
+            frozenset({0}),
+        ),
+        "keystone-manage.fernet-setup": (
+            (
+                "/usr/bin/keystone-manage",
+                "fernet_setup",
+                "--keystone-user",
+                "keystone",
+                "--keystone-group",
+                "keystone",
+            ),
+            {},
+            True,
+            frozenset({0}),
+        ),
+        "keystone-manage.credential-setup": (
+            (
+                "/usr/bin/keystone-manage",
+                "credential_setup",
+                "--keystone-user",
+                "keystone",
+                "--keystone-group",
+                "keystone",
+            ),
+            {},
+            True,
+            frozenset({0}),
+        ),
+        "keystone-manage.bootstrap": (
+            (
+                "/usr/bin/keystone-manage",
+                "bootstrap",
+                "--bootstrap-password",
+                "{password}",
+                "--bootstrap-admin-url",
+                "http://controller:5000/v3/",
+                "--bootstrap-internal-url",
+                "http://controller:5000/v3/",
+                "--bootstrap-public-url",
+                "http://controller:5000/v3/",
+                "--bootstrap-region-id",
+                "RegionOne",
+            ),
+            {"password": "secret"},
+            True,
+            frozenset({0}),
+        ),
     }
     assert all(spec.timeout > 0 for spec in specs.values())
+    assert all(spec.env_params == {} for spec in specs.values())
+    assert specs["rabbitmqctl.add-user"].sensitive_params == frozenset({"password"})
+    assert specs["rabbitmqctl.change-password"].sensitive_params == frozenset({"password"})
+    assert specs["mariadb.execute-sql"].stdin_param == "sql"
+    assert specs["mariadb.execute-sql"].sensitive_params == frozenset({"sql"})
+    assert specs["keystone-manage.bootstrap"].sensitive_params == frozenset({"password"})
     assert "--yes" in specs["apt-get.install"].argv
     assert specs["apt-get.install"].failure_hint
     # add-apt-repository must stay non-interactive and must keep its own update.

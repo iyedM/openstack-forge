@@ -60,7 +60,7 @@
       "roles": ["controller"],
       "depends_on": ["openstack-packages"],
       "files_modified": [],
-      "verification": "The RabbitMQ service is running on the controller.",
+      "verification": "rabbitmq-server is installed and active, and the RabbitMQ 'openstack' user exists with '.* .* .*' permissions in vhost '/' (no AMQP connection or TCP port 5672 check is performed).",
       "doc_url": "https://docs.openstack.org/install-guide/environment-messaging-ubuntu.html",
       "status": "unverified"
     },
@@ -70,7 +70,7 @@
       "roles": ["controller"],
       "depends_on": ["openstack-packages"],
       "files_modified": ["/etc/memcached.conf"],
-      "verification": "The Memcached service is running on the controller.",
+      "verification": "memcached and python3-memcache are installed, /etc/memcached.conf listens only on the controller's management IP (-l) and the memcached service is active (no TCP connection is tested).",
       "doc_url": "https://docs.openstack.org/install-guide/environment-memcached-ubuntu.html",
       "status": "unverified"
     },
@@ -80,8 +80,18 @@
       "roles": ["controller"],
       "depends_on": ["openstack-packages"],
       "files_modified": ["/etc/default/etcd"],
-      "verification": "The etcd service is running on the controller.",
+      "verification": "etcd-server is installed, /etc/default/etcd sets the page's nine ETCD_* keys for the controller's management IP, and the etcd service is enabled and active (no TCP connection or cluster health is tested).",
       "doc_url": "https://docs.openstack.org/install-guide/environment-etcd-ubuntu.html",
+      "status": "unverified"
+    },
+    {
+      "id": "keystone",
+      "title": "Install and configure the Keystone Identity service",
+      "roles": ["controller"],
+      "depends_on": ["mariadb", "memcached"],
+      "files_modified": ["/etc/keystone/keystone.conf", "/etc/apache2/apache2.conf"],
+      "verification": "keystone is installed, /etc/keystone/keystone.conf sets [database] connection and [token] provider = fernet, /etc/apache2/apache2.conf sets ServerName controller, Fernet and credential key repositories are initialized, the keystone MariaDB database and grants exist, and apache2 is active (HTTP /v3 token requests are not checked yet).",
+      "doc_url": "https://docs.openstack.org/keystone/2025.1/install/keystone-install-ubuntu.html",
       "status": "unverified"
     }
   ],

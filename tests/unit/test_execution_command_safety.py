@@ -319,12 +319,13 @@ def _execution_imports(path: Path) -> list[tuple[str | None, int]]:
 
 
 def test_only_the_apply_handler_imports_execution() -> None:
+    allowed_cli_handlers = {"_apply", "_secrets_init", "_secrets_show"}
     offenders = {}
     for path in sorted(SRC.rglob("*.py")):
         if "execution" in path.relative_to(SRC).parts:
             continue
         for function, line in _execution_imports(path):
-            if not (path == SRC / "cli.py" and function == "_apply"):
+            if not (path == SRC / "cli.py" and function in allowed_cli_handlers):
                 offenders[f"{path.relative_to(SRC)}:{line}"] = function
     assert offenders == {}
 

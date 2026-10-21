@@ -179,6 +179,107 @@ All notable changes to this project will be documented in this file.
   `python3-pymysql` and the service; it does not check SQL connectivity or the 3306
   listener. `mysql_secure_installation` is not run (interactive; the guide notes Ubuntu
   uses `unix_socket` authentication for local root). No new command spec was added.
+- `memcached` step (controller only). **Unverified and never run on a real host.** From
+  the official Memcached page: install `memcached` and `python3-memcache`, change the
+  listen address in `/etc/memcached.conf` to the controller's management IP (every active
+  `-l`/`--listen` line is commented out and `-l <ip>` is written in a managed block, in one
+  atomic edit), `systemctl restart memcached`. Verified from `memcached 1.6.24-1ubuntu0.3`
+  on Ubuntu 24.04: `memcached.service` passes `/etc/memcached.conf` to
+  `systemd-memcached-wrapper`, and `memcached.postinst` copies
+  `/usr/share/memcached/memcached.conf.default` (which has both `-l 127.0.0.1` and
+  `-l ::1`) to `/etc/memcached.conf`.
+- `etcd` step (controller only, single node). **Unverified and never run on a real host.**
+  From the official Etcd page: check `apt-cache policy etcd-server` for an installation
+  candidate (failing with an actionable `PreconditionError` if Universe is disabled),
+  install `etcd-server` (Ubuntu 24.04 has no `etcd` candidate), write the page's nine
+  `ETCD_*` keys to `/etc/default/etcd` from the controller's management IP and the
+  `controller` alias, then `systemctl enable etcd` and `systemctl restart etcd`. Verified
+  from `etcd-server 3.4.30-1ubuntu0.24.04.3` on Ubuntu 24.04: `etcd.service` sets
+  `Environment=ETCD_NAME=%H` and `Environment=ETCD_DATA_DIR=/var/lib/etcd/default` before
+  `EnvironmentFile=-/etc/default/%p`, and the pristine `/etc/default/etcd` conffile has
+  only a five-line comment header and no default `ETCD_*` assignments.
+- Command specs `systemctl.enable` (required by the etcd page) and `systemctl.is-enabled`
+  (read-only, so a disabled unit is not reported as done); the registry test pins them.
+- `disable_lines_and_set_block()`: comment out matching lines and set a managed block in a
+  single atomic edit.
+- CI job running the test suite in an `ubuntu:24.04` container with the distribution's
+  `python3-jsonschema` and `python3-yaml` (venv with system site packages, non-root user).
+- Secrets management brick (`openstack_forge.execution.secrets`, **never run on a real
+  host**; no new step and no new command in `DEFAULT_REGISTRY`):
+  - `SECRET_NAMES` / `SECRET_DESCRIPTIONS` for the 15 named passwords from
+    `https://docs.openstack.org/install-guide/environment-security.html` (`ADMIN_PASS`,
+    `CINDER_DBPASS`, `CINDER_PASS`, `DASH_DBPASS`, `DEMO_PASS`, `GLANCE_DBPASS`,
+    `GLANCE_PASS`, `KEYSTONE_DBPASS`, `METADATA_SECRET`, `NEUTRON_DBPASS`, `NEUTRON_PASS`,
+    `NOVA_DBPASS`, `NOVA_PASS`, `PLACEMENT_PASS`, `RABBIT_PASS`).
+  - `generate_secret()` using `secrets.choice` over `[A-Za-z0-9]` with minimum length 32,
+    safe without escaping in `.ini` files, database/broker URLs and `CommandSpec`
+    parameters.
+  - `SecretStore` storing JSON under `<root>/etc/openstack-forge/secrets.json` (directory
+    mode `0700`, file mode `0600`, atomic write, symlinks refused, owner and mode verified
+    on both `load()` and `ensure()`, idempotent `ensure()` that generates only missing
+    keys and never overwrites existing values). Multi-node secret distribution is not
+    implemented.
+  - Exact-value redaction (`register_secret` / `register_secrets`) automatically populated
+    by `SecretStore` so any registered secret value is replaced with `********` across
+    diffs, command output, `VerifyResult` details, error messages, the state file and the
+    audit log even without a `password=` key (rejecting strings shorter than 8 characters
+    or containing whitespace).
+  - `CommandSpec` support for `sensitive_params` / `"secret"` parameter type and opt-in
+    `stdin_param` delivery via `stdin=subprocess.PIPE` (keeping `stdin=DEVNULL` as the
+    default), with documentation of the OS process-table (`ps`) limitation when a tool only
+    accepts passwords in `argv`.
+  - CLI subcommands `openstack-forge secrets init [--root PATH] [--file PATH]` (prints
+    names only, never values) and `openstack-forge secrets show NAME [--root PATH] [--file
+    PATH]` (prints one secret value to stdout and nothing else).
+- `SecretSpec` and `EXTRA_SECRET_SPECS` (`openstack_forge.execution.secrets`) so future
+  documented secrets (such as `SWIFT_PASS`) can be added explicitly with a required
+  description and `https://docs.openstack.org/...` source URL (never invented silently),
+  plus `PLACEMENT_DBPASS` citing the Placement 2025.1 Ubuntu installation guide
+  (`https://docs.openstack.org/placement/2025.1/install/install-ubuntu.html`; 16 secrets in
+  `SECRET_NAMES`).
+- `CommandSpec(env_params=...)` (`openstack_forge.execution.commands`) as a third explicit
+  delivery mode for sensitive parameters via environment variables added to
+  `SANITIZED_ENV` (validated as strict POSIX uppercase names `^[A-Z][A-Z0-9_]*$` and
+  prevented from colliding with `SANITIZED_ENV` keys), with full masking everywhere and
+  documentation of `/proc/<pid>/environ` vs `/proc/<pid>/cmdline`. No spec in
+  `DEFAULT_REGISTRY` uses `env_params` yet.
+- `rabbitmq` step (`openstack_forge.execution.rabbitmq`, controller only). **Unverified and
+  never run on a real host.** Following
+  `https://docs.openstack.org/install-guide/environment-messaging-ubuntu.html`: requires
+  `RABBIT_PASS` in `SecretStore` (`PreconditionError` telling the operator to run
+  `openstack-forge secrets init`), installs `rabbitmq-server`, creates the `openstack` user
+  with `RABBIT_PASS` (or converges its password with `rabbitmqctl change_password` if
+  `rabbitmqctl list_users` shows `openstack` already exists), sets permissions `".*" ".*"
+  ".*"` in vhost `/`, and verifies the package, `rabbitmq-server.service` active state,
+  user presence and permissions. Documents the `/proc/<pid>/cmdline` (`ps`) limitation for
+  `rabbitmqctl`, the `hosts-file` hostname resolution requirement, and unencrypted AMQP on
+  port 5672.
+- Five reviewed `/usr/sbin/rabbitmqctl` command specs in `DEFAULT_REGISTRY`:
+  `rabbitmqctl.add-user`, `rabbitmqctl.change-password`, `rabbitmqctl.set-permissions`,
+  `rabbitmqctl.list-users` and `rabbitmqctl.list-user-permissions`, with `RABBITMQCTL_FAILURE_HINT`.
+- Reusable MariaDB SQL provisioning brick (`openstack_forge.execution.sql`) and `"sql_stdin"`
+  parameter type in `openstack_forge.execution.commands`:
+  - `"sql_stdin"` parameter type (printable ASCII plus `\n` up to 4096 characters, restricted
+    exclusively to `stdin_param` by `CommandSpec.__post_init__` and automatically marked
+    sensitive so rejected SQL is masked in `ParameterError`).
+  - `build_service_database_sql()`, `provision_service_database()`,
+    `service_database_ready()` and `service_database_problems()` using
+    `CREATE DATABASE IF NOT EXISTS` and `GRANT ALL PRIVILEGES ... IDENTIFIED BY '<password>'`
+    for `'user'@'localhost'` and `'user'@'%'` sent via `stdin` to `mariadb.execute-sql`, and
+    queried read-only via `mariadb.query-sql` (`params={}`, `mutates=False`).
+- `keystone` step (`openstack_forge.execution.keystone`, controller only) in the catalog and
+  `IMPLEMENTED_STEPS`. **Unverified and never run on a real host.** Following
+  `https://docs.openstack.org/keystone/2025.1/install/keystone-install-ubuntu.html`: requires
+  `KEYSTONE_DBPASS` and `ADMIN_PASS` in `SecretStore`, provisions the `keystone` MariaDB
+  database and grants via `stdin`, installs `keystone`, edits `/etc/keystone/keystone.conf`
+  (`[database] connection` and `[token] provider = fernet`) and `/etc/apache2/apache2.conf`
+  (`ServerName controller` in the `openstack-forge keystone-apache` managed block while
+  commenting out any outside `ServerName` lines), runs `keystone-manage db_sync`,
+  `fernet_setup`, `credential_setup`, and `bootstrap`, and restarts `apache2`.
+- Six reviewed command specs in `DEFAULT_REGISTRY`: `mariadb.execute-sql`,
+  `mariadb.query-sql`, `keystone-manage.db-sync`, `keystone-manage.fernet-setup`,
+  `keystone-manage.credential-setup`, and `keystone-manage.bootstrap`, with
+  `MARIADB_SQL_FAILURE_HINT` and `KEYSTONE_MANAGE_FAILURE_HINT`.
 
 ### Changed
 
@@ -235,6 +336,13 @@ All notable changes to this project will be documented in this file.
   source) instead of a synchronized time source, which is not checked yet.
 - `IMPLEMENTED_STEPS` pin deliberately updated to four steps; `time-sync-other` is no
   longer used as the example of an unimplemented step in tests.
+- Replaced the development machine's local RFC 1918 IP in `memcached`/`etcd`
+  modules, tests, `_service_fakes.py` and `docs/engine/README.md` with the RFC 5737
+  documentation address `192.0.2.170`.
+- `IMPLEMENTED_STEPS` pin deliberately updated to all nine catalog steps (adds `rabbitmq`
+  and `keystone`), and the `DEFAULT_REGISTRY` test deliberately pins twenty reviewed
+  commands (adds the five `/usr/sbin/rabbitmqctl`, two `/usr/bin/mariadb`, and four
+  `/usr/bin/keystone-manage` specs).
 
 ### Fixed
 

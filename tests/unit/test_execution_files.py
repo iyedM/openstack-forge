@@ -16,6 +16,7 @@ from openstack_forge.execution import (
     RootEscapeError,
     UnsafePathError,
     comment_out_lines,
+    disable_lines_and_set_block,
     fsutil,
     ini_set,
     ini_set_many,
@@ -761,3 +762,55 @@ def test_ini_set_many_diff_is_redacted(root: Path) -> None:
     change = ini_set_many(root, "/etc/app.cnf", [("client", "password", "hunter2")])
     assert "hunter2" not in change.diff and f"password = {MASK}" in change.diff
     assert "password = hunter2" in (root / "etc/app.cnf").read_text()
+
+
+# --- disable_lines_and_set_block -----------------------------------------------------------
+
+LISTEN = re.compile(r"^\s*-l\b")
+
+
+def test_disable_and_set_block_is_one_atomic_edit(root: Path, monkeypatch) -> None:
+    path = _write(root, "/etc/app.conf", "-m 64\n-l 127.0.0.1\n")
+    writes: list[str] = []
+    real_write = files_module.atomic_write_text
+
+    def counting_write(target, text, *, mode):
+        writes.append(text)
+        real_write(target, text, mode=mode)
+
+    monkeypatch.setattr(files_module, "atomic_write_text", counting_write)
+    change = disable_lines_and_set_block(root, "/etc/app.conf", LISTEN, "forge", "-l 192.0.2.11\n")
+    expected = (
+        f"-m 64\n{DISABLED_LINE_PREFIX}-l 127.0.0.1\n# BEGIN forge\n-l 192.0.2.11\n# END forge\n"
+    )
+    assert writes == [expected]  # a single write, never a state without any -l line
+    assert path.read_text() == expected
+    assert change.backup == "/etc/app.conf.orig"
+    assert (root / "etc/app.conf.orig").read_text() == "-m 64\n-l 127.0.0.1\n"
+
+
+def test_disable_and_set_block_is_idempotent_and_spares_its_block(root, monkeypatch) -> None:
+    _write(root, "/etc/app.conf", "-l 127.0.0.1\n")
+    disable_lines_and_set_block(root, "/etc/app.conf", LISTEN, "forge", "-l 192.0.2.11\n")
+    before = _snapshot(root / "etc/app.conf")
+    _forbid_writes(monkeypatch)
+    change = disable_lines_and_set_block(root, "/etc/app.conf", LISTEN, "forge", "-l 192.0.2.11\n")
+    assert (change.changed, change.diff) == (False, "")
+    assert _snapshot(root / "etc/app.conf") == before
+
+
+def test_disable_and_set_block_leaves_a_missing_file_absent(root: Path) -> None:
+    change = disable_lines_and_set_block(root, "/etc/absent.conf", LISTEN, "forge", "-l x\n")
+    assert (change.changed, change.created) == (False, False)
+    assert not (root / "etc/absent.conf").exists()
+
+
+def test_disable_and_set_block_dry_run_has_one_diff(root: Path) -> None:
+    path = _write(root, "/etc/app.conf", "-l 127.0.0.1\n")
+    change = disable_lines_and_set_block(
+        root, "/etc/app.conf", LISTEN, "forge", "-l 192.0.2.11\n", dry_run=True
+    )
+    assert f"-{'-l 127.0.0.1'}" in change.diff and "+-l 192.0.2.11" in change.diff
+    assert f"+{DISABLED_LINE_PREFIX}-l 127.0.0.1" in change.diff
+    assert path.read_text() == "-l 127.0.0.1\n"
+    assert not (root / "etc/app.conf.orig").exists()

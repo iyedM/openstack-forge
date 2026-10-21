@@ -75,10 +75,10 @@ def test_hosts_step_remains_unverified_in_catalog() -> None:
     step = catalog.step(HOSTS_STEP_ID)
     assert step.status == "unverified"
     # Deliberately updated in milestone 8 (time-sync-controller), 9 (openstack-packages),
-    # 10 (time-sync-other) and 11 (mariadb).
+    # 10 (time-sync-other), 11 (mariadb), 12 (memcached, etcd), 14 (rabbitmq) and 15 (keystone).
     assert set(IMPLEMENTED_STEPS) == {
         HOSTS_STEP_ID, "time-sync-controller", "time-sync-other", "openstack-packages",
-        "mariadb",
+        "mariadb", "rabbitmq", "memcached", "etcd", "keystone",
     }  # fmt: skip
 
 
@@ -407,17 +407,20 @@ def test_cli_apply_yes_on_real_root_requires_effective_uid_0(
     assert "requires root privileges (effective uid 0)" in err
 
 
-@pytest.mark.parametrize("step_id", ["memcached", "rabbitmq", "etcd"])
 def test_cli_apply_rejects_unimplemented_catalog_step(
-    root: Path, step_id: str, capsys: pytest.CaptureFixture[str]
+    root: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    import openstack_forge.execution as execution_pkg
+
+    without_rabbitmq = {k: v for k, v in IMPLEMENTED_STEPS.items() if k != "rabbitmq"}
+    monkeypatch.setattr(execution_pkg, "IMPLEMENTED_STEPS", without_rabbitmq)
     rc = main(
         [
             "apply",
             "--config",
             str(EXAMPLE_CONFIG),
             "--step",
-            step_id,
+            "rabbitmq",
             "--node",
             "forge-controller-01",
             "--root",

@@ -264,6 +264,58 @@ def _print_preview(preview: Any, registry: Any) -> None:
             print(f"  {command.describe(registry)}")
 
 
+def _secrets_init(args: argparse.Namespace) -> int:
+    """Create missing secrets in the 0600 secrets file and print names only (never values)."""
+    from openstack_forge.execution import (
+        DEFAULT_SECRETS_TARGET,
+        ExecutionError,
+        SecretStore,
+        is_host_root,
+    )
+
+    root_path = Path(args.root) if args.root is not None else Path("/")
+    host_root = args.root is None or (root_path.exists() and is_host_root(root_path))
+    if host_root and os.geteuid() != 0:
+        print(
+            "Error: Writing secrets to '/' requires root privileges (effective uid 0). "
+            "Re-run as root, or pass --root PATH to target an alternate directory.",
+            file=sys.stderr,
+        )
+        return 1
+
+    target = args.file if args.file is not None else DEFAULT_SECRETS_TARGET
+    try:
+        result = SecretStore(root_path, target).ensure()
+    except ExecutionError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"Secrets store: {result.path}")
+    if result.created:
+        print(f"Created ({len(result.created)}): {', '.join(result.created)}")
+    else:
+        print("Created (0): none")
+    if result.kept:
+        print(f"Kept existing ({len(result.kept)}): {', '.join(result.kept)}")
+    return 0
+
+
+def _secrets_show(args: argparse.Namespace) -> int:
+    """Print a single secret value to stdout and nothing else."""
+    from openstack_forge.execution import DEFAULT_SECRETS_TARGET, ExecutionError, SecretStore
+
+    root_path = Path(args.root) if args.root is not None else Path("/")
+    target = args.file if args.file is not None else DEFAULT_SECRETS_TARGET
+    try:
+        value = SecretStore(root_path, target).get(args.name)
+    except ExecutionError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    print(value)
+    return 0
+
+
 def build_parser(runner: CommandRunner | None = None) -> argparse.ArgumentParser:
     """Build the CLI parser."""
     parser = argparse.ArgumentParser(
@@ -351,7 +403,8 @@ def build_parser(runner: CommandRunner | None = None) -> argparse.ArgumentParser
         metavar="STEP_ID",
         help=(
             "Catalog step id to run (implemented: hosts-file, time-sync-controller, "
-            "time-sync-other, openstack-packages, mariadb)."
+            "time-sync-other, openstack-packages, mariadb, rabbitmq, memcached, etcd, "
+            "keystone)."
         ),
     )
     apply_parser.add_argument(
@@ -372,6 +425,53 @@ def build_parser(runner: CommandRunner | None = None) -> argparse.ArgumentParser
         help="Write changes to disk (default: dry-run that only prints the diff).",
     )
     apply_parser.set_defaults(func=_apply)
+
+    secrets_parser = subparsers.add_parser(
+        "secrets",
+        help="Manage the local 0600 OpenStack secrets store.",
+    )
+    secrets_subparsers = secrets_parser.add_subparsers(dest="secrets_command")
+
+    secrets_init = secrets_subparsers.add_parser(
+        "init",
+        help="Create missing secrets in the 0600 store and print names only.",
+    )
+    secrets_init.add_argument(
+        "--root",
+        default=None,
+        metavar="PATH",
+        help="Root directory under which the secrets file is stored (default: /).",
+    )
+    secrets_init.add_argument(
+        "--file",
+        default=None,
+        metavar="PATH",
+        help="Target path of the secrets file (default: /etc/openstack-forge/secrets.json).",
+    )
+    secrets_init.set_defaults(func=_secrets_init)
+
+    secrets_show = secrets_subparsers.add_parser(
+        "show",
+        help="Print one secret value to stdout and nothing else.",
+    )
+    secrets_show.add_argument(
+        "name",
+        metavar="NAME",
+        help="Secret name to display (for example: ADMIN_PASS or RABBIT_PASS).",
+    )
+    secrets_show.add_argument(
+        "--root",
+        default=None,
+        metavar="PATH",
+        help="Root directory under which the secrets file is stored (default: /).",
+    )
+    secrets_show.add_argument(
+        "--file",
+        default=None,
+        metavar="PATH",
+        help="Target path of the secrets file (default: /etc/openstack-forge/secrets.json).",
+    )
+    secrets_show.set_defaults(func=_secrets_show)
 
     return parser
 

@@ -28,4 +28,50 @@ jobs:
       - name: Run Ruff
         run: python -m ruff check .
 
+  # Re-checks the declared minimum jsonschema (pyproject.toml) against what Ubuntu 24.04
+  # ships: python3-jsonschema and python3-yaml from apt, used through a venv with system
+  # site packages. Only pytest is installed from PyPI. Tests run as a non-root user: as
+  # root some tests are skipped, and "apply --yes" without --root would act on the container.
+  test-ubuntu-2404-distro-packages:
+    name: Tests with Ubuntu 24.04 python3-jsonschema and python3-yaml
+    runs-on: ubuntu-latest
+    container: ubuntu:24.04
+    steps:
+      - name: Install Python and the distribution's dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update
+          apt-get install --yes --no-install-recommends \
+            ca-certificates git python3 python3-venv \
+            python3-jsonschema python3-yaml python3-setuptools python3-wheel
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Create a non-root user and a venv with system site packages
+        run: |
+          useradd --create-home tester
+          chown -R tester "$GITHUB_WORKSPACE"
+          runuser -u tester -- python3 -m venv --system-site-packages /home/tester/venv
+          runuser -u tester -- /home/tester/venv/bin/python -m pip install --quiet "pytest>=8.0"
+
+      - name: Show and check the dependency versions under test
+        run: |
+          runuser -u tester -- /home/tester/venv/bin/python - <<'PY'
+          import sys
+          from importlib.metadata import version
+          import jsonschema, yaml
+          print(sys.version)
+          print("jsonschema", version("jsonschema"), jsonschema.__file__)
+          print("PyYAML", yaml.__version__, yaml.__file__)
+          for module in (jsonschema, yaml):
+              assert module.__file__.startswith("/usr/lib/python3/dist-packages/"), module
+          PY
+
+      - name: Run tests as a non-root user
+        run: >-
+          runuser -u tester --
+          env PYTHONPATH=src /home/tester/venv/bin/python -m pytest -p no:cacheprovider
+
 # Note: GitHub Actions should be SHA-pinned after verifying the relevant commit hashes for each action.

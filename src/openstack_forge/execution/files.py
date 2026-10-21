@@ -149,6 +149,40 @@ def _comment_out_editor(
     return edit
 
 
+def disable_lines_and_set_block(
+    root: Path,
+    target: str | PurePosixPath,
+    pattern: str | re.Pattern[str],
+    name: str,
+    content: str,
+    *,
+    comment: str = "#",
+    prefix: str = DISABLED_LINE_PREFIX,
+    dry_run: bool = False,
+) -> FileChange:
+    """Comment out active lines matching ``pattern`` and set a managed block, atomically.
+
+    This is :func:`comment_out_lines` (with ``exclude_block=name``) followed by
+    :func:`managed_block`, done in a single edit: one write, one ``.orig`` backup, one
+    diff, and no intermediate state where the old lines are disabled but the block is not
+    there yet. The file must already exist; a missing file is left absent (unchanged).
+    """
+    disable = _comment_out_editor(pattern, prefix=prefix, exclude_block=name)
+    block = _managed_block_editor(name, content, comment=comment)
+
+    def edit(lines: list[str], display: str) -> list[str]:
+        return block(disable(lines, display), display)
+
+    return _edit_file(
+        root,
+        target,
+        edit,
+        dry_run=dry_run,
+        new_file_mode=DEFAULT_FILE_MODE,
+        create_if_missing=False,
+    )
+
+
 def uncomment_lines(
     root: Path,
     target: str | PurePosixPath,
