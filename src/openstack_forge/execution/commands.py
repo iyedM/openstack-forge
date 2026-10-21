@@ -509,6 +509,8 @@ OPENSTACK_SERVICE_LIST = "openstack.service-list"
 OPENSTACK_SERVICE_CREATE = "openstack.service-create"
 OPENSTACK_ENDPOINT_LIST = "openstack.endpoint-list"
 OPENSTACK_ENDPOINT_CREATE = "openstack.endpoint-create"
+GLANCE_MANAGE_DB_SYNC = "glance-manage.db-sync"
+PLACEMENT_MANAGE_DB_SYNC = "placement-manage.db-sync"
 
 # Fixed literal admin authentication flags for /usr/bin/openstack (package
 # "python3-openstackclient", verified with `dpkg -S /usr/bin/openstack`).
@@ -586,6 +588,22 @@ OPENSTACK_CLI_FAILURE_HINT = (
     "that 'controller' resolves in /etc/hosts ('hosts-file' step), that the 'keystone' "
     "step has been applied, and inspect /var/log/apache2/keystone.log (or "
     "'journalctl -u apache2'). OpenStack Forge does not attempt any automatic recovery."
+)
+
+GLANCE_MANAGE_FAILURE_HINT = (
+    "glance-manage reads /etc/glance/glance-api.conf and connects to the MariaDB 'glance' "
+    "database at 'controller': check that 'systemctl is-active mariadb' is 'active', that "
+    "'controller' resolves in /etc/hosts ('hosts-file' step), and that "
+    "/etc/glance/glance-api.conf has the expected [database] connection. OpenStack Forge "
+    "does not attempt any automatic recovery."
+)
+
+PLACEMENT_MANAGE_FAILURE_HINT = (
+    "placement-manage reads /etc/placement/placement.conf and connects to the MariaDB "
+    "'placement' database at 'controller': check that 'systemctl is-active mariadb' is "
+    "'active', that 'controller' resolves in /etc/hosts ('hosts-file' step), and that "
+    "/etc/placement/placement.conf has the expected [placement_database] connection. "
+    "OpenStack Forge does not attempt any automatic recovery."
 )
 
 SYSTEM_COMMANDS: tuple[CommandSpec, ...] = (
@@ -1143,6 +1161,39 @@ SYSTEM_COMMANDS: tuple[CommandSpec, ...] = (
         description="Create one Keystone service endpoint in RegionOne",
         failure_hint=OPENSTACK_CLI_FAILURE_HINT,
         env_params={"admin_password": "OS_PASSWORD"},
+    ),
+    CommandSpec(
+        GLANCE_MANAGE_DB_SYNC,
+        # /usr/bin/glance-manage (package "python3-glance", verified with `dpkg -S`).
+        # Guide (https://docs.openstack.org/glance/2025.1/install/install-ubuntu.html):
+        # 'su -s /bin/sh -c "glance-manage db_sync" glance'.
+        # glance-manage(1) ("glance-manage db_sync") and `glance/cmd/manage.py`
+        # (`add_legacy_command_parsers` registers `db_sync`).
+        # CommandSpec forbids `su` and `sudo`; `/usr/bin/glance-manage db_sync` is invoked
+        # directly as root after `/etc/glance/glance-api.conf` is configured with
+        # `[database] connection = mysql+pymysql://glance:GLANCE_DBPASS@controller/glance`.
+        ("/usr/bin/glance-manage", "db_sync"),
+        timeout=300,
+        mutates=True,
+        description="Populate or upgrade the Glance Image service SQL database schema",
+        failure_hint=GLANCE_MANAGE_FAILURE_HINT,
+    ),
+    CommandSpec(
+        PLACEMENT_MANAGE_DB_SYNC,
+        # /usr/bin/placement-manage (package "python3-placement", verified with `dpkg -S`).
+        # Guide (https://docs.openstack.org/placement/2025.1/install/install-ubuntu.html):
+        # 'su -s /bin/sh -c "placement-manage db sync" placement'.
+        # Verified in `/usr/lib/python3/dist-packages/placement/cmd/manage.py`:
+        # `add_db_command_parsers()` registers `subparsers.add_parser('db')` and nested
+        # `db_parser.add_parser('sync')` (two separate tokens: `"db"`, `"sync"`).
+        # CommandSpec forbids `su` and `sudo`; `/usr/bin/placement-manage db sync` is
+        # invoked directly as root after `/etc/placement/placement.conf` is configured with
+        # `[placement_database] connection = mysql+pymysql://placement:PLACEMENT_DBPASS@controller/placement`.
+        ("/usr/bin/placement-manage", "db", "sync"),
+        timeout=300,
+        mutates=True,
+        description="Populate or upgrade the Placement service SQL database schema",
+        failure_hint=PLACEMENT_MANAGE_FAILURE_HINT,
     ),
 )
 

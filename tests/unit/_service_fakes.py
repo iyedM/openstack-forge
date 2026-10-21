@@ -88,6 +88,8 @@ class ServiceHost:
         self.mariadb_passwords: dict[tuple[str, str], str] = {}
         self.keystone_db_synced: bool = False
         self.keystone_bootstrapped: dict[str, str] | None = None
+        self.glance_db_synced: bool = False
+        self.placement_db_synced: bool = False
         self.openstack_projects: list[dict[str, Any]] = [
             dict(item) for item in (openstack_projects or ())
         ]
@@ -297,6 +299,35 @@ class ServiceHost:
             if not any(u.get("Name") == "admin" for u in self.openstack_users):
                 self.openstack_users.append({"ID": "user-admin", "Name": "admin"})
             self.openstack_user_passwords["admin"] = password
+            return ProcessOutput(0, "", "")
+        if argv == ("/usr/bin/glance-manage", "db_sync"):
+            self._snapshot("glance-manage db_sync")
+            conf_path = self.root / "etc/glance/glance-api.conf"
+            conf_text = conf_path.read_text(encoding="utf-8") if conf_path.exists() else ""
+            if "mysql+pymysql://glance:" not in conf_text or "@controller/glance" not in conf_text:
+                return ProcessOutput(
+                    1,
+                    "",
+                    "CRITICAL glance: [database] connection is not configured for MariaDB in "
+                    "/etc/glance/glance-api.conf\n",
+                )
+            self.glance_db_synced = True
+            return ProcessOutput(0, "", "")
+        if argv == ("/usr/bin/placement-manage", "db", "sync"):
+            self._snapshot("placement-manage db sync")
+            conf_path = self.root / "etc/placement/placement.conf"
+            conf_text = conf_path.read_text(encoding="utf-8") if conf_path.exists() else ""
+            if (
+                "mysql+pymysql://placement:" not in conf_text
+                or "@controller/placement" not in conf_text
+            ):
+                return ProcessOutput(
+                    1,
+                    "",
+                    "CRITICAL placement: [placement_database] connection is not configured for "
+                    "MariaDB in /etc/placement/placement.conf\n",
+                )
+            self.placement_db_synced = True
             return ProcessOutput(0, "", "")
         if argv[: len(OPENSTACK_ADMIN_AUTH_ARGS)] == OPENSTACK_ADMIN_AUTH_ARGS:
             return self._run_openstack_cli(argv[len(OPENSTACK_ADMIN_AUTH_ARGS) :], env)

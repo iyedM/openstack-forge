@@ -2,11 +2,12 @@
 
 `openstack_forge.execution` contains the confined file-editing primitives, redaction helper,
 secrets store, state store, step engine, an allowlisted command layer, a reusable MariaDB
-SQL provisioning brick, a reusable `/usr/bin/openstack` CLI provisioning brick, and nine
+SQL provisioning brick, a reusable `/usr/bin/openstack` CLI provisioning brick, and eleven
 implemented deployment steps: `hosts-file`, `time-sync-controller`, `time-sync-other`,
-`openstack-packages`, `mariadb`, `rabbitmq`, `memcached`, `etcd`, and `keystone`.
+`openstack-packages`, `mariadb`, `rabbitmq`, `memcached`, `etcd`, `keystone`, `glance`, and
+`placement`.
 
-**All nine steps are marked `unverified` in the step catalog, and none has ever run on a
+**All eleven steps are marked `unverified` in the step catalog, and none has ever run on a
 real host.** Every other catalog step is rejected as "not implemented" by
 `openstack-forge apply`. `hosts-file` is pure Python file operations confined to the target
 root. [`time-sync-controller`](#step-time-sync-controller-openstack_forgeexecutionchrony),
@@ -16,11 +17,14 @@ root. [`time-sync-controller`](#step-time-sync-controller-openstack_forgeexecuti
 [`rabbitmq`](#step-rabbitmq-openstack_forgeexecutionrabbitmq),
 [`memcached`](#step-memcached-openstack_forgeexecutionmemcached),
 [`etcd`](#step-etcd-openstack_forgeexecutionetcd),
-and [`keystone`](#step-keystone-openstack_forgeexecutionkeystone)
+[`keystone`](#step-keystone-openstack_forgeexecutionkeystone),
+[`glance`](#step-glance-openstack_forgeexecutionglance),
+and [`placement`](#step-placement-openstack_forgeexecutionplacement)
 run system commands (`apt-get`, `add-apt-repository`, `apt-cache`, `systemctl`,
-`dpkg-query`, `rabbitmqctl`, `mariadb`, `keystone-manage`, `openstack`), only through the
+`dpkg-query`, `rabbitmqctl`, `mariadb`, `keystone-manage`, `openstack`, `glance-manage`,
+`placement-manage`), only through the
 [command execution layer](#command-execution-layer), whose registry contains exactly
-thirty-one reviewed commands. Nothing uses `sudo` or `su`.
+thirty-three reviewed commands. Nothing uses `sudo` or `su`.
 
 **Network:** OpenStack Forge's Python code opens no network connection. Some of the
 commands it runs do: `apt-get update`, `apt-get install` and `add-apt-repository` download
@@ -227,7 +231,7 @@ openstack-forge apply --config cluster.yaml --step STEP_ID [--node HOSTNAME] [--
 | Option | Meaning |
 | ------ | ------- |
 | `--config PATH` | Cluster configuration (default: `cluster.yaml`), validated before use. |
-| `--step STEP_ID` | Catalog step ID to apply (required). Only steps registered in `IMPLEMENTED_STEPS` (`hosts-file`, `time-sync-controller`, `time-sync-other`, `openstack-packages`, `mariadb`, `rabbitmq`, `memcached`, `etcd`, `keystone`) can run; any other catalog step exits with code 1 and `"not implemented"`. A step whose catalog `roles` do not include the node's role (for example `time-sync-other` on the controller) exits with code 1. |
+| `--step STEP_ID` | Catalog step ID to apply (required). Only steps registered in `IMPLEMENTED_STEPS` (`hosts-file`, `time-sync-controller`, `time-sync-other`, `openstack-packages`, `mariadb`, `rabbitmq`, `memcached`, `etcd`, `keystone`, `glance`, `placement`) can run; any other catalog step exits with code 1 and `"not implemented"`. A step whose catalog `roles` do not include the node's role (for example `time-sync-other` on the controller) exits with code 1. |
 | `--node HOSTNAME` | Target node hostname. If omitted, matched against the local machine's hostname (`socket.gethostname()`). |
 | `--root PATH` | Target filesystem root (default: `/`). Used by tests to confine all writes to a temporary directory. |
 | `--yes` | Write changes, run the step's commands and update the state file. The commands of every step except `hosts-file` use the network through apt. Without `--yes`, `apply` runs in **dry-run** mode: it prints the redacted unified diff and the exact argv of every command the step would run, writes nothing, runs nothing, and exits 0. |
@@ -418,7 +422,7 @@ locking against two engines sharing a state file, and no timeout around a step's
 `openstack_forge.execution.commands` (with `audit.py`) is the only code in the project that
 may start a process on behalf of a deployment step. It exists so that steps (for example
 installing a package or restarting a service) have one reviewed path for doing so.
-`DEFAULT_REGISTRY` contains exactly the thirty-one reviewed commands below, and a test pins
+`DEFAULT_REGISTRY` contains exactly the thirty-three reviewed commands below, and a test pins
 their argv, parameter types, exit codes and `mutates` flags, so adding or changing one is a
 deliberate edit. The tests only ever run harmless `sys.executable` one-liners; everything
 else uses a fake backend.
@@ -456,13 +460,16 @@ else uses a fake backend.
 | `openstack.service-create` | `/usr/bin/openstack ... service create --name {service_name} {service_type} -f json` (`env_params={"admin_password": "OS_PASSWORD"}`) | yes | no (local controller) | 0 | Guide (`glance`/`placement`/`nova`/`neutron`/`cinder` install pages): `openstack service create --name <name> --description ... <type>` (`--description` omitted so multi-word prose never flows through parameter validation; checked first via `service-list` to avoid duplicate UUIDs). Timeout 60 s. |
 | `openstack.endpoint-list` | `/usr/bin/openstack ... endpoint list -f json` (`env_params={"admin_password": "OS_PASSWORD"}`) | no | no (local controller) | 0 | `python3-openstackclient`: lists catalog endpoints (`ID`, `Region`, `Service Name`, `Service Type`, `Enabled`, `Interface`, `URL`) as JSON. Timeout 30 s. |
 | `openstack.endpoint-create` | `/usr/bin/openstack ... endpoint create --region RegionOne {service_type} {interface} {url} -f json` (`env_params={"admin_password": "OS_PASSWORD"}`) | yes | no (local controller) | 0 | Guide (`glance`/`placement`/`nova`/`neutron`/`cinder` install pages): `openstack endpoint create --region RegionOne <type> public|internal|admin <url>` (checked first via `endpoint-list` to avoid duplicate UUIDs). Timeout 60 s. |
+| `glance-manage.db-sync` | `/usr/bin/glance-manage db_sync` | yes | no | 0 | Guide (`glance/2025.1/install/install-ubuntu.html`): `su -s /bin/sh -c "glance-manage db_sync" glance` (`dpkg -S`: `python3-glance: /usr/bin/glance-manage`). `glance/cmd/manage.py` registers legacy top-level `db_sync`. Invoked directly as `root` because `CommandSpec` forbids `su`. Timeout 300 s. |
+| `placement-manage.db-sync` | `/usr/bin/placement-manage db sync` | yes | no | 0 | Guide (`placement/2025.1/install/install-ubuntu.html`): `su -s /bin/sh -c "placement-manage db sync" placement` (`dpkg -S`: `python3-placement: /usr/bin/placement-manage`). Unlike `glance-manage`, `placement/cmd/manage.py` registers `subparsers.add_parser('db')` with nested `db_parser.add_parser('sync')` — two separate arguments `"db"` and `"sync"`. Invoked directly as `root` because `CommandSpec` forbids `su`. Timeout 300 s. |
 
 Each path is the one installed on Ubuntu 24.04 by the package named by `dpkg -S`: `apt`
 (`apt-get`, `apt-cache`), `software-properties-common` (`add-apt-repository`), `systemd`,
 `dpkg`, `rabbitmq-server` (`/usr/sbin/rabbitmqctl`), `mariadb-client-core`
-(`/usr/bin/mariadb`), `python3-keystone` (`/usr/bin/keystone-manage`), and
+(`/usr/bin/mariadb`), `python3-keystone` (`/usr/bin/keystone-manage`),
 `python3-openstackclient` (`/usr/bin/openstack`, installed via `update-alternatives` from
-`/usr/bin/python3-openstack`); `PATH` is never searched. No other
+`/usr/bin/python3-openstack`), `python3-glance` (`/usr/bin/glance-manage`), and
+`python3-placement` (`/usr/bin/placement-manage`); `PATH` is never searched. No other
 apt or dpkg option is used: in particular no `--force-*`, no `-o Dpkg::Options`, no lock
 timeout, and no `upgrade`, `dist-upgrade` or `reboot` command exists in the registry. A
 configuration file prompt from dpkg therefore makes the command fail (stdin is `/dev/null`)
@@ -1176,6 +1183,164 @@ Deviations, trade-offs, and scope boundary:
   against `http://controller:5000/v3` as `admin`, which exercises live HTTP `/v3` token
   issuance and confirms the `service` project exists in the `default` domain; the SQL schema
   version from `db_sync` is not queried directly.
+
+## Step: `glance` (`openstack_forge.execution.glance`)
+
+**Unverified, and never run on a real host.** Source:
+<https://docs.openstack.org/glance/2025.1/install/install-ubuntu.html>
+(`doc/source/install/install-ubuntu.rst` and included
+`doc/source/install/common/edit-glance-api-conf.rst`, `register-quotas.rst`,
+`configure-quotas.rst`), which for Ubuntu prescribes:
+
+1. Prerequisites — create the `glance` MariaDB database and grant `ALL PRIVILEGES ON
+   glance.*` to `'glance'@'localhost'` and `'glance'@'%'` identified by `GLANCE_DBPASS`;
+2. Create the `glance` service credentials in Keystone (`default` domain, `service`
+   project, `admin` role) and the `glance` (`image`) service entity with three `RegionOne`
+   endpoints (`public`, `internal`, `admin`) at `http://controller:9292`;
+3. `apt install glance`;
+4. Edit `/etc/glance/glance-api.conf` (14 keys across 6 sections):
+   - `[database]`: `connection = mysql+pymysql://glance:GLANCE_DBPASS@controller/glance`
+   - `[keystone_authtoken]`: `www_authenticate_uri = http://controller:5000`,
+     `auth_url = http://controller:5000`, `memcached_servers = controller:11211`,
+     `auth_type = password`, `project_domain_name = Default`, `user_domain_name = Default`,
+     `project_name = service`, `username = glance`, `password = GLANCE_PASS`
+   - `[paste_deploy]`: `flavor = keystone`
+   - `[DEFAULT]`: `enabled_backends = fs:file`
+   - `[glance_store]`: `default_backend = fs`
+   - `[fs]`: `filesystem_store_datadir = /var/lib/glance/images/`
+5. Populate the Image service database: `su -s /bin/sh -c "glance-manage db_sync" glance`;
+6. Restart the Image service: `service glance-api restart`.
+
+It runs only on the controller (constructing it for another role raises `ExecutionError`).
+
+| Phase | What happens |
+| ----- | ------------ |
+| `check()` | Pure first (runs zero external commands if any fails): `ADMIN_PASS`, `GLANCE_DBPASS`, and `GLANCE_PASS` must exist in `SecretStore(root)`, and `/etc/glance/glance-api.conf` must exist and need no edit. Otherwise `True` only if, in order: `dpkg-query --status glance` reports it installed, `systemctl is-active glance-api` prints `active`, `mariadb.query-sql` confirms the `glance` database and `'glance'@'localhost'` + `'glance'@'%'` grants exist, `service_user_ready` confirms the `glance` user (`default` domain) and its `admin` role in `service` exist, and `service_catalog_ready` confirms the `glance` (`image`) service and all three `RegionOne` endpoints (`http://controller:9292`) exist and are enabled. |
+| `apply()` | Precondition: loads `ADMIN_PASS`, `GLANCE_DBPASS`, and `GLANCE_PASS` from `SecretStore(root)`. Then provisions the `glance` MariaDB database and grants via `mariadb.execute-sql` (`stdin`); converges the `glance` Keystone user, `admin` role on `service`, `glance` (`image`) service entity, and three `RegionOne` endpoints (`ensure_service_user` + `ensure_service_catalog`); runs `apt-get install --yes glance`; edits `/etc/glance/glance-api.conf` (`ini_set_many`, 14 settings); runs `/usr/bin/glance-manage db_sync`; and runs `systemctl restart glance-api`. |
+| `verify()` | Checks `ADMIN_PASS`, `GLANCE_DBPASS`, and `GLANCE_PASS` in `SecretStore(root)`, all 14 keys in `/etc/glance/glance-api.conf` (redacting secret values), `glance` installed, `glance-api` active, the `glance` MariaDB database and grants, the `glance` Keystone user and `admin` role on `service`, and the `glance` (`image`) service and three `RegionOne` endpoints (`http://controller:9292`). |
+
+Established on an Ubuntu 24.04 development machine with read-only commands (`glance`
+`2:30.0.0-0ubuntu1~cloud1.1` in `noble-updates/epoxy/main` and `2:28.0.1-0ubuntu1.2` in
+`noble-updates/main`):
+
+- `apt-cache show glance`: metapackage with `Depends: glance-api (= 2:30.0.0-0ubuntu1~cloud1.1)`.
+- `glance-api` ships `/usr/lib/systemd/system/glance-api.service` (`dpkg -S`: `glance-api`),
+  running `/usr/bin/glance-api --config-file=/etc/glance/glance-api.conf` as `User=glance`,
+  `Group=glance` (`WantedBy=multi-user.target`).
+- `glance-common` ships `/etc/glance/glance-api.conf` (conffile MD5
+  `3e7b519df650970b3bca9e7cb16d19d0`) and `/usr/share/man/man1/glance-manage.1.gz`; in the
+  pristine conffile all 14 target options are commented out (`#connection = <None>`, etc.)
+  and `[fs]` does not exist yet (`ini_set_many` appends `[fs]` with
+  `filesystem_store_datadir = /var/lib/glance/images/`).
+- `python3-glance` ships `/usr/bin/glance-manage` (`dpkg -S`: `python3-glance`) and
+  `/usr/lib/python3/dist-packages/glance/cmd/manage.py`, which registers both `db` +
+  subcommand `sync` and legacy top-level `db_sync` (`glance-manage db_sync`, matching the
+  guide).
+- **Upstream documentation path comment discrepancy:** in `openstack/glance`
+  `stable/2025.1`, `install-ubuntu.rst` says "Edit the `/etc/glance/glance-api.conf` file",
+  whereas the included `common/edit-glance-api-conf.rst` contains `.. path
+  /etc/glance/glance.conf` directive comments. On Ubuntu 24.04 (`glance-common`), the real
+  file is `/etc/glance/glance-api.conf` (there is no `/etc/glance/glance.conf`).
+
+Deviations, trade-offs, and scope boundary:
+
+- **Optional Keystone unified limits (`[oslo_limit]` / `use_keystone_limits`) omitted:**
+  `install-ubuntu.rst` includes `common/register-quotas.rst` and `common/configure-quotas.rst`
+  as an optional section ("If you want to use unified limits..."). Because unified limits are
+  optional and require a separate `oslo_limit` service account and `system_scope = all` reader
+  role, `GlanceStep` omits them and configures the core Image service required by the
+  installation guide.
+- **`glance-manage db_sync` invoked directly as `root` instead of `su`:** the guide runs
+  `su -s /bin/sh -c "glance-manage db_sync" glance`, whereas `CommandSpec` forbids `su` and
+  `sudo`. Editing `/etc/glance/glance-api.conf` before `db_sync` ensures `db_sync` connects
+  to MariaDB; if `log_file` or `log_dir` is enabled in `glance-api.conf`, running
+  `glance-manage` as `root` can create a root-owned log file in `/var/log/glance`.
+- **Password delivery:** `GLANCE_DBPASS` is sent to `/usr/bin/mariadb` over `stdin`
+  (`stdin_param="sql"`) and `ADMIN_PASS` is passed to `/usr/bin/openstack` via `OS_PASSWORD`
+  (`env_params`), so neither ever appears in `argv` (`ps`). `GLANCE_PASS` is passed to
+  `openstack user create` / `openstack user set` via `--password {user_password}` because
+  `python-openstackclient` `--password-prompt` requires a TTY (`stdin.isatty()`).
+- **What `verify()` does not check:** no live HTTP request to `http://controller:9292` and
+  no CirrOS image upload (`verify.html`) are performed.
+
+## Step: `placement` (`openstack_forge.execution.placement`)
+
+**Unverified, and never run on a real host.** Source:
+<https://docs.openstack.org/placement/2025.1/install/install-ubuntu.html>
+(`doc/source/install/install-ubuntu.rst` and included `doc/source/install/shared/endpoints.rst`),
+which for Ubuntu prescribes:
+
+1. Prerequisites — create the `placement` MariaDB database and grant `ALL PRIVILEGES ON
+   placement.*` to `'placement'@'localhost'` and `'placement'@'%'` identified by
+   `PLACEMENT_DBPASS`;
+2. Create the `placement` service credentials in Keystone (`default` domain, `service`
+   project, `admin` role) and the `placement` (`placement`) service entity with three
+   `RegionOne` endpoints (`public`, `internal`, `admin`) at `http://controller:8778`;
+3. `apt install placement-api`;
+4. Edit `/etc/placement/placement.conf` (10 keys across 3 sections):
+   - `[placement_database]`:
+     `connection = mysql+pymysql://placement:PLACEMENT_DBPASS@controller/placement`
+   - `[api]`: `auth_strategy = keystone`
+   - `[keystone_authtoken]`: `auth_url = http://controller:5000/v3`,
+     `memcached_servers = controller:11211`, `auth_type = password`,
+     `project_domain_name = Default`, `user_domain_name = Default`,
+     `project_name = service`, `username = placement`, `password = PLACEMENT_PASS`
+5. Populate the `placement` database:
+   `su -s /bin/sh -c "placement-manage db sync" placement`;
+6. Restart the `apache2` service: `service apache2 restart`.
+
+It runs only on the controller (constructing it for another role raises `ExecutionError`).
+
+| Phase | What happens |
+| ----- | ------------ |
+| `check()` | Pure first (runs zero external commands if any fails): `ADMIN_PASS`, `PLACEMENT_DBPASS`, and `PLACEMENT_PASS` must exist in `SecretStore(root)`, and `/etc/placement/placement.conf` must exist and need no edit. Otherwise `True` only if, in order: `dpkg-query --status placement-api` reports it installed, `systemctl is-active apache2` prints `active`, `mariadb.query-sql` confirms the `placement` database and `'placement'@'localhost'` + `'placement'@'%'` grants exist, `service_user_ready` confirms the `placement` user (`default` domain) and its `admin` role in `service` exist, and `service_catalog_ready` confirms the `placement` (`placement`) service and all three `RegionOne` endpoints (`http://controller:8778`) exist and are enabled. |
+| `apply()` | Precondition: loads `ADMIN_PASS`, `PLACEMENT_DBPASS`, and `PLACEMENT_PASS` from `SecretStore(root)`. Then provisions the `placement` MariaDB database and grants via `mariadb.execute-sql` (`stdin`); converges the `placement` Keystone user, `admin` role on `service`, `placement` (`placement`) service entity, and three `RegionOne` endpoints (`ensure_service_user` + `ensure_service_catalog`); runs `apt-get install --yes placement-api`; edits `/etc/placement/placement.conf` (`ini_set_many`, 10 settings); runs `/usr/bin/placement-manage db sync`; and runs `systemctl restart apache2`. |
+| `verify()` | Checks `ADMIN_PASS`, `PLACEMENT_DBPASS`, and `PLACEMENT_PASS` in `SecretStore(root)`, all 10 keys in `/etc/placement/placement.conf` (redacting secret values), `placement-api` installed, `apache2` active, the `placement` MariaDB database and grants, the `placement` Keystone user and `admin` role on `service`, and the `placement` (`placement`) service and three `RegionOne` endpoints (`http://controller:8778`). |
+
+Established on an Ubuntu 24.04 development machine with read-only commands (`placement-api`
+`1:13.0.0-0ubuntu1~cloud0` in `noble-updates/epoxy/main` and `1:11.0.0-0ubuntu1` in
+`noble/main`):
+
+- `apt-cache show placement-api`: `Depends: adduser, apache2 | httpd,
+  libapache2-mod-wsgi-py3, placement-common (= 1:13.0.0-0ubuntu1~cloud0), python3-placement
+  (= 1:13.0.0-0ubuntu1~cloud0), debconf`.
+- `placement-api` runs under Apache (`apache2.service`) via `mod_wsgi`: it ships
+  `/etc/apache2/sites-available/placement-api.conf` (conffile MD5
+  `e4ca061f159949adb94276946e4d015c`, listening on port `8778` via
+  `/usr/bin/placement-api`), and `/var/lib/dpkg/info/placement-api.postinst` enables that
+  vhost and reloads Apache on `configure`. There is no standalone `placement-api.service`
+  systemd unit; restarting `apache2` restarts Placement.
+- `placement-common` ships `/etc/placement/placement.conf` (conffile MD5
+  `1459fc6e8daadaf4f0a618036b622508`), whose pristine `[placement_database]` section sets an
+  active `connection = sqlite:////var/lib/placement/placement.sqlite` line (`ini_set_many`
+  replaces that active SQLite line in place with the MariaDB URL before `placement-manage db
+  sync` runs).
+- `python3-placement` ships `/usr/bin/placement-manage` (`dpkg -S`: `python3-placement`) and
+  `/usr/lib/python3/dist-packages/placement/cmd/manage.py`. Unlike `keystone-manage` and
+  `glance-manage` (`db_sync`), `placement/cmd/manage.py` only registers
+  `subparsers.add_parser('db')` with nested `db_parser.add_parser('sync')` — two separate
+  arguments `"db"` and `"sync"` (`("/usr/bin/placement-manage", "db", "sync")`).
+
+Deviations, trade-offs, and limits:
+
+- **`placement-manage db sync` invoked directly as `root` instead of `su`:** the guide runs
+  `su -s /bin/sh -c "placement-manage db sync" placement`, whereas `CommandSpec` forbids
+  `su` and `sudo`. Editing `/etc/placement/placement.conf` before `db sync` replaces the
+  default `sqlite:////var/lib/placement/placement.sqlite` line with MariaDB so `db sync`
+  does not create a root-owned SQLite file in `/var/lib/placement`; if `log_file` or
+  `log_dir` is enabled in `placement.conf`, running `placement-manage` as `root` can create
+  a root-owned log file in `/var/log/placement`.
+- **`PLACEMENT_DBPASS` secret:** omitted from the summary table on
+  `environment-security.html` but required by the Placement 2025.1 Ubuntu guide; defined in
+  `EXTRA_SECRET_SPECS` (`openstack_forge.execution.secrets`).
+- **Password delivery:** `PLACEMENT_DBPASS` is sent to `/usr/bin/mariadb` over `stdin`
+  (`stdin_param="sql"`) and `ADMIN_PASS` is passed to `/usr/bin/openstack` via `OS_PASSWORD`
+  (`env_params`), so neither ever appears in `argv` (`ps`). `PLACEMENT_PASS` is passed to
+  `openstack user create` / `openstack user set` via `--password {user_password}`.
+- **What `verify()` does not check:** no live HTTP request to `http://controller:8778`, no
+  `placement-status upgrade check`, and no `osc-placement` resource-class/trait query
+  (`verify-ubuntu.html`) are performed.
+
 
 
 

@@ -97,6 +97,26 @@
       "verification": "keystone is installed, /etc/keystone/keystone.conf sets [database] connection and [token] provider = fernet, /etc/apache2/apache2.conf sets ServerName controller, /etc/openstack-forge/admin-openrc exists with mode 0600, Fernet and credential key repositories are initialized, the keystone MariaDB database and grants exist, apache2 is active, and the Keystone 'service' project exists in domain 'default'.",
       "doc_url": "https://docs.openstack.org/keystone/2025.1/install/keystone-install-ubuntu.html",
       "status": "unverified"
+    },
+    {
+      "id": "glance",
+      "title": "Install and configure the Glance Image service",
+      "roles": ["controller"],
+      "depends_on": ["mariadb", "memcached", "keystone"],
+      "files_modified": ["/etc/glance/glance-api.conf"],
+      "verification": "glance is installed, /etc/glance/glance-api.conf sets the [database], [keystone_authtoken], [paste_deploy], [DEFAULT], [glance_store], and [fs] keys, the glance MariaDB database and grants exist, the Keystone 'glance' user has the 'admin' role on 'service', the 'glance' ('image') service and its public/internal/admin endpoints (http://controller:9292) exist in RegionOne, and glance-api is active (no HTTP check on port 9292 or image upload test is performed).",
+      "doc_url": "https://docs.openstack.org/glance/2025.1/install/install-ubuntu.html",
+      "status": "unverified"
+    },
+    {
+      "id": "placement",
+      "title": "Install and configure the Placement service",
+      "roles": ["controller"],
+      "depends_on": ["mariadb", "memcached", "keystone"],
+      "files_modified": ["/etc/placement/placement.conf"],
+      "verification": "placement-api is installed, /etc/placement/placement.conf sets the [placement_database], [api], and [keystone_authtoken] keys, the placement MariaDB database and grants exist, the Keystone 'placement' user has the 'admin' role on 'service', the 'placement' ('placement') service and its public/internal/admin endpoints (http://controller:8778) exist in RegionOne, and apache2 is active (no HTTP check on port 8778 or placement-status upgrade check is performed).",
+      "doc_url": "https://docs.openstack.org/placement/2025.1/install/install-ubuntu.html",
+      "status": "unverified"
     }
   ],
   "notes": [

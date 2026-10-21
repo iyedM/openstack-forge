@@ -87,12 +87,14 @@ def test_plan_is_ordered_by_step_then_controller_first(valid_config, catalog) ->
         ("blk-01", "openstack-packages"),
         ("obj-01", "openstack-packages"),
     ]
-    assert _order(plan)[-5:] == [
+    assert _order(plan)[-7:] == [
         ("ctl-01", "mariadb"),
         ("ctl-01", "rabbitmq"),
         ("ctl-01", "memcached"),
         ("ctl-01", "etcd"),
         ("ctl-01", "keystone"),
+        ("ctl-01", "glance"),
+        ("ctl-01", "placement"),
     ]
 
 
@@ -276,6 +278,8 @@ def test_dependency_not_run_by_any_node_is_reported(valid_config) -> None:
                 "memcached",
                 "etcd",
                 "keystone",
+                "glance",
+                "placement",
             ],
         ),
         ("cmp-01", ["hosts-file", "time-sync-other", "openstack-packages"]),
@@ -328,9 +332,9 @@ def test_release_mismatch_is_rejected(valid_config, catalog) -> None:
 
 def test_unverified_steps_are_flagged_and_counted(valid_config, catalog) -> None:
     text = format_plan_text(build_plan(valid_config, catalog))
-    assert "WARNING: 17 of 17 step(s) are UNVERIFIED" in text
-    assert text.count("[UNVERIFIED]") == 17
-    assert text.rstrip().endswith("Summary: 17 step(s) on 4 node(s); 0 verified, 17 unverified.")
+    assert "WARNING: 19 of 19 step(s) are UNVERIFIED" in text
+    assert text.count("[UNVERIFIED]") == 19
+    assert text.rstrip().endswith("Summary: 19 step(s) on 4 node(s); 0 verified, 19 unverified.")
 
 
 def test_verified_steps_are_not_flagged(valid_config) -> None:
@@ -367,7 +371,7 @@ def test_json_output(valid_config, catalog) -> None:
     assert payload["cluster"] == "fixture-cluster"
     assert payload["read_only"] is True
     assert payload["node"] is None
-    assert payload["summary"] == {"steps": 17, "nodes": 4, "verified": 0, "unverified": 17}
+    assert payload["summary"] == {"steps": 19, "nodes": 4, "verified": 0, "unverified": 19}
     first, second = payload["steps"][:2]
     assert first == {
         "sequence": 1,

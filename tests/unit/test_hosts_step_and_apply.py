@@ -75,10 +75,11 @@ def test_hosts_step_remains_unverified_in_catalog() -> None:
     step = catalog.step(HOSTS_STEP_ID)
     assert step.status == "unverified"
     # Deliberately updated in milestone 8 (time-sync-controller), 9 (openstack-packages),
-    # 10 (time-sync-other), 11 (mariadb), 12 (memcached, etcd), 14 (rabbitmq) and 15 (keystone).
+    # 10 (time-sync-other), 11 (mariadb), 12 (memcached, etcd), 14 (rabbitmq), 15 (keystone),
+    # and 17 (glance, placement).
     assert set(IMPLEMENTED_STEPS) == {
         HOSTS_STEP_ID, "time-sync-controller", "time-sync-other", "openstack-packages",
-        "mariadb", "rabbitmq", "memcached", "etcd", "keystone",
+        "mariadb", "rabbitmq", "memcached", "etcd", "keystone", "glance", "placement",
     }  # fmt: skip
 
 

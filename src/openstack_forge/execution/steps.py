@@ -18,6 +18,7 @@ from openstack_forge.execution.chrony import (
 )
 from openstack_forge.execution.commands import CommandExecutor
 from openstack_forge.execution.etcd import ETCD_STEP_ID, make_etcd_step
+from openstack_forge.execution.glance import GLANCE_STEP_ID, make_glance_step
 from openstack_forge.execution.hosts import HOSTS_STEP_ID, make_hosts_file_step
 from openstack_forge.execution.keystone import KEYSTONE_STEP_ID, make_keystone_step
 from openstack_forge.execution.mariadb import MARIADB_STEP_ID, make_mariadb_step
@@ -26,6 +27,7 @@ from openstack_forge.execution.openstack_packages import (
     OPENSTACK_PACKAGES_STEP_ID,
     make_openstack_packages_step,
 )
+from openstack_forge.execution.placement import PLACEMENT_STEP_ID, make_placement_step
 from openstack_forge.execution.rabbitmq import RABBITMQ_STEP_ID, make_rabbitmq_step
 
 # factory(root, config, local_node, *, executor) -> step. Steps expose ``id``, ``check()``,
@@ -42,6 +44,8 @@ IMPLEMENTED_STEPS: Mapping[str, StepFactory] = {
     MEMCACHED_STEP_ID: make_memcached_step,
     ETCD_STEP_ID: make_etcd_step,
     KEYSTONE_STEP_ID: make_keystone_step,
+    GLANCE_STEP_ID: make_glance_step,
+    PLACEMENT_STEP_ID: make_placement_step,
 }
 
 

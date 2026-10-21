@@ -39,8 +39,10 @@ from openstack_forge.execution import (
     CommandSpecError,
     Engine,
     FunctionStep,
+    GlanceStep,
     KeystoneStep,
     ParameterError,
+    PlacementStep,
     PlannedCommand,
     ProcessOutput,
     RabbitMQStep,
@@ -872,8 +874,9 @@ def test_canary_secret_never_leaks_outside_the_0600_secrets_file(
     (root / "var" / "lib" / "openstack-forge").mkdir(parents=True)
     (root / "var" / "log" / "openstack-forge").mkdir(parents=True, mode=0o700)
 
-    # Pre-seed RABBIT_PASS, KEYSTONE_DBPASS, and ADMIN_PASS with CANARY and generate the other
-    # 13 secrets via CLI `secrets init`.
+    # Pre-seed RABBIT_PASS, KEYSTONE_DBPASS, ADMIN_PASS, GLANCE_DBPASS, GLANCE_PASS,
+    # PLACEMENT_DBPASS, and PLACEMENT_PASS with CANARY and generate the other secrets
+    # via CLI `secrets init`.
     secrets_path = root / "etc" / "openstack-forge" / "secrets.json"
     secrets_path.write_text(
         json.dumps(
@@ -881,6 +884,10 @@ def test_canary_secret_never_leaks_outside_the_0600_secrets_file(
                 "RABBIT_PASS": CANARY,
                 "KEYSTONE_DBPASS": CANARY,
                 "ADMIN_PASS": CANARY,
+                "GLANCE_DBPASS": CANARY,
+                "GLANCE_PASS": CANARY,
+                "PLACEMENT_DBPASS": CANARY,
+                "PLACEMENT_PASS": CANARY,
             }
         ),
         encoding="utf-8",
@@ -993,11 +1000,11 @@ def test_canary_secret_never_leaks_outside_the_0600_secrets_file(
     assert not report2.ok
     report2_text = format_report(report2)
 
-    # 5. Real RabbitMQStep & KeystoneStep with CANARY (dry_run_preview, Engine run, and report)
+    # 5. Real RabbitMQStep, KeystoneStep, GlanceStep & PlacementStep with CANARY
     monkeypatch.setattr("openstack_forge.execution.commands.is_host_root", lambda _: True)
     host = ServiceHost(
         root,
-        starts={"rabbitmq-server"},
+        starts={"rabbitmq-server", "glance"},
         creates={
             "keystone": (
                 (
@@ -1005,7 +1012,16 @@ def test_canary_secret_never_leaks_outside_the_0600_secrets_file(
                     "[database]\nconnection = sqlite:////var/lib/keystone/keystone.db\n[token]\n",
                 ),
                 ("etc/apache2/apache2.conf", "# Apache2 default\n"),
-            )
+            ),
+            "glance": (
+                "etc/glance/glance-api.conf",
+                "[DEFAULT]\n[database]\n[keystone_authtoken]\n[paste_deploy]\n"
+                "[glance_store]\n[fs]\n",
+            ),
+            "placement-api": (
+                "etc/placement/placement.conf",
+                "[placement_database]\n[api]\n[keystone_authtoken]\n",
+            ),
         },
     )
     service_exec = CommandExecutor(
@@ -1058,6 +1074,37 @@ def test_canary_secret_never_leaks_outside_the_0600_secrets_file(
     for argv in host.calls[keystone_calls_start:]:
         assert all(CANARY not in arg for arg in argv)
 
+    glance_step = GlanceStep(
+        root=root, config={}, local_node=CONTROLLER_NODE, executor=service_exec
+    )
+    glance_preview_before = glance_step.dry_run_preview()
+    for cmd in (*glance_preview_before.commands, *glance_preview_before.read_only_commands):
+        assert CANARY not in cmd.describe(DEFAULT_REGISTRY)
+        assert CANARY not in " ".join(cmd.argv(DEFAULT_REGISTRY))
+        assert CANARY not in repr(cmd)
+    for note in glance_preview_before.notes:
+        assert CANARY not in note
+    glance_report = engine.run([glance_step])
+    assert glance_report.ok
+    glance_report_text = format_report(glance_report)
+
+    placement_step = PlacementStep(
+        root=root, config={}, local_node=CONTROLLER_NODE, executor=service_exec
+    )
+    placement_preview_before = placement_step.dry_run_preview()
+    for cmd in (
+        *placement_preview_before.commands,
+        *placement_preview_before.read_only_commands,
+    ):
+        assert CANARY not in cmd.describe(DEFAULT_REGISTRY)
+        assert CANARY not in " ".join(cmd.argv(DEFAULT_REGISTRY))
+        assert CANARY not in repr(cmd)
+    for note in placement_preview_before.notes:
+        assert CANARY not in note
+    placement_report = engine.run([placement_step])
+    assert placement_report.ok
+    placement_report_text = format_report(placement_report)
+
     # Backend raising a raw RuntimeError containing CANARY
     raising_executor = CommandExecutor(
         registry,
@@ -1079,6 +1126,8 @@ def test_canary_secret_never_leaks_outside_the_0600_secrets_file(
         ("report2", report2_text),
         ("rabbit_report", rabbit_report_text),
         ("keystone_report", keystone_report_text),
+        ("glance_report", glance_report_text),
+        ("placement_report", placement_report_text),
         ("ini_diff", ini_change.diff),
         ("block_diff", block_change.diff),
         ("caplog", caplog.text),
@@ -1086,7 +1135,7 @@ def test_canary_secret_never_leaks_outside_the_0600_secrets_file(
         assert CANARY not in text, f"CANARY leaked into {surface_name}"
 
     # Walk all files under tmp_path: only secrets.json, admin-openrc, keystone.conf,
-    # and app.conf contain CANARY.
+    # glance-api.conf, placement.conf, and app.conf contain CANARY.
     files_with_canary = sorted(
         path.relative_to(root).as_posix()
         for path in root.rglob("*")
@@ -1094,9 +1143,11 @@ def test_canary_secret_never_leaks_outside_the_0600_secrets_file(
     )
     assert files_with_canary == [
         "etc/app.conf",
+        "etc/glance/glance-api.conf",
         "etc/keystone/keystone.conf",
         "etc/openstack-forge/admin-openrc",
         "etc/openstack-forge/secrets.json",
+        "etc/placement/placement.conf",
     ]
     admin_openrc_path = root / "etc/openstack-forge/admin-openrc"
     assert stat.S_IMODE(admin_openrc_path.stat().st_mode) == 0o600

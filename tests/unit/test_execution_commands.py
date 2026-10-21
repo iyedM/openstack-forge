@@ -588,6 +588,18 @@ def test_default_registry_contains_exactly_the_reviewed_commands() -> None:
             True,
             frozenset({0}),
         ),
+        "glance-manage.db-sync": (
+            ("/usr/bin/glance-manage", "db_sync"),
+            {},
+            True,
+            frozenset({0}),
+        ),
+        "placement-manage.db-sync": (
+            ("/usr/bin/placement-manage", "db", "sync"),
+            {},
+            True,
+            frozenset({0}),
+        ),
     }
     assert all(spec.timeout > 0 for spec in specs.values())
     assert specs["keystone-manage.bootstrap"].env_params == {"password": "OS_BOOTSTRAP_PASSWORD"}

@@ -308,6 +308,30 @@ All notable changes to this project will be documented in this file.
     (verifying HTTP `/v3` token issuance against `http://controller:5000/v3` as `admin`);
   - writes and verifies `<root>/etc/openstack-forge/admin-openrc` (parent directory mode
     `0700`, file mode `0600`, no `.orig` backup, redacted diff).
+- `glance` step (`openstack_forge.execution.glance`, controller only) in the catalog and
+  `IMPLEMENTED_STEPS`. **Unverified and never run on a real host.** Following
+  `https://docs.openstack.org/glance/2025.1/install/install-ubuntu.html`: requires
+  `ADMIN_PASS`, `GLANCE_DBPASS`, and `GLANCE_PASS` in `SecretStore`, provisions the `glance`
+  MariaDB database and grants via `stdin`, converges the `glance` Keystone user, `admin`
+  role on `service`, `glance` (`image`) service entity and three `RegionOne` endpoints at
+  `http://controller:9292`, installs `glance`, edits `/etc/glance/glance-api.conf` (14 keys
+  across `[database]`, `[keystone_authtoken]`, `[paste_deploy]`, `[DEFAULT]`,
+  `[glance_store]`, and `[fs]`; optional `[oslo_limit]` unified limits omitted and
+  documented), runs `/usr/bin/glance-manage db_sync`, and restarts `glance-api`.
+- `placement` step (`openstack_forge.execution.placement`, controller only) in the catalog
+  and `IMPLEMENTED_STEPS`. **Unverified and never run on a real host.** Following
+  `https://docs.openstack.org/placement/2025.1/install/install-ubuntu.html`: requires
+  `ADMIN_PASS`, `PLACEMENT_DBPASS`, and `PLACEMENT_PASS` in `SecretStore`, provisions the
+  `placement` MariaDB database and grants via `stdin`, converges the `placement` Keystone
+  user, `admin` role on `service`, `placement` (`placement`) service entity and three
+  `RegionOne` endpoints at `http://controller:8778`, installs `placement-api`, edits
+  `/etc/placement/placement.conf` (10 keys across `[placement_database]`, `[api]`, and
+  `[keystone_authtoken]`), runs `/usr/bin/placement-manage db sync` (two separate tokens
+  `"db"` and `"sync"`), and restarts `apache2`.
+- Two reviewed command specs in `DEFAULT_REGISTRY`: `glance-manage.db-sync`
+  (`("/usr/bin/glance-manage", "db_sync")`) and `placement-manage.db-sync`
+  (`("/usr/bin/placement-manage", "db", "sync")`), with `GLANCE_MANAGE_FAILURE_HINT` and
+  `PLACEMENT_MANAGE_FAILURE_HINT`.
 
 ### Changed
 
@@ -367,10 +391,11 @@ All notable changes to this project will be documented in this file.
 - Replaced the development machine's local RFC 1918 IP in `memcached`/`etcd`
   modules, tests, `_service_fakes.py` and `docs/engine/README.md` with the RFC 5737
   documentation address `192.0.2.170`.
-- `IMPLEMENTED_STEPS` pin deliberately updated to all nine catalog steps (adds `rabbitmq`
-  and `keystone`), and the `DEFAULT_REGISTRY` test deliberately pins thirty-one reviewed
-  commands (adds the five `/usr/sbin/rabbitmqctl`, two `/usr/bin/mariadb`, four
-  `/usr/bin/keystone-manage`, and eleven `/usr/bin/openstack` specs).
+- `IMPLEMENTED_STEPS` pin deliberately updated to all eleven catalog steps (adds `rabbitmq`,
+  `keystone`, `glance`, and `placement`), and the `DEFAULT_REGISTRY` test deliberately pins
+  thirty-three reviewed commands (adds the five `/usr/sbin/rabbitmqctl`, two
+  `/usr/bin/mariadb`, four `/usr/bin/keystone-manage`, eleven `/usr/bin/openstack`,
+  `glance-manage.db-sync`, and `placement-manage.db-sync` specs).
 - `keystone-manage.bootstrap` now delivers `ADMIN_PASS` via
   `env_params={"password": "OS_BOOTSTRAP_PASSWORD"}` instead of `--bootstrap-password
   {password}` in `argv` (confirmed in `/usr/lib/python3/dist-packages/keystone/cmd/cli.py`),
