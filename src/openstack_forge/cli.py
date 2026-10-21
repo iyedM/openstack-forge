@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections.abc import Callable, Sequence
+from pathlib import Path
 from typing import Any
 
 from openstack_forge import __version__
@@ -114,6 +116,115 @@ def _plan(args: argparse.Namespace) -> int:
     return 0
 
 
+def _apply(args: argparse.Namespace) -> int:
+    """Apply a single registered step (dry-run by default; writes only with --yes)."""
+    # Lazy import so that importing the CLI or running read-only commands never imports
+    # openstack_forge.execution.
+    from openstack_forge.execution import (
+        DEFAULT_STATE_TARGET,
+        IMPLEMENTED_STEPS,
+        Engine,
+        ExecutionError,
+        StateStore,
+        UnsafePathError,
+        format_report,
+        resolve_apply_node,
+        resolve_target,
+    )
+
+    config = _load_validated_config(args.config)
+    if config is None:
+        return 1
+
+    try:
+        catalog = load_catalog()
+    except OrchestrationError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    step_id = args.step
+    try:
+        catalog_step = catalog.step(step_id)
+    except KeyError:
+        implemented = ", ".join(sorted(IMPLEMENTED_STEPS))
+        print(
+            f"Error: Step {step_id!r} is not implemented "
+            f"(unknown step id; implemented steps: {implemented}).",
+            file=sys.stderr,
+        )
+        return 1
+
+    step_factory = IMPLEMENTED_STEPS.get(step_id)
+    if step_factory is None:
+        implemented = ", ".join(sorted(IMPLEMENTED_STEPS))
+        print(
+            f"Error: Step {step_id!r} is not implemented yet (implemented steps: {implemented}).",
+            file=sys.stderr,
+        )
+        return 1
+
+    root_path = Path(args.root) if args.root is not None else Path("/")
+    is_real_root = args.root is None or (root_path.exists() and root_path.resolve() == Path("/"))
+    if args.yes and is_real_root and os.geteuid() != 0:
+        print(
+            "Error: Writing to '/' with --yes requires root privileges (effective uid 0). "
+            "Re-run as root, or pass --root PATH to target an alternate directory.",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        local_node = resolve_apply_node(config, root=root_path, node_hostname=args.node)
+        if local_node["role"] not in catalog_step.roles:
+            print(
+                f"Error: Step {step_id!r} does not apply to role {local_node['role']!r} "
+                f"on node {local_node['hostname']!r}.",
+                file=sys.stderr,
+            )
+            return 1
+        step = step_factory(root_path, config, local_node)
+        preview = step.preview()
+    except ExecutionError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    if not catalog_step.verified:
+        print(
+            f"WARNING: Step '{catalog_step.id}' is marked UNVERIFIED in the step catalog. "
+            f"Review {catalog_step.doc_url} before applying in production."
+        )
+
+    if not args.yes:
+        print(
+            f"Dry run for step '{step_id}' on node '{local_node['hostname']}' "
+            f"(role: {local_node['role']}): no files modified."
+        )
+        if preview.changed:
+            print(preview.diff, end="" if preview.diff.endswith("\n") else "\n")
+        else:
+            print("No changes needed.")
+        return 0
+
+    try:
+        state_path, _ = resolve_target(root_path, DEFAULT_STATE_TARGET)
+        if state_path.is_symlink():
+            raise UnsafePathError(
+                f"Refusing to use state file {DEFAULT_STATE_TARGET}: it is a symlink"
+            )
+        if not state_path.parent.exists():
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+        engine = Engine(StateStore(state_path))
+        report = engine.run([step])
+    except ExecutionError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    if preview.changed and report.ok:
+        print(preview.diff, end="" if preview.diff.endswith("\n") else "\n")
+    print(format_report(report))
+    return 0 if report.ok else 1
+
+
 def build_parser(runner: CommandRunner | None = None) -> argparse.ArgumentParser:
     """Build the CLI parser."""
     parser = argparse.ArgumentParser(
@@ -184,6 +295,41 @@ def build_parser(runner: CommandRunner | None = None) -> argparse.ArgumentParser
         help="Output the plan as JSON.",
     )
     plan_parser.set_defaults(func=_plan)
+
+    apply_parser = subparsers.add_parser(
+        "apply",
+        help="Apply a single implemented deployment step (dry-run unless --yes is given).",
+    )
+    apply_parser.add_argument(
+        "--config",
+        default="cluster.yaml",
+        metavar="PATH",
+        help="Path to the cluster configuration file (default: cluster.yaml).",
+    )
+    apply_parser.add_argument(
+        "--step",
+        required=True,
+        metavar="STEP_ID",
+        help="Catalog step id to run (currently only 'hosts-file' is implemented).",
+    )
+    apply_parser.add_argument(
+        "--node",
+        default=None,
+        metavar="HOSTNAME",
+        help="Hostname of the local node in the cluster configuration.",
+    )
+    apply_parser.add_argument(
+        "--root",
+        default=None,
+        metavar="PATH",
+        help="Root directory under which target files and state are written (default: /).",
+    )
+    apply_parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Write changes to disk (default: dry-run that only prints the diff).",
+    )
+    apply_parser.set_defaults(func=_apply)
 
     return parser
 

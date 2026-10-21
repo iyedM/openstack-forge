@@ -52,6 +52,46 @@ All notable changes to this project will be documented in this file.
   RabbitMQ, Memcached and etcd. Network configuration is recorded as an open decision
   (the guide edits `/etc/network/interfaces`; Ubuntu 24.04 uses netplan).
 - `docs/plan/README.md`, including when a step may be marked verified.
+- Execution building blocks in a new `openstack_forge.execution` package, kept separate
+  so that `orchestration` and the CLI stay read-only (a test checks they never import it).
+  No real installation step exists yet: there is no `apply` command, no catalog step is
+  executed, and nothing runs commands, uses `sudo` or the network.
+  - `managed_block()` and `ini_set()` (line-based, comment-preserving, no `configparser`)
+    with target paths confined to an injectable root, redacted unified diffs, `changed`
+    flags, idempotent re-runs that write nothing, a one-time `<file>.orig` backup, and
+    atomic writes that keep permissions. LF-only UTF-8 files; CRLF files are refused.
+  - `redact_text()` / `redact_data()` masking values of password, secret and token keys,
+    such flags, and URL passwords.
+  - `StateStore`: per-step status (pending/running/done/failed), timestamps and redacted
+    error summaries in an atomically written 0600 JSON file.
+  - `Engine.run()` / `Engine.resume()`: check, apply, verify in order; stop at the first
+    failure with a report and suggested next action; resume verifies the failed step
+    before continuing.
+- `docs/engine/README.md` describing the guarantees and limits.
+- Ownership and group preservation in `atomic_write_text` (`openstack_forge.execution.fsutil`):
+  preserves the original file's `uid`, `gid`, and `mode` (passing `-1` for unchanged IDs so
+  non-root users preserve supplementary groups from `os.getgroups()`), and raises
+  `UnsafePathError` rather than failing silently if ownership would change.
+- `comment_out_lines()` and `uncomment_lines()` in `openstack_forge.execution.files` to
+  idempotently disable active lines matching a regex with `# openstack-forge disabled: `,
+  with redacted diffs, `.orig` backup, `dry_run`, and root confinement.
+- First implemented step `hosts-file` (`openstack_forge.execution.hosts`), still marked
+  `unverified` in the step catalog and not yet run on a real VM:
+  - writes the `# BEGIN openstack-forge hosts` managed block for all cluster nodes
+    (`management_ip`, `fqdn`, `hostname`, plus alias `controller` for the single controller);
+  - comments out active `127.0.1.1` lines mapping to the local node's `hostname` or `fqdn`
+    while never touching `127.0.0.1` or other hosts' entries;
+  - pure-Python `verify()` parser over `/etc/hosts` (first matching line wins, no `getent`
+    or external commands).
+- Minimal `openstack-forge apply --config cluster.yaml --step hosts-file [--node HOSTNAME] [--root PATH] [--yes]`
+  command:
+  - explicit `IMPLEMENTED_STEPS` registry (`hosts-file` only; other catalog steps fail with
+    `"not implemented"` and exit 1);
+  - dry-run by default (prints redacted diff, writes nothing, exits 0); writes only with
+    `--yes`, requiring effective UID 0 when targeting `/` and recording state under
+    `<root>/var/lib/openstack-forge/state.json` (mode `0600`);
+  - lazy import of `openstack_forge.execution` inside the `apply` handler so `config validate`,
+    `doctor`, and `plan` never import it.
 
 ### Changed
 

@@ -5,8 +5,10 @@ each node would go through to prepare an OpenStack 2025.1 (Epoxy) deployment.
 
 It is strictly read-only. It reads the configuration file and the step catalog bundled
 with the package, and nothing else: it runs no command, opens no network connection,
-connects to no node and changes nothing. There is no `apply` yet; the plan is a
-reviewable description, not something that can be executed.
+connects to no node and changes nothing. In `openstack-forge apply`, only the
+`hosts-file` step is currently implemented (using confined file operations only, with no
+external commands or network access), it remains marked **unverified** in the catalog,
+and it has not been run on a real VM; see [`docs/engine/README.md`](../engine/README.md).
 
 ## Usage
 
