@@ -2,12 +2,12 @@
 
 `openstack_forge.execution` contains the confined file-editing primitives, redaction helper,
 secrets store, state store, step engine, an allowlisted command layer, a reusable MariaDB
-SQL provisioning brick, a reusable `/usr/bin/openstack` CLI provisioning brick, and eleven
+SQL provisioning brick, a reusable `/usr/bin/openstack` CLI provisioning brick, and thirteen
 implemented deployment steps: `hosts-file`, `time-sync-controller`, `time-sync-other`,
-`openstack-packages`, `mariadb`, `rabbitmq`, `memcached`, `etcd`, `keystone`, `glance`, and
-`placement`.
+`openstack-packages`, `mariadb`, `rabbitmq`, `memcached`, `etcd`, `keystone`, `glance`,
+`placement`, `nova-controller`, and `nova-compute`.
 
-**All eleven steps are marked `unverified` in the step catalog, and none has ever run on a
+**All thirteen steps are marked `unverified` in the step catalog, and none has ever run on a
 real host.** Every other catalog step is rejected as "not implemented" by
 `openstack-forge apply`. `hosts-file` is pure Python file operations confined to the target
 root. [`time-sync-controller`](#step-time-sync-controller-openstack_forgeexecutionchrony),
@@ -19,12 +19,14 @@ root. [`time-sync-controller`](#step-time-sync-controller-openstack_forgeexecuti
 [`etcd`](#step-etcd-openstack_forgeexecutionetcd),
 [`keystone`](#step-keystone-openstack_forgeexecutionkeystone),
 [`glance`](#step-glance-openstack_forgeexecutionglance),
-and [`placement`](#step-placement-openstack_forgeexecutionplacement)
+[`placement`](#step-placement-openstack_forgeexecutionplacement),
+[`nova-controller`](#step-nova-controller-openstack_forgeexecutionnova),
+and [`nova-compute`](#step-nova-compute-openstack_forgeexecutionnova)
 run system commands (`apt-get`, `add-apt-repository`, `apt-cache`, `systemctl`,
 `dpkg-query`, `rabbitmqctl`, `mariadb`, `keystone-manage`, `openstack`, `glance-manage`,
-`placement-manage`), only through the
+`placement-manage`, `nova-manage`), only through the
 [command execution layer](#command-execution-layer), whose registry contains exactly
-thirty-three reviewed commands. Nothing uses `sudo` or `su`.
+thirty-eight reviewed commands. Nothing uses `sudo` or `su`.
 
 **Network:** OpenStack Forge's Python code opens no network connection. Some of the
 commands it runs do: `apt-get update`, `apt-get install` and `add-apt-repository` download
@@ -422,7 +424,7 @@ locking against two engines sharing a state file, and no timeout around a step's
 `openstack_forge.execution.commands` (with `audit.py`) is the only code in the project that
 may start a process on behalf of a deployment step. It exists so that steps (for example
 installing a package or restarting a service) have one reviewed path for doing so.
-`DEFAULT_REGISTRY` contains exactly the thirty-three reviewed commands below, and a test pins
+`DEFAULT_REGISTRY` contains exactly the thirty-eight reviewed commands below, and a test pins
 their argv, parameter types, exit codes and `mutates` flags, so adding or changing one is a
 deliberate edit. The tests only ever run harmless `sys.executable` one-liners; everything
 else uses a fake backend.
@@ -462,14 +464,20 @@ else uses a fake backend.
 | `openstack.endpoint-create` | `/usr/bin/openstack ... endpoint create --region RegionOne {service_type} {interface} {url} -f json` (`env_params={"admin_password": "OS_PASSWORD"}`) | yes | no (local controller) | 0 | Guide (`glance`/`placement`/`nova`/`neutron`/`cinder` install pages): `openstack endpoint create --region RegionOne <type> public|internal|admin <url>` (checked first via `endpoint-list` to avoid duplicate UUIDs). Timeout 60 s. |
 | `glance-manage.db-sync` | `/usr/bin/glance-manage db_sync` | yes | no | 0 | Guide (`glance/2025.1/install/install-ubuntu.html`): `su -s /bin/sh -c "glance-manage db_sync" glance` (`dpkg -S`: `python3-glance: /usr/bin/glance-manage`). `glance/cmd/manage.py` registers legacy top-level `db_sync`. Invoked directly as `root` because `CommandSpec` forbids `su`. Timeout 300 s. |
 | `placement-manage.db-sync` | `/usr/bin/placement-manage db sync` | yes | no | 0 | Guide (`placement/2025.1/install/install-ubuntu.html`): `su -s /bin/sh -c "placement-manage db sync" placement` (`dpkg -S`: `python3-placement: /usr/bin/placement-manage`). Unlike `glance-manage`, `placement/cmd/manage.py` registers `subparsers.add_parser('db')` with nested `db_parser.add_parser('sync')` — two separate arguments `"db"` and `"sync"`. Invoked directly as `root` because `CommandSpec` forbids `su`. Timeout 300 s. |
+| `nova-manage.api-db-sync` | `/usr/bin/nova-manage api_db sync` | yes | no | 0 | Guide (`nova/2025.1/install/controller-install-ubuntu.html`): `su -s /bin/sh -c "nova-manage api_db sync" nova` (`dpkg -S`: `python3-nova: /usr/bin/nova-manage`). `nova/cmd/manage.py` `CATEGORIES` maps `'api_db': ApiDbCommands` (`sync`). Invoked directly as `root` because `CommandSpec` forbids `su`. Timeout 300 s. |
+| `nova-manage.cell-v2-map-cell0` | `/usr/bin/nova-manage cell_v2 map_cell0` | yes | no | 0 | Guide (`nova/2025.1/install/controller-install-ubuntu.html`): `su -s /bin/sh -c "nova-manage cell_v2 map_cell0" nova`. `CellV2Commands.map_cell0` catches `db_exc.DBDuplicateEntry` and returns `0` (`Cell0 is already setup`). Timeout 120 s. |
+| `nova-manage.cell-v2-list-cells` | `/usr/bin/nova-manage cell_v2 list_cells` | no | no | 0 | Guide (`nova/2025.1/install/controller-install-ubuntu.html`): `nova-manage cell_v2 list_cells`. Read-only query (`mutates=False`) used by `check()`, `apply()` (before `create_cell`), and `verify()`. Timeout 60 s. |
+| `nova-manage.cell-v2-create-cell1` | `/usr/bin/nova-manage cell_v2 create_cell --name=cell1 --verbose` | yes | no | 0 | Guide (`nova/2025.1/install/controller-install-ubuntu.html`): `su -s /bin/sh -c "nova-manage cell_v2 create_cell --name=cell1 --verbose" nova`. Checked first via `list_cells` because `CellV2Commands.create_cell` exits with code `2` if a cell with the same `transport_url` and `database_connection` already exists. Timeout 120 s. |
+| `nova-manage.db-sync` | `/usr/bin/nova-manage db sync` | yes | no | 0 | Guide (`nova/2025.1/install/controller-install-ubuntu.html`): `su -s /bin/sh -c "nova-manage db sync" nova`. `nova/cmd/manage.py` `CATEGORIES` maps `'db': DbCommands` (`sync`). Timeout 300 s. |
 
 Each path is the one installed on Ubuntu 24.04 by the package named by `dpkg -S`: `apt`
 (`apt-get`, `apt-cache`), `software-properties-common` (`add-apt-repository`), `systemd`,
 `dpkg`, `rabbitmq-server` (`/usr/sbin/rabbitmqctl`), `mariadb-client-core`
 (`/usr/bin/mariadb`), `python3-keystone` (`/usr/bin/keystone-manage`),
 `python3-openstackclient` (`/usr/bin/openstack`, installed via `update-alternatives` from
-`/usr/bin/python3-openstack`), `python3-glance` (`/usr/bin/glance-manage`), and
-`python3-placement` (`/usr/bin/placement-manage`); `PATH` is never searched. No other
+`/usr/bin/python3-openstack`), `python3-glance` (`/usr/bin/glance-manage`),
+`python3-placement` (`/usr/bin/placement-manage`), and `python3-nova`
+(`/usr/bin/nova-manage`); `PATH` is never searched. No other
 apt or dpkg option is used: in particular no `--force-*`, no `-o Dpkg::Options`, no lock
 timeout, and no `upgrade`, `dist-upgrade` or `reboot` command exists in the registry. A
 configuration file prompt from dpkg therefore makes the command fail (stdin is `/dev/null`)
@@ -1341,6 +1349,141 @@ Deviations, trade-offs, and limits:
   `placement-status upgrade check`, and no `osc-placement` resource-class/trait query
   (`verify-ubuntu.html`) are performed.
 
+## Step: `nova-controller` (`openstack_forge.execution.nova`)
 
+**Unverified, and never run on a real host.** Source:
+<https://docs.openstack.org/nova/2025.1/install/controller-install-ubuntu.html>
+(`doc/source/install/controller-install-ubuntu.rst`) and
+<https://docs.openstack.org/nova/2025.1/install/compute-install-ubuntu.html> (for
+`[scheduler] discover_hosts_in_cells_interval = 300`), which for Ubuntu prescribe:
 
+1. Prerequisites — create the three `nova_api`, `nova`, and `nova_cell0` MariaDB databases
+   and grant `ALL PRIVILEGES` on all three to `'nova'@'localhost'` and `'nova'@'%'`
+   identified by `NOVA_DBPASS`;
+2. Create the `nova` service credentials in Keystone (`default` domain, `service` project,
+   `admin` role) and the `nova` (`compute`) service entity with three `RegionOne` endpoints
+   (`public`, `internal`, `admin`) at `http://controller:8774/v2.1`;
+3. `apt install nova-api nova-conductor nova-novncproxy nova-scheduler`;
+4. Edit `/etc/nova/nova.conf` (37 keys across 11 sections):
+   - `[api_database]`: `connection = mysql+pymysql://nova:NOVA_DBPASS@controller/nova_api`
+   - `[database]`: `connection = mysql+pymysql://nova:NOVA_DBPASS@controller/nova`
+   - `[DEFAULT]`: `transport_url = rabbit://openstack:RABBIT_PASS@controller:5672/`,
+     `my_ip = <local_node management_ip>`
+   - `[api]`: `auth_strategy = keystone`
+   - `[keystone_authtoken]`: `www_authenticate_uri = http://controller:5000/`,
+     `auth_url = http://controller:5000/`, `memcached_servers = controller:11211`,
+     `auth_type = password`, `project_domain_name = Default`, `user_domain_name = Default`,
+     `project_name = service`, `username = nova`, `password = NOVA_PASS`
+   - `[service_user]`: `send_service_user_token = true`,
+     `auth_url = http://controller:5000/` (see deviation below),
+     `auth_strategy = keystone`, `auth_type = password`, `project_domain_name = Default`,
+     `project_name = service`, `user_domain_name = Default`, `username = nova`,
+     `password = NOVA_PASS`
+   - `[vnc]`: `enabled = true`, `server_listen = $my_ip`,
+     `server_proxyclient_address = $my_ip`
+   - `[glance]`: `api_servers = http://controller:9292`
+   - `[oslo_concurrency]`: `lock_path = /var/lib/nova/tmp`
+   - `[placement]`: `region_name = RegionOne`, `project_domain_name = Default`,
+     `project_name = service`, `auth_type = password`, `user_domain_name = Default`,
+     `auth_url = http://controller:5000/v3`, `username = placement`,
+     `password = PLACEMENT_PASS`
+   - `[scheduler]`: `discover_hosts_in_cells_interval = 300`
+5. Populate the `nova-api` database, register `cell0`, create `cell1`, and populate the
+   `nova` database:
+   - `su -s /bin/sh -c "nova-manage api_db sync" nova`
+   - `su -s /bin/sh -c "nova-manage cell_v2 map_cell0" nova`
+   - `su -s /bin/sh -c "nova-manage cell_v2 create_cell --name=cell1 --verbose" nova`
+   - `su -s /bin/sh -c "nova-manage db sync" nova`
+   - `su -s /bin/sh -c "nova-manage cell_v2 list_cells" nova`
+6. Restart the Compute services:
+   `service nova-api restart`, `service nova-scheduler restart`,
+   `service nova-conductor restart`, `service nova-novncproxy restart`.
+
+It runs only on the controller (constructing it for another role raises `ExecutionError`).
+
+| Phase | What happens |
+| ----- | ------------ |
+| `check()` | Pure first (runs zero external commands if any fails): `ADMIN_PASS`, `RABBIT_PASS`, `NOVA_DBPASS`, `NOVA_PASS`, and `PLACEMENT_PASS` must exist in `SecretStore(root)`, and `/etc/nova/nova.conf` must exist and need no edit. Otherwise `True` only if, in order: `dpkg-query --status` reports `nova-api`, `nova-conductor`, `nova-novncproxy`, and `nova-scheduler` installed; `systemctl is-active` prints `active` for `nova-api`, `nova-scheduler`, `nova-conductor`, and `nova-novncproxy`; `mariadb.query-sql` confirms all three `nova_api`, `nova`, and `nova_cell0` databases and `'nova'@'localhost'` + `'nova'@'%'` grants exist; `service_user_ready` confirms the `nova` user (`default` domain) and its `admin` role in `service` exist; `service_catalog_ready` confirms the `nova` (`compute`) service and all three `RegionOne` endpoints (`http://controller:8774/v2.1`) exist and are enabled; and `nova-manage cell_v2 list_cells` lists both `cell0` and `cell1`. |
+| `apply()` | Precondition: loads `ADMIN_PASS`, `RABBIT_PASS`, `NOVA_DBPASS`, `NOVA_PASS`, and `PLACEMENT_PASS` from `SecretStore(root)`. Then provisions the three `nova_api`, `nova`, and `nova_cell0` MariaDB databases and grants via `mariadb.execute-sql` (`stdin`); converges the `nova` Keystone user, `admin` role on `service`, `nova` (`compute`) service entity, and three `RegionOne` endpoints (`ensure_service_user` + `ensure_service_catalog`); installs `nova-api`, `nova-conductor`, `nova-novncproxy`, and `nova-scheduler`; edits `/etc/nova/nova.conf` (`ini_set_many`, 37 settings); runs `/usr/bin/nova-manage api_db sync` and `/usr/bin/nova-manage cell_v2 map_cell0`; runs `/usr/bin/nova-manage cell_v2 list_cells` and invokes `/usr/bin/nova-manage cell_v2 create_cell --name=cell1 --verbose` only if `cell1` is absent; runs `/usr/bin/nova-manage db sync`; and restarts `nova-api`, `nova-scheduler`, `nova-conductor`, and `nova-novncproxy`. |
+| `verify()` | Checks all five secrets in `SecretStore(root)`, all 37 keys in `/etc/nova/nova.conf` (redacting secret values), all four controller packages installed, all four systemd units active, all three MariaDB databases and grants, the `nova` Keystone user and `admin` role on `service`, the `nova` (`compute`) service and three `RegionOne` endpoints (`http://controller:8774/v2.1`), and both `cell0` and `cell1` registered in `nova-manage cell_v2 list_cells`. |
+
+Established on an Ubuntu 24.04 development machine with read-only commands (`nova-api`,
+`nova-conductor`, `nova-novncproxy`, `nova-scheduler`, `nova-common`, `python3-nova`
+`3:31.0.0-0ubuntu1.2~cloud3` in `noble-updates/epoxy/main` and `3:29.2.0-0ubuntu1.8` in
+`noble-updates/main`):
+
+- `nova-common` ships `/etc/nova/nova.conf` (conffile MD5
+  `9127d52a0e8b6812f4159720ef1eed7a`; `nova-common.postinst` sets `/etc/nova` to `0750`
+  `root:nova` and files in `/etc/nova` to `0640` `root:nova`).
+- `python3-nova` ships `/usr/bin/nova-manage` (`dpkg -S`: `python3-nova`) and
+  `/usr/lib/python3/dist-packages/nova/cmd/manage.py`:
+  - `CellV2Commands.map_cell0` (lines 816–832) catches `db_exc.DBDuplicateEntry`, prints
+    `'Cell0 is already setup'`, and returns `0` (natively idempotent);
+  - `CellV2Commands.create_cell` (lines 1183–1207) checks
+    `_non_unique_transport_url_database_connection_checker()` and returns exit code `2` if a
+    cell with the same `transport_url` and `database_connection` already exists (not
+    idempotent unless `list_cells` is checked first).
+
+## Step: `nova-compute` (`openstack_forge.execution.nova`)
+
+**Unverified, and never run on a real host.** Source:
+<https://docs.openstack.org/nova/2025.1/install/compute-install-ubuntu.html>
+(`doc/source/install/compute-install-ubuntu.rst`), which for Ubuntu prescribes:
+
+1. `apt install nova-compute`;
+2. Edit `/etc/nova/nova.conf` (35 keys across 8 sections):
+   - `[DEFAULT]`: `transport_url = rabbit://openstack:RABBIT_PASS@controller:5672/`,
+     `my_ip = <local_node management_ip>`
+   - `[api]`, `[keystone_authtoken]`, `[service_user]`, `[glance]`, `[oslo_concurrency]`,
+     and `[placement]`: same as `nova-controller`
+   - `[vnc]`: `enabled = true`, `server_listen = 0.0.0.0`,
+     `server_proxyclient_address = $my_ip`,
+     `novncproxy_base_url = http://controller:6080/vnc_auto.html`
+3. Determine whether the compute node supports hardware acceleration for virtual machines
+   (`egrep -c '(vmx|svm)' /proc/cpuinfo`) and edit `[libvirt] virt_type` in
+   `/etc/nova/nova-compute.conf`;
+4. Restart the Compute service: `service nova-compute restart`.
+
+It runs only on `compute` nodes (constructing it for another role raises `ExecutionError`).
+
+| Phase | What happens |
+| ----- | ------------ |
+| `check()` | Pure first (runs zero external commands if any fails): `RABBIT_PASS`, `NOVA_PASS`, and `PLACEMENT_PASS` must exist in `SecretStore(root)` (`NOVA_DBPASS` and `ADMIN_PASS` are never required on compute nodes), and both `/etc/nova/nova.conf` (35 settings) and `/etc/nova/nova-compute.conf` (`[libvirt] virt_type` matching `<root>/proc/cpuinfo`) must exist and need no edit. Otherwise `True` only if `dpkg-query --status nova-compute` reports it installed and `systemctl is-active nova-compute` prints `active`. |
+| `apply()` | Precondition: loads `RABBIT_PASS`, `NOVA_PASS`, and `PLACEMENT_PASS` from `SecretStore(root)`. Runs `apt-get install --yes nova-compute`, edits `/etc/nova/nova.conf` (`ini_set_many`, 35 settings) and `/etc/nova/nova-compute.conf` (`[libvirt] virt_type = kvm` or `qemu` from `<root>/proc/cpuinfo`), and runs `systemctl restart nova-compute`. |
+| `verify()` | Checks `RABBIT_PASS`, `NOVA_PASS`, and `PLACEMENT_PASS` in `SecretStore(root)`, all 35 keys in `/etc/nova/nova.conf` (redacting secret values), `[libvirt] virt_type` in `/etc/nova/nova-compute.conf`, `nova-compute` installed, and `nova-compute` active. |
+
+Deviations, trade-offs, and limits (`nova-controller` and `nova-compute`):
+
+- **`[service_user] auth_url = http://controller:5000/` instead of `https://controller/identity`:**
+  both `controller-install-ubuntu.rst` (line 251) and `compute-install-ubuntu.rst` (line 470)
+  show `auth_url = https://controller/identity` in `[service_user]` (a DevStack TLS URL),
+  whereas `[keystone_authtoken]` and `[placement]` on the same pages use
+  `http://controller:5000/` and `http://controller:5000/v3`. Because
+  `keystone-install-ubuntu.html` configures Keystone on HTTP port `5000` without TLS or an
+  `/identity` prefix, OpenStack Forge sets `[service_user] auth_url = http://controller:5000/`
+  on both controller and compute nodes so service-user tokens reach Keystone.
+- **`[DEFAULT] transport_url = rabbit://openstack:RABBIT_PASS@controller:5672/` on both roles:**
+  `controller-install-ubuntu.rst` writes `rabbit://openstack:RABBIT_PASS@controller:5672/`
+  while `compute-install-ubuntu.rst` omits `:5672/`. OpenStack Forge uses the explicit
+  `:5672/` form on both roles.
+- **Periodic compute host discovery (`[scheduler] discover_hosts_in_cells_interval = 300`):**
+  recommended by `compute-install-ubuntu.rst` (lines 643–651) so `nova-scheduler` discovers
+  newly registered compute hosts automatically without requiring a manual controller re-run of
+  `nova-manage cell_v2 discover_hosts --verbose` after each compute node starts.
+- **Pure `/proc/cpuinfo` inspection and explicit `[libvirt] virt_type`:** instead of running
+  `egrep -c '(vmx|svm)' /proc/cpuinfo`, `NovaComputeStep` reads `<root>/proc/cpuinfo` in pure
+  Python (`detect_node_libvirt_virt_type()`) and always writes `[libvirt] virt_type = kvm` (when
+  `vmx` or `svm` is present in a `flags`/`features` line) or `qemu` (otherwise, or if
+  `/proc/cpuinfo` is absent) in `/etc/nova/nova-compute.conf`.
+- **Least-privilege secrets on compute nodes:** `NovaComputeStep` only reads `RABBIT_PASS`,
+  `NOVA_PASS`, and `PLACEMENT_PASS`; controller-only secrets (`NOVA_DBPASS`, `ADMIN_PASS`) are
+  never required on compute nodes.
+- **`nova-manage` invoked directly as `root` instead of `su`:** `CommandSpec` forbids `su` and
+  `sudo`. Editing `/etc/nova/nova.conf` before running `nova-manage` ensures `api_db sync`,
+  `map_cell0`, `create_cell`, and `db sync` connect to MariaDB rather than SQLite; if
+  `log_file` or `log_dir` is enabled in `nova.conf`, running `nova-manage` as `root` can create
+  a root-owned log file in `/var/log/nova`.
+- **What `verify()` does not check:** no live HTTP request to `http://controller:8774/v2.1`, no
+  `openstack compute service list`, and no `nova-status upgrade check` (`verify.html`) are
+  performed.
 

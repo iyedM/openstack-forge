@@ -57,6 +57,13 @@ EXPECTED_STEPS: list[tuple[str, list[str], list[str], str]] = [
     ),
     ("glance", ["controller"], ["/etc/glance/glance-api.conf"], STATUS_UNVERIFIED),
     ("placement", ["controller"], ["/etc/placement/placement.conf"], STATUS_UNVERIFIED),
+    ("nova-controller", ["controller"], ["/etc/nova/nova.conf"], STATUS_UNVERIFIED),
+    (
+        "nova-compute",
+        ["compute"],
+        ["/etc/nova/nova.conf", "/etc/nova/nova-compute.conf"],
+        STATUS_UNVERIFIED,
+    ),
 ]
 
 
@@ -157,7 +164,7 @@ def test_catalog_files_ship_as_package_data() -> None:
 def test_duplicate_step_id(raw_catalog, catalog_schema) -> None:
     raw_catalog["steps"].append(copy.deepcopy(raw_catalog["steps"][0]))
     assert _messages(raw_catalog, catalog_schema) == [
-        "steps[11].id: duplicate id 'hosts-file'; already used by steps[0]"
+        "steps[13].id: duplicate id 'hosts-file'; already used by steps[0]"
     ]
 
 

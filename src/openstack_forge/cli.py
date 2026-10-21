@@ -404,7 +404,7 @@ def build_parser(runner: CommandRunner | None = None) -> argparse.ArgumentParser
         help=(
             "Catalog step id to run (implemented: hosts-file, time-sync-controller, "
             "time-sync-other, openstack-packages, mariadb, rabbitmq, memcached, etcd, "
-            "keystone, glance, placement)."
+            "keystone, glance, placement, nova-controller, nova-compute)."
         ),
     )
     apply_parser.add_argument(

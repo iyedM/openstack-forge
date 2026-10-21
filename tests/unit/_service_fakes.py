@@ -90,6 +90,9 @@ class ServiceHost:
         self.keystone_bootstrapped: dict[str, str] | None = None
         self.glance_db_synced: bool = False
         self.placement_db_synced: bool = False
+        self.nova_api_db_synced: bool = False
+        self.nova_db_synced: bool = False
+        self.nova_cells: set[str] = set()
         self.openstack_projects: list[dict[str, Any]] = [
             dict(item) for item in (openstack_projects or ())
         ]
@@ -328,6 +331,102 @@ class ServiceHost:
                     "MariaDB in /etc/placement/placement.conf\n",
                 )
             self.placement_db_synced = True
+            return ProcessOutput(0, "", "")
+        if argv == ("/usr/bin/nova-manage", "api_db", "sync"):
+            self._snapshot("nova-manage api_db sync")
+            conf_path = self.root / "etc/nova/nova.conf"
+            conf_text = conf_path.read_text(encoding="utf-8") if conf_path.exists() else ""
+            if "mysql+pymysql://nova:" not in conf_text or "@controller/nova_api" not in conf_text:
+                return ProcessOutput(
+                    1,
+                    "",
+                    "CRITICAL nova: [api_database] connection is not configured for MariaDB in "
+                    "/etc/nova/nova.conf\n",
+                )
+            self.nova_api_db_synced = True
+            return ProcessOutput(0, "", "")
+        if argv == ("/usr/bin/nova-manage", "cell_v2", "map_cell0"):
+            self._snapshot("nova-manage cell_v2 map_cell0")
+            conf_path = self.root / "etc/nova/nova.conf"
+            conf_text = conf_path.read_text(encoding="utf-8") if conf_path.exists() else ""
+            if (
+                not self.nova_api_db_synced
+                or "mysql+pymysql://nova:" not in conf_text
+                or "@controller/nova" not in conf_text
+            ):
+                return ProcessOutput(
+                    1,
+                    "",
+                    "CRITICAL nova: api_db must be synced and [database] connection configured "
+                    "before map_cell0\n",
+                )
+            self.nova_cells.add("cell0")
+            return ProcessOutput(0, "", "")
+        if argv == ("/usr/bin/nova-manage", "cell_v2", "list_cells"):
+            border = (
+                "+-------+--------------------------------------+"
+                "----------------------------------------------------+"
+                "--------------------------------------------------------------+----------+"
+            )
+            rows: list[str] = [
+                border,
+                "|  Name |                 UUID                 |"
+                "                   Transport URL                    |"
+                "                     Database Connection                      | Disabled |",
+                border,
+            ]
+            if "cell0" in self.nova_cells:
+                rows.append(
+                    "| cell0 | 00000000-0000-0000-0000-000000000000 |"
+                    "                       none:/                       |"
+                    " mysql+pymysql://nova:****@controller/nova_cell0?charset=utf8 |  False   |"
+                )
+            if "cell1" in self.nova_cells:
+                rows.append(
+                    "| cell1 | f690f4fd-2bc5-4f15-8145-db561a7b9d3d |"
+                    " rabbit://openstack:****@controller:5672/           |"
+                    " mysql+pymysql://nova:****@controller/nova?charset=utf8       |  False   |"
+                )
+            for extra in sorted(self.nova_cells - {"cell0", "cell1"}):
+                rows.append(
+                    f"| {extra} | 11111111-2222-3333-4444-555555555555 |"
+                    " rabbit://openstack:****@controller:5672/           |"
+                    " mysql+pymysql://nova:****@controller/nova?charset=utf8       |  False   |"
+                )
+            rows.append(border)
+            return ProcessOutput(0, "\n".join(rows) + "\n", "")
+        if argv == ("/usr/bin/nova-manage", "cell_v2", "create_cell", "--name=cell1", "--verbose"):
+            self._snapshot("nova-manage cell_v2 create_cell")
+            conf_path = self.root / "etc/nova/nova.conf"
+            conf_text = conf_path.read_text(encoding="utf-8") if conf_path.exists() else ""
+            if "mysql+pymysql://nova:" not in conf_text or "rabbit://openstack:" not in conf_text:
+                return ProcessOutput(
+                    1,
+                    "Must specify --transport-url and --database_connection if not set in "
+                    "/etc/nova/nova.conf\n",
+                    "",
+                )
+            if "cell1" in self.nova_cells:
+                return ProcessOutput(
+                    2,
+                    "The specified transport_url and/or database_connection combination already "
+                    "exists for another cell with uuid f690f4fd-2bc5-4f15-8145-db561a7b9d3d.\n",
+                    "",
+                )
+            self.nova_cells.add("cell1")
+            return ProcessOutput(0, "f690f4fd-2bc5-4f15-8145-db561a7b9d3d\n", "")
+        if argv == ("/usr/bin/nova-manage", "db", "sync"):
+            self._snapshot("nova-manage db sync")
+            conf_path = self.root / "etc/nova/nova.conf"
+            conf_text = conf_path.read_text(encoding="utf-8") if conf_path.exists() else ""
+            if "mysql+pymysql://nova:" not in conf_text or "@controller/nova" not in conf_text:
+                return ProcessOutput(
+                    1,
+                    "",
+                    "CRITICAL nova: [database] connection is not configured for MariaDB in "
+                    "/etc/nova/nova.conf\n",
+                )
+            self.nova_db_synced = True
             return ProcessOutput(0, "", "")
         if argv[: len(OPENSTACK_ADMIN_AUTH_ARGS)] == OPENSTACK_ADMIN_AUTH_ARGS:
             return self._run_openstack_cli(argv[len(OPENSTACK_ADMIN_AUTH_ARGS) :], env)

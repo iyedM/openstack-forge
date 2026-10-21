@@ -117,6 +117,36 @@
       "verification": "placement-api is installed, /etc/placement/placement.conf sets the [placement_database], [api], and [keystone_authtoken] keys, the placement MariaDB database and grants exist, the Keystone 'placement' user has the 'admin' role on 'service', the 'placement' ('placement') service and its public/internal/admin endpoints (http://controller:8778) exist in RegionOne, and apache2 is active (no HTTP check on port 8778 or placement-status upgrade check is performed).",
       "doc_url": "https://docs.openstack.org/placement/2025.1/install/install-ubuntu.html",
       "status": "unverified"
+    },
+    {
+      "id": "nova-controller",
+      "title": "Install and configure the Nova Compute controller services",
+      "roles": ["controller"],
+      "depends_on": [
+        "mariadb",
+        "rabbitmq",
+        "memcached",
+        "keystone",
+        "glance",
+        "placement"
+      ],
+      "files_modified": ["/etc/nova/nova.conf"],
+      "verification": "nova-api, nova-conductor, nova-novncproxy, and nova-scheduler are installed and active, /etc/nova/nova.conf sets all 37 controller keys across [api_database], [database], [DEFAULT], [api], [keystone_authtoken], [service_user], [vnc], [glance], [oslo_concurrency], [placement], and [scheduler], the nova_api, nova, and nova_cell0 MariaDB databases and grants exist, the Keystone 'nova' user has the 'admin' role on 'service', the 'nova' ('compute') service and its public/internal/admin endpoints (http://controller:8774/v2.1) exist in RegionOne, and 'nova-manage cell_v2 list_cells' registers both cell0 and cell1.",
+      "doc_url": "https://docs.openstack.org/nova/2025.1/install/controller-install-ubuntu.html",
+      "status": "unverified"
+    },
+    {
+      "id": "nova-compute",
+      "title": "Install and configure the Nova Compute hypervisor service",
+      "roles": ["compute"],
+      "depends_on": ["openstack-packages", "nova-controller"],
+      "files_modified": [
+        "/etc/nova/nova.conf",
+        "/etc/nova/nova-compute.conf"
+      ],
+      "verification": "nova-compute is installed and active, /etc/nova/nova.conf sets all 35 compute keys across [DEFAULT], [api], [keystone_authtoken], [service_user], [vnc], [glance], [oslo_concurrency], and [placement], and /etc/nova/nova-compute.conf sets [libvirt] virt_type to kvm or qemu matching /proc/cpuinfo hardware virtualization flags.",
+      "doc_url": "https://docs.openstack.org/nova/2025.1/install/compute-install-ubuntu.html",
+      "status": "unverified"
     }
   ],
   "notes": [

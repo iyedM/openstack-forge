@@ -511,6 +511,11 @@ OPENSTACK_ENDPOINT_LIST = "openstack.endpoint-list"
 OPENSTACK_ENDPOINT_CREATE = "openstack.endpoint-create"
 GLANCE_MANAGE_DB_SYNC = "glance-manage.db-sync"
 PLACEMENT_MANAGE_DB_SYNC = "placement-manage.db-sync"
+NOVA_MANAGE_API_DB_SYNC = "nova-manage.api-db-sync"
+NOVA_MANAGE_MAP_CELL0 = "nova-manage.cell-v2-map-cell0"
+NOVA_MANAGE_LIST_CELLS = "nova-manage.cell-v2-list-cells"
+NOVA_MANAGE_CREATE_CELL1 = "nova-manage.cell-v2-create-cell1"
+NOVA_MANAGE_DB_SYNC = "nova-manage.db-sync"
 
 # Fixed literal admin authentication flags for /usr/bin/openstack (package
 # "python3-openstackclient", verified with `dpkg -S /usr/bin/openstack`).
@@ -604,6 +609,14 @@ PLACEMENT_MANAGE_FAILURE_HINT = (
     "'active', that 'controller' resolves in /etc/hosts ('hosts-file' step), and that "
     "/etc/placement/placement.conf has the expected [placement_database] connection. "
     "OpenStack Forge does not attempt any automatic recovery."
+)
+
+NOVA_MANAGE_FAILURE_HINT = (
+    "nova-manage reads /etc/nova/nova.conf and connects to the MariaDB 'nova_api', 'nova', "
+    "and 'nova_cell0' databases at 'controller': check that 'systemctl is-active mariadb' is "
+    "'active', that 'controller' resolves in /etc/hosts ('hosts-file' step), and that "
+    "/etc/nova/nova.conf has the expected [api_database] connection, [database] connection, "
+    "and [DEFAULT] transport_url. OpenStack Forge does not attempt any automatic recovery."
 )
 
 SYSTEM_COMMANDS: tuple[CommandSpec, ...] = (
@@ -1194,6 +1207,77 @@ SYSTEM_COMMANDS: tuple[CommandSpec, ...] = (
         mutates=True,
         description="Populate or upgrade the Placement service SQL database schema",
         failure_hint=PLACEMENT_MANAGE_FAILURE_HINT,
+    ),
+    CommandSpec(
+        NOVA_MANAGE_API_DB_SYNC,
+        # /usr/bin/nova-manage (package "python3-nova", verified with `dpkg -S`).
+        # Guide (https://docs.openstack.org/nova/2025.1/install/controller-install-ubuntu.html):
+        # 'su -s /bin/sh -c "nova-manage api_db sync" nova'.
+        # Verified in `/usr/lib/python3/dist-packages/nova/cmd/manage.py`: `CATEGORIES` maps
+        # `'api_db': ApiDbCommands` (`sync`). Invoked directly as root after `/etc/nova/nova.conf`
+        # sets `[api_database] connection` and `[database] connection` to MariaDB.
+        ("/usr/bin/nova-manage", "api_db", "sync"),
+        timeout=300,
+        mutates=True,
+        description="Populate or upgrade the Nova API SQL database schema",
+        failure_hint=NOVA_MANAGE_FAILURE_HINT,
+    ),
+    CommandSpec(
+        NOVA_MANAGE_MAP_CELL0,
+        # /usr/bin/nova-manage (package "python3-nova").
+        # Guide (https://docs.openstack.org/nova/2025.1/install/controller-install-ubuntu.html):
+        # 'su -s /bin/sh -c "nova-manage cell_v2 map_cell0" nova'.
+        # Verified in `/usr/lib/python3/dist-packages/nova/cmd/manage.py`
+        # (`CellV2Commands.map_cell0`, lines 816-832): catches `db_exc.DBDuplicateEntry`,
+        # prints 'Cell0 is already setup', and returns 0 (natively idempotent).
+        ("/usr/bin/nova-manage", "cell_v2", "map_cell0"),
+        timeout=60,
+        mutates=True,
+        description="Register the Nova cell0 database mapping",
+        failure_hint=NOVA_MANAGE_FAILURE_HINT,
+    ),
+    CommandSpec(
+        NOVA_MANAGE_LIST_CELLS,
+        # /usr/bin/nova-manage (package "python3-nova").
+        # Guide (https://docs.openstack.org/nova/2025.1/install/controller-install-ubuntu.html):
+        # 'su -s /bin/sh -c "nova-manage cell_v2 list_cells" nova'.
+        # Verified in `/usr/lib/python3/dist-packages/nova/cmd/manage.py`
+        # (`CellV2Commands.list_cells`, lines 1211-1239): read-only command that prints a
+        # PrettyTable of registered cells (`Name`, `UUID`, `Transport URL`, `Database
+        # Connection`, `Disabled`) with passwords masked unless `--verbose` is passed.
+        ("/usr/bin/nova-manage", "cell_v2", "list_cells"),
+        timeout=30,
+        mutates=False,
+        description="List registered Nova cells v2 mappings (read-only)",
+        failure_hint=NOVA_MANAGE_FAILURE_HINT,
+    ),
+    CommandSpec(
+        NOVA_MANAGE_CREATE_CELL1,
+        # /usr/bin/nova-manage (package "python3-nova").
+        # Guide (https://docs.openstack.org/nova/2025.1/install/controller-install-ubuntu.html):
+        # 'su -s /bin/sh -c "nova-manage cell_v2 create_cell --name=cell1 --verbose" nova'.
+        # Verified in `/usr/lib/python3/dist-packages/nova/cmd/manage.py`
+        # (`CellV2Commands.create_cell`, lines 1183-1207): returns exit code 2 if a cell with
+        # the same transport_url and database_connection already exists, so callers must check
+        # `nova-manage cell_v2 list_cells` first before running `create_cell`.
+        ("/usr/bin/nova-manage", "cell_v2", "create_cell", "--name=cell1", "--verbose"),
+        timeout=60,
+        mutates=True,
+        description="Create the Nova cell1 cell mapping",
+        failure_hint=NOVA_MANAGE_FAILURE_HINT,
+    ),
+    CommandSpec(
+        NOVA_MANAGE_DB_SYNC,
+        # /usr/bin/nova-manage (package "python3-nova").
+        # Guide (https://docs.openstack.org/nova/2025.1/install/controller-install-ubuntu.html):
+        # 'su -s /bin/sh -c "nova-manage db sync" nova'.
+        # Verified in `/usr/lib/python3/dist-packages/nova/cmd/manage.py`: `CATEGORIES` maps
+        # `'db': DbCommands` (`sync`).
+        ("/usr/bin/nova-manage", "db", "sync"),
+        timeout=300,
+        mutates=True,
+        description="Populate or upgrade the Nova cell SQL database schema",
+        failure_hint=NOVA_MANAGE_FAILURE_HINT,
     ),
 )
 

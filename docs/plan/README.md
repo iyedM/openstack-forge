@@ -5,14 +5,14 @@ each node would go through to prepare an OpenStack 2025.1 (Epoxy) deployment.
 
 It is strictly read-only. It reads the configuration file and the step catalog bundled
 with the package, and nothing else: it runs no command, opens no network connection,
-connects to no node and changes nothing. In `openstack-forge apply`, all eleven catalog
+connects to no node and changes nothing. In `openstack-forge apply`, all thirteen catalog
 steps are implemented: `hosts-file` (confined file operations only, no external command,
 no network), `time-sync-controller`, `time-sync-other`, `openstack-packages`, `mariadb`,
-`rabbitmq`, `memcached`, `etcd`, `keystone`, `glance`, and `placement`. All but `hosts-file`
-run reviewed system commands; OpenStack Forge's Python code opens no connection, but the apt
-commands they run (`apt-get update`, `apt-get install`, `add-apt-repository`) use the
-network. All eleven remain marked **unverified** in the catalog and none has been run on a
-real host; see [`docs/engine/README.md`](../engine/README.md).
+`rabbitmq`, `memcached`, `etcd`, `keystone`, `glance`, `placement`, `nova-controller`, and
+`nova-compute`. All but `hosts-file` run reviewed system commands; OpenStack Forge's Python
+code opens no connection, but the apt commands they run (`apt-get update`, `apt-get install`,
+`add-apt-repository`) use the network. All thirteen remain marked **unverified** in the
+catalog and none has been run on a real host; see [`docs/engine/README.md`](../engine/README.md).
 
 ## Usage
 
@@ -116,19 +116,24 @@ All steps are **unverified**.
 | `keystone` | controller | `/etc/keystone/keystone.conf`, `/etc/apache2/apache2.conf`, `/etc/openstack-forge/admin-openrc` | [Keystone for Ubuntu (2025.1)](https://docs.openstack.org/keystone/2025.1/install/keystone-install-ubuntu.html) |
 | `glance` | controller | `/etc/glance/glance-api.conf` | [Glance for Ubuntu (2025.1)](https://docs.openstack.org/glance/2025.1/install/install-ubuntu.html) |
 | `placement` | controller | `/etc/placement/placement.conf` | [Placement for Ubuntu (2025.1)](https://docs.openstack.org/placement/2025.1/install/install-ubuntu.html) |
+| `nova-controller` | controller | `/etc/nova/nova.conf` | [Nova controller for Ubuntu (2025.1)](https://docs.openstack.org/nova/2025.1/install/controller-install-ubuntu.html) |
+| `nova-compute` | compute | `/etc/nova/nova.conf`, `/etc/nova/nova-compute.conf` | [Nova compute for Ubuntu (2025.1)](https://docs.openstack.org/nova/2025.1/install/compute-install-ubuntu.html) |
 
 The `depends_on` chain follows the order of the "Environment" chapter of the installation
-guide and the Keystone, Glance, and Placement 2025.1 guides, and is itself unverified:
+guide and the Keystone, Glance, Placement, and Nova 2025.1 guides, and is itself unverified:
 
 - `hosts-file` → `time-sync-controller` → `openstack-packages` → each controller environment
   service (`mariadb`, `rabbitmq`, `memcached`, `etcd`), `keystone` waits for `mariadb`
-  and `memcached` on the controller, and `glance` and `placement` wait for `mariadb`,
-  `memcached`, and `keystone` on the controller;
+  and `memcached` on the controller, `glance` and `placement` wait for `mariadb`,
+  `memcached`, and `keystone` on the controller, and `nova-controller` waits for
+  `mariadb`, `rabbitmq`, `memcached`, `keystone`, `glance`, and `placement` on the
+  controller;
 - `hosts-file` → `time-sync-other` → `openstack-packages` on compute, block and object
   nodes, where `time-sync-other` also waits for `time-sync-controller` on the controller,
   because those nodes synchronize their clocks from it. It waits for the node's own
   `hosts-file` because its `server controller iburst` line needs the `controller` alias
-  that `hosts-file` writes to `/etc/hosts`.
+  that `hosts-file` writes to `/etc/hosts`. On compute nodes, `nova-compute` waits for
+  that compute node's `openstack-packages` and for `nova-controller` on the controller.
 
 `openstack-packages` uses role-scoped dependencies:
 
@@ -144,14 +149,17 @@ for another node; on a compute, block or object node it waits for `time-sync-oth
 that same node (which in turn waited for the controller's `time-sync-controller`).
 
 `time-sync-controller`, `time-sync-other`, `openstack-packages`, `mariadb`, `rabbitmq`,
-`memcached`, `etcd`, `keystone`, `glance`, and `placement` are implemented by
-`openstack-forge apply` (see [`docs/engine`](../engine/README.md)). `mariadb`, `rabbitmq`,
-`memcached`, `etcd`, `keystone`, `glance`, and `placement` do not update the package lists
-themselves: they rely on running after `openstack-packages` on the controller, as their
-`depends_on` chain says; `rabbitmq` requires `RABBIT_PASS`, `keystone` requires
-`KEYSTONE_DBPASS` and `ADMIN_PASS`, `glance` requires `ADMIN_PASS`, `GLANCE_DBPASS`, and
-`GLANCE_PASS`, and `placement` requires `ADMIN_PASS`, `PLACEMENT_DBPASS`, and
-`PLACEMENT_PASS` in `/etc/openstack-forge/secrets.json` (`openstack-forge secrets init`).
+`memcached`, `etcd`, `keystone`, `glance`, `placement`, `nova-controller`, and
+`nova-compute` are implemented by `openstack-forge apply` (see [`docs/engine`](../engine/README.md)).
+`mariadb`, `rabbitmq`, `memcached`, `etcd`, `keystone`, `glance`, `placement`,
+`nova-controller`, and `nova-compute` do not update the package lists themselves: they
+rely on running after `openstack-packages`, as their `depends_on` chain says; `rabbitmq`
+requires `RABBIT_PASS`, `keystone` requires `KEYSTONE_DBPASS` and `ADMIN_PASS`, `glance`
+requires `ADMIN_PASS`, `GLANCE_DBPASS`, and `GLANCE_PASS`, `placement` requires
+`ADMIN_PASS`, `PLACEMENT_DBPASS`, and `PLACEMENT_PASS`, `nova-controller` requires
+`ADMIN_PASS`, `RABBIT_PASS`, `NOVA_DBPASS`, `NOVA_PASS`, and `PLACEMENT_PASS`, and
+`nova-compute` requires `RABBIT_PASS`, `NOVA_PASS`, and `PLACEMENT_PASS` in
+`/etc/openstack-forge/secrets.json` (`openstack-forge secrets init`).
 `memcached` and `etcd` listen unauthenticated on the management IP and `rabbitmq` listens
 for AMQP without TLS, so the management network must be trusted (see the security section of
 [`docs/engine`](../engine/README.md)). `openstack-packages` takes its Ubuntu Cloud Archive

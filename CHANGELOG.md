@@ -332,6 +332,41 @@ All notable changes to this project will be documented in this file.
   (`("/usr/bin/glance-manage", "db_sync")`) and `placement-manage.db-sync`
   (`("/usr/bin/placement-manage", "db", "sync")`), with `GLANCE_MANAGE_FAILURE_HINT` and
   `PLACEMENT_MANAGE_FAILURE_HINT`.
+- `nova-controller` step (`openstack_forge.execution.nova`, controller only) in the catalog
+  and `IMPLEMENTED_STEPS`. **Unverified and never run on a real host.** Following
+  `https://docs.openstack.org/nova/2025.1/install/controller-install-ubuntu.html`: requires
+  `ADMIN_PASS`, `RABBIT_PASS`, `NOVA_DBPASS`, `NOVA_PASS`, and `PLACEMENT_PASS` in
+  `SecretStore`, provisions the three `nova_api`, `nova`, and `nova_cell0` MariaDB databases
+  and grants for `nova@localhost` and `nova@%` via `stdin`, converges the `nova` Keystone
+  user, `admin` role on `service`, `nova` (`compute`) service entity and three `RegionOne`
+  endpoints at `http://controller:8774/v2.1`, installs `nova-api`, `nova-conductor`,
+  `nova-novncproxy`, and `nova-scheduler`, edits `/etc/nova/nova.conf` (37 keys across
+  `[api_database]`, `[database]`, `[DEFAULT]`, `[api]`, `[keystone_authtoken]`,
+  `[service_user]`, `[vnc]`, `[glance]`, `[oslo_concurrency]`, `[placement]`, and
+  `[scheduler]`, documenting `[service_user] auth_url = http://controller:5000/` instead of
+  the upstream doc's DevStack TLS `https://controller/identity`), runs
+  `/usr/bin/nova-manage api_db sync` and `/usr/bin/nova-manage cell_v2 map_cell0`, checks
+  `/usr/bin/nova-manage cell_v2 list_cells` before running
+  `/usr/bin/nova-manage cell_v2 create_cell --name=cell1 --verbose` (because `create_cell`
+  exits 2 if `cell1` already exists), runs `/usr/bin/nova-manage db sync`, and restarts
+  `nova-api`, `nova-scheduler`, `nova-conductor`, and `nova-novncproxy`.
+- `nova-compute` step (`openstack_forge.execution.nova`, compute nodes only; depends on
+  `openstack-packages` and `nova-controller`) in the catalog and `IMPLEMENTED_STEPS`.
+  **Unverified and never run on a real host.** Following
+  `https://docs.openstack.org/nova/2025.1/install/compute-install-ubuntu.html`: requires only
+  `RABBIT_PASS`, `NOVA_PASS`, and `PLACEMENT_PASS` in `SecretStore` (least-privilege:
+  `NOVA_DBPASS` and `ADMIN_PASS` are never required on compute nodes), installs
+  `nova-compute`, edits `/etc/nova/nova.conf` (35 keys across `[DEFAULT]`, `[api]`,
+  `[keystone_authtoken]`, `[service_user]`, `[vnc]`, `[glance]`, `[oslo_concurrency]`, and
+  `[placement]`, with `[vnc] server_listen = 0.0.0.0`,
+  `server_proxyclient_address = $my_ip`, and
+  `novncproxy_base_url = http://controller:6080/vnc_auto.html`), inspects `<root>/proc/cpuinfo`
+  in pure Python to set `[libvirt] virt_type = kvm` (when `vmx` or `svm` is present) or
+  `qemu` (otherwise) in `/etc/nova/nova-compute.conf`, and restarts `nova-compute`.
+- Five reviewed `/usr/bin/nova-manage` command specs in `DEFAULT_REGISTRY`:
+  `nova-manage.api-db-sync`, `nova-manage.cell-v2-map-cell0`,
+  `nova-manage.cell-v2-list-cells` (`mutates=False`), `nova-manage.cell-v2-create-cell1`,
+  and `nova-manage.db-sync`, with `NOVA_MANAGE_FAILURE_HINT`.
 
 ### Changed
 
@@ -391,11 +426,12 @@ All notable changes to this project will be documented in this file.
 - Replaced the development machine's local RFC 1918 IP in `memcached`/`etcd`
   modules, tests, `_service_fakes.py` and `docs/engine/README.md` with the RFC 5737
   documentation address `192.0.2.170`.
-- `IMPLEMENTED_STEPS` pin deliberately updated to all eleven catalog steps (adds `rabbitmq`,
-  `keystone`, `glance`, and `placement`), and the `DEFAULT_REGISTRY` test deliberately pins
-  thirty-three reviewed commands (adds the five `/usr/sbin/rabbitmqctl`, two
-  `/usr/bin/mariadb`, four `/usr/bin/keystone-manage`, eleven `/usr/bin/openstack`,
-  `glance-manage.db-sync`, and `placement-manage.db-sync` specs).
+- `IMPLEMENTED_STEPS` pin deliberately updated to all thirteen catalog steps (adds `rabbitmq`,
+  `keystone`, `glance`, `placement`, `nova-controller`, and `nova-compute`), and the
+  `DEFAULT_REGISTRY` test deliberately pins thirty-eight reviewed commands (adds the five
+  `/usr/sbin/rabbitmqctl`, two `/usr/bin/mariadb`, four `/usr/bin/keystone-manage`, eleven
+  `/usr/bin/openstack`, `glance-manage.db-sync`, `placement-manage.db-sync`, and five
+  `/usr/bin/nova-manage` specs).
 - `keystone-manage.bootstrap` now delivers `ADMIN_PASS` via
   `env_params={"password": "OS_BOOTSTRAP_PASSWORD"}` instead of `--bootstrap-password
   {password}` in `argv` (confirmed in `/usr/lib/python3/dist-packages/keystone/cmd/cli.py`),

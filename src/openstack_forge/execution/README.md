@@ -4,7 +4,8 @@ Confined file edits, redaction, secrets store, state store, step engine, the all
 command layer, the reusable MariaDB SQL provisioning brick, the reusable `/usr/bin/openstack`
 CLI provisioning brick, and the implemented `hosts-file`, `time-sync-controller`,
 `time-sync-other`, `openstack-packages`, `mariadb`, `rabbitmq`, `memcached`, `etcd`,
-`keystone`, `glance`, and `placement` steps used by `openstack-forge apply`.
+`keystone`, `glance`, `placement`, `nova-controller`, and `nova-compute` steps used by
+`openstack-forge apply`.
 Imported lazily by the `apply` and `secrets` CLI handlers so that `config validate`,
 `doctor`, and `plan` never import it.
 
@@ -24,7 +25,7 @@ Imported lazily by the `apply` and `secrets` CLI handlers so that `config valida
 - `engine.py` - `Engine.run()` / `Engine.resume()` over check/apply/verify steps.
 - `commands.py` - allowlisted `CommandSpec`s (including `sensitive_params`, `stdin_param`,
   `env_params`, and `sql_stdin`), typed parameter validation, `CommandRegistry`
-  (`DEFAULT_REGISTRY` holds the thirty-three reviewed system commands), and `CommandExecutor`
+  (`DEFAULT_REGISTRY` holds the thirty-eight reviewed system commands), and `CommandExecutor`
   with an injectable backend, sanitized environment, SIGTERM-then-SIGKILL timeouts,
   redacted and truncated output.
 - `sql.py` - reusable MariaDB database and user-grant provisioning brick via `stdin`
@@ -45,6 +46,8 @@ Imported lazily by the `apply` and `secrets` CLI handlers so that `config valida
 - `keystone.py` - the `keystone` step (unverified, never run on a real host).
 - `glance.py` - the `glance` step (unverified, never run on a real host).
 - `placement.py` - the `placement` step (unverified, never run on a real host).
+- `nova.py` - the `nova-controller` and `nova-compute` steps (unverified, never run on a real
+  host).
 - `service_checks.py` - read-only package / unit-active / unit-enabled checks shared by
   the controller service steps.
 - `apt_output.py` - pure parsers for `dpkg-query --status` and `apt-cache policy` output,

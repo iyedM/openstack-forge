@@ -600,6 +600,36 @@ def test_default_registry_contains_exactly_the_reviewed_commands() -> None:
             True,
             frozenset({0}),
         ),
+        "nova-manage.api-db-sync": (
+            ("/usr/bin/nova-manage", "api_db", "sync"),
+            {},
+            True,
+            frozenset({0}),
+        ),
+        "nova-manage.cell-v2-map-cell0": (
+            ("/usr/bin/nova-manage", "cell_v2", "map_cell0"),
+            {},
+            True,
+            frozenset({0}),
+        ),
+        "nova-manage.cell-v2-list-cells": (
+            ("/usr/bin/nova-manage", "cell_v2", "list_cells"),
+            {},
+            False,
+            frozenset({0}),
+        ),
+        "nova-manage.cell-v2-create-cell1": (
+            ("/usr/bin/nova-manage", "cell_v2", "create_cell", "--name=cell1", "--verbose"),
+            {},
+            True,
+            frozenset({0}),
+        ),
+        "nova-manage.db-sync": (
+            ("/usr/bin/nova-manage", "db", "sync"),
+            {},
+            True,
+            frozenset({0}),
+        ),
     }
     assert all(spec.timeout > 0 for spec in specs.values())
     assert specs["keystone-manage.bootstrap"].env_params == {"password": "OS_BOOTSTRAP_PASSWORD"}

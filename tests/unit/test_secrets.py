@@ -41,6 +41,8 @@ from openstack_forge.execution import (
     FunctionStep,
     GlanceStep,
     KeystoneStep,
+    NovaComputeStep,
+    NovaControllerStep,
     ParameterError,
     PlacementStep,
     PlannedCommand,
@@ -74,6 +76,7 @@ from openstack_forge.execution import (
 TOOL = "/opt/forge-test/bin/secret-tool"
 CANARY = "CanarySecretValue9876543210ZyXwVuTsRq"
 CONTROLLER_NODE = {"hostname": "ctl-01", "role": "controller", "management_ip": "192.0.2.11"}
+COMPUTE_NODE = {"hostname": "cmp-01", "role": "compute", "management_ip": "192.0.2.31"}
 
 
 @pytest.fixture(autouse=True)
@@ -875,8 +878,8 @@ def test_canary_secret_never_leaks_outside_the_0600_secrets_file(
     (root / "var" / "log" / "openstack-forge").mkdir(parents=True, mode=0o700)
 
     # Pre-seed RABBIT_PASS, KEYSTONE_DBPASS, ADMIN_PASS, GLANCE_DBPASS, GLANCE_PASS,
-    # PLACEMENT_DBPASS, and PLACEMENT_PASS with CANARY and generate the other secrets
-    # via CLI `secrets init`.
+    # PLACEMENT_DBPASS, PLACEMENT_PASS, NOVA_DBPASS, and NOVA_PASS with CANARY and
+    # generate the other secrets via CLI `secrets init`.
     secrets_path = root / "etc" / "openstack-forge" / "secrets.json"
     secrets_path.write_text(
         json.dumps(
@@ -888,6 +891,8 @@ def test_canary_secret_never_leaks_outside_the_0600_secrets_file(
                 "GLANCE_PASS": CANARY,
                 "PLACEMENT_DBPASS": CANARY,
                 "PLACEMENT_PASS": CANARY,
+                "NOVA_DBPASS": CANARY,
+                "NOVA_PASS": CANARY,
             }
         ),
         encoding="utf-8",
@@ -1000,7 +1005,8 @@ def test_canary_secret_never_leaks_outside_the_0600_secrets_file(
     assert not report2.ok
     report2_text = format_report(report2)
 
-    # 5. Real RabbitMQStep, KeystoneStep, GlanceStep & PlacementStep with CANARY
+    # 5. Real RabbitMQStep, KeystoneStep, GlanceStep, PlacementStep,
+    #    NovaControllerStep & NovaComputeStep with CANARY
     monkeypatch.setattr("openstack_forge.execution.commands.is_host_root", lambda _: True)
     host = ServiceHost(
         root,
@@ -1021,6 +1027,15 @@ def test_canary_secret_never_leaks_outside_the_0600_secrets_file(
             "placement-api": (
                 "etc/placement/placement.conf",
                 "[placement_database]\n[api]\n[keystone_authtoken]\n",
+            ),
+            "nova-api": (
+                "etc/nova/nova.conf",
+                "[DEFAULT]\n[api_database]\n[database]\n[api]\n[keystone_authtoken]\n"
+                "[service_user]\n[vnc]\n[glance]\n[oslo_concurrency]\n[placement]\n[scheduler]\n",
+            ),
+            "nova-compute": (
+                ("etc/nova/nova.conf", "[DEFAULT]\n"),
+                ("etc/nova/nova-compute.conf", "[DEFAULT]\n[libvirt]\n"),
             ),
         },
     )
@@ -1105,6 +1120,49 @@ def test_canary_secret_never_leaks_outside_the_0600_secrets_file(
     assert placement_report.ok
     placement_report_text = format_report(placement_report)
 
+    nova_ctl_step = NovaControllerStep(
+        root=root, config={}, local_node=CONTROLLER_NODE, executor=service_exec
+    )
+    nova_ctl_preview_before = nova_ctl_step.dry_run_preview()
+    for cmd in (
+        *nova_ctl_preview_before.commands,
+        *nova_ctl_preview_before.read_only_commands,
+    ):
+        assert CANARY not in cmd.describe(DEFAULT_REGISTRY)
+        assert CANARY not in " ".join(cmd.argv(DEFAULT_REGISTRY))
+        assert CANARY not in repr(cmd)
+    for note in nova_ctl_preview_before.notes:
+        assert CANARY not in note
+    nova_ctl_calls_start = len(host.calls)
+    nova_ctl_report = engine.run([nova_ctl_step])
+    assert nova_ctl_report.ok
+    nova_ctl_report_text = format_report(nova_ctl_report)
+    for argv in host.calls[nova_ctl_calls_start:]:
+        if argv[0] == "/usr/bin/nova-manage" or argv[0] == "/usr/bin/mariadb":
+            assert all(CANARY not in arg for arg in argv)
+
+    nova_cmp_step = NovaComputeStep(
+        root=root, config={}, local_node=COMPUTE_NODE, executor=service_exec
+    )
+    nova_cmp_preview_before = nova_cmp_step.dry_run_preview()
+    for cmd in (
+        *nova_cmp_preview_before.commands,
+        *nova_cmp_preview_before.read_only_commands,
+    ):
+        assert CANARY not in cmd.describe(DEFAULT_REGISTRY)
+        assert CANARY not in " ".join(cmd.argv(DEFAULT_REGISTRY))
+        assert CANARY not in repr(cmd)
+    for fc in nova_cmp_preview_before.file_changes:
+        assert CANARY not in fc.diff
+    for note in nova_cmp_preview_before.notes:
+        assert CANARY not in note
+    nova_cmp_calls_start = len(host.calls)
+    nova_cmp_report = engine.run([nova_cmp_step])
+    assert nova_cmp_report.ok
+    nova_cmp_report_text = format_report(nova_cmp_report)
+    for argv in host.calls[nova_cmp_calls_start:]:
+        assert all(CANARY not in arg for arg in argv)
+
     # Backend raising a raw RuntimeError containing CANARY
     raising_executor = CommandExecutor(
         registry,
@@ -1128,6 +1186,8 @@ def test_canary_secret_never_leaks_outside_the_0600_secrets_file(
         ("keystone_report", keystone_report_text),
         ("glance_report", glance_report_text),
         ("placement_report", placement_report_text),
+        ("nova_ctl_report", nova_ctl_report_text),
+        ("nova_cmp_report", nova_cmp_report_text),
         ("ini_diff", ini_change.diff),
         ("block_diff", block_change.diff),
         ("caplog", caplog.text),
@@ -1135,7 +1195,7 @@ def test_canary_secret_never_leaks_outside_the_0600_secrets_file(
         assert CANARY not in text, f"CANARY leaked into {surface_name}"
 
     # Walk all files under tmp_path: only secrets.json, admin-openrc, keystone.conf,
-    # glance-api.conf, placement.conf, and app.conf contain CANARY.
+    # glance-api.conf, placement.conf, nova.conf, and app.conf contain CANARY.
     files_with_canary = sorted(
         path.relative_to(root).as_posix()
         for path in root.rglob("*")
@@ -1145,6 +1205,7 @@ def test_canary_secret_never_leaks_outside_the_0600_secrets_file(
         "etc/app.conf",
         "etc/glance/glance-api.conf",
         "etc/keystone/keystone.conf",
+        "etc/nova/nova.conf",
         "etc/openstack-forge/admin-openrc",
         "etc/openstack-forge/secrets.json",
         "etc/placement/placement.conf",
