@@ -19,6 +19,7 @@ import pytest
 from openstack_forge.execution import (
     DEFAULT_REGISTRY,
     MASK,
+    OPENSTACK_ADMIN_AUTH_ARGS,
     PARAM_TYPES,
     SANITIZED_ENV,
     AuditLog,
@@ -121,6 +122,15 @@ VALID = {
     "ipv4_address": ["192.0.2.11", "10.0.0.1", "255.255.255.255"],
     "absolute_path": ["/etc/hosts", "/etc/chrony/chrony.conf", "/var/lib/openstack-forge"],
     "secret": ["A" * 32, "aB3x9K" * 6, "9" * 64],
+    "openstack_name": ["service", "admin", "glance", "placement", "nova", "cinderv3", "volumev3"],
+    "endpoint_interface": ["public", "internal", "admin"],
+    "endpoint_url": [
+        "http://controller:5000/v3/",
+        "http://controller:9292",
+        "http://controller:8778",
+        "http://controller:8774/v2.1",
+        "https://controller.example.test:9696",
+    ],
 }
 
 # Shell metacharacters and option injection, rejected for every parameter type.
@@ -159,6 +169,18 @@ INVALID_FORMAT = {
     "ipv4_address": ["256.1.1.1", "1.2.3", "01.2.3.4.5", "1.2.3.4/24", "::1"],
     "absolute_path": ["etc/hosts", "/etc/../shadow", "/etc/./hosts", "/", "/etc//hosts"],
     "secret": ["A" * 31, "A" * 257, "a" * 31 + "_", "a" * 31 + "-"],
+    "openstack_name": ["Service", "_bad", "0bad", "a" * 64, "bad.name"],
+    "endpoint_interface": ["Public", "external", "private", "v3"],
+    "endpoint_url": [
+        "ftp://controller:9292",
+        "http://controller",
+        "http://controller:0",
+        "http://controller:70000",
+        "http://controller:9292/../x",
+        "http://controller:9292/./x",
+        "http://-bad:9292",
+        "http://bad..host:9292",
+    ],
 }
 
 
@@ -405,8 +427,6 @@ def test_default_registry_contains_exactly_the_reviewed_commands() -> None:
             (
                 "/usr/bin/keystone-manage",
                 "bootstrap",
-                "--bootstrap-password",
-                "{password}",
                 "--bootstrap-admin-url",
                 "http://controller:5000/v3/",
                 "--bootstrap-internal-url",
@@ -420,14 +440,176 @@ def test_default_registry_contains_exactly_the_reviewed_commands() -> None:
             True,
             frozenset({0}),
         ),
+        "openstack.project-list": (
+            (*OPENSTACK_ADMIN_AUTH_ARGS, "project", "list", "--domain", "default", "-f", "json"),
+            {"admin_password": "secret"},
+            False,
+            frozenset({0}),
+        ),
+        "openstack.project-create-service": (
+            (
+                *OPENSTACK_ADMIN_AUTH_ARGS,
+                "project",
+                "create",
+                "--domain",
+                "default",
+                "--description",
+                "Service Project",
+                "service",
+                "-f",
+                "json",
+            ),
+            {"admin_password": "secret"},
+            True,
+            frozenset({0}),
+        ),
+        "openstack.user-list": (
+            (*OPENSTACK_ADMIN_AUTH_ARGS, "user", "list", "--domain", "default", "-f", "json"),
+            {"admin_password": "secret"},
+            False,
+            frozenset({0}),
+        ),
+        "openstack.user-create": (
+            (
+                *OPENSTACK_ADMIN_AUTH_ARGS,
+                "user",
+                "create",
+                "--domain",
+                "default",
+                "--password",
+                "{user_password}",
+                "{user}",
+                "-f",
+                "json",
+            ),
+            {"admin_password": "secret", "user": "openstack_name", "user_password": "secret"},
+            True,
+            frozenset({0}),
+        ),
+        "openstack.user-set-password": (
+            (
+                *OPENSTACK_ADMIN_AUTH_ARGS,
+                "user",
+                "set",
+                "--domain",
+                "default",
+                "--password",
+                "{user_password}",
+                "{user}",
+            ),
+            {"admin_password": "secret", "user": "openstack_name", "user_password": "secret"},
+            True,
+            frozenset({0}),
+        ),
+        "openstack.role-assignment-list": (
+            (
+                *OPENSTACK_ADMIN_AUTH_ARGS,
+                "role",
+                "assignment",
+                "list",
+                "--names",
+                "-f",
+                "json",
+            ),
+            {"admin_password": "secret"},
+            False,
+            frozenset({0}),
+        ),
+        "openstack.role-add-user-project": (
+            (
+                *OPENSTACK_ADMIN_AUTH_ARGS,
+                "role",
+                "add",
+                "--project",
+                "{project}",
+                "--user",
+                "{user}",
+                "{role}",
+            ),
+            {
+                "admin_password": "secret",
+                "project": "openstack_name",
+                "user": "openstack_name",
+                "role": "openstack_name",
+            },
+            True,
+            frozenset({0}),
+        ),
+        "openstack.service-list": (
+            (*OPENSTACK_ADMIN_AUTH_ARGS, "service", "list", "-f", "json"),
+            {"admin_password": "secret"},
+            False,
+            frozenset({0}),
+        ),
+        "openstack.service-create": (
+            (
+                *OPENSTACK_ADMIN_AUTH_ARGS,
+                "service",
+                "create",
+                "--name",
+                "{service_name}",
+                "{service_type}",
+                "-f",
+                "json",
+            ),
+            {
+                "admin_password": "secret",
+                "service_name": "openstack_name",
+                "service_type": "openstack_name",
+            },
+            True,
+            frozenset({0}),
+        ),
+        "openstack.endpoint-list": (
+            (*OPENSTACK_ADMIN_AUTH_ARGS, "endpoint", "list", "-f", "json"),
+            {"admin_password": "secret"},
+            False,
+            frozenset({0}),
+        ),
+        "openstack.endpoint-create": (
+            (
+                *OPENSTACK_ADMIN_AUTH_ARGS,
+                "endpoint",
+                "create",
+                "--region",
+                "RegionOne",
+                "{service_name}",
+                "{interface}",
+                "{url}",
+                "-f",
+                "json",
+            ),
+            {
+                "admin_password": "secret",
+                "service_name": "openstack_name",
+                "interface": "endpoint_interface",
+                "url": "endpoint_url",
+            },
+            True,
+            frozenset({0}),
+        ),
     }
     assert all(spec.timeout > 0 for spec in specs.values())
-    assert all(spec.env_params == {} for spec in specs.values())
+    assert specs["keystone-manage.bootstrap"].env_params == {"password": "OS_BOOTSTRAP_PASSWORD"}
+    openstack_ids = {spec_id for spec_id in specs if spec_id.startswith("openstack.")}
+    assert len(openstack_ids) == 11
+    for spec_id in openstack_ids:
+        assert specs[spec_id].env_params == {"admin_password": "OS_PASSWORD"}
+        assert "admin_password" in specs[spec_id].sensitive_params
+    for spec_id, spec in specs.items():
+        if spec_id != "keystone-manage.bootstrap" and spec_id not in openstack_ids:
+            assert spec.env_params == {}
     assert specs["rabbitmqctl.add-user"].sensitive_params == frozenset({"password"})
     assert specs["rabbitmqctl.change-password"].sensitive_params == frozenset({"password"})
     assert specs["mariadb.execute-sql"].stdin_param == "sql"
     assert specs["mariadb.execute-sql"].sensitive_params == frozenset({"sql"})
     assert specs["keystone-manage.bootstrap"].sensitive_params == frozenset({"password"})
+    assert specs["openstack.user-create"].sensitive_params == frozenset(
+        {"admin_password", "user_password"}
+    )
+    assert specs["openstack.user-set-password"].sensitive_params == frozenset(
+        {"admin_password", "user_password"}
+    )
     assert "--yes" in specs["apt-get.install"].argv
     assert specs["apt-get.install"].failure_hint
     # add-apt-repository must stay non-interactive and must keep its own update.

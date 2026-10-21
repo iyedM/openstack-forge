@@ -48,7 +48,11 @@ EXPECTED_STEPS: list[tuple[str, list[str], list[str], str]] = [
     (
         "keystone",
         ["controller"],
-        ["/etc/keystone/keystone.conf", "/etc/apache2/apache2.conf"],
+        [
+            "/etc/keystone/keystone.conf",
+            "/etc/apache2/apache2.conf",
+            "/etc/openstack-forge/admin-openrc",
+        ],
         STATUS_UNVERIFIED,
     ),
 ]

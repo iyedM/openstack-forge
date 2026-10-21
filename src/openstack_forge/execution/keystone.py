@@ -1,12 +1,19 @@
 """Install and configure the Keystone Identity service on the controller node.
 
-Source of truth (read directly for this module):
-- ``https://docs.openstack.org/keystone/2025.1/install/keystone-install-ubuntu.html``
-  (source: ``doc/source/install/keystone-install-ubuntu.rst`` on ``stable/2025.1`` in
-  ``openstack/keystone``).
+Sources of truth (read directly for this module):
+1. ``https://docs.openstack.org/keystone/2025.1/install/keystone-install-ubuntu.html``
+   (source: ``doc/source/install/keystone-install-ubuntu.rst`` on ``stable/2025.1`` in
+   ``openstack/keystone``).
+2. ``https://docs.openstack.org/keystone/2025.1/install/keystone-users-ubuntu.html``
+   (source: ``doc/source/install/common/keystone-users.inc`` on ``stable/2025.1``).
+3. ``https://docs.openstack.org/keystone/2025.1/install/keystone-verify-ubuntu.html``
+   (source: ``doc/source/install/keystone-verify-ubuntu.rst`` on ``stable/2025.1``).
+4. ``https://docs.openstack.org/keystone/2025.1/install/keystone-openrc-ubuntu.html``
+   (source: ``doc/source/install/common/openrc.inc`` on ``stable/2025.1``).
 
-What the page prescribes for Ubuntu:
-1. Prerequisites — create the ``keystone`` database and grant access in MariaDB::
+What the pages prescribe for Ubuntu:
+1. Prerequisites (``keystone-install-ubuntu.html``) — create the ``keystone`` database and
+   grant access in MariaDB::
 
        CREATE DATABASE keystone;
        GRANT ALL PRIVILEGES ON keystone.* TO 'keystone'@'localhost' \\
@@ -57,11 +64,30 @@ What the page prescribes for Ubuntu:
 
          # service apache2 restart
 
-Scope boundary:
-- Exporting ``OS_USERNAME=admin`` / ``OS_PASSWORD=ADMIN_PASS`` in the shell, creating the
-  ``service`` project and non-admin domain/project/user/role
-  (``keystone-users-ubuntu.html``), and writing ``admin-openrc`` / ``demo-openrc``
-  (``keystone-openrc-ubuntu.html``) belong to the next milestone, not this step.
+9. Create a domain, projects, users, and roles (``keystone-users-ubuntu.html``):
+   - Create the ``service`` project required by all subsequent OpenStack services::
+
+         $ openstack project create --domain default \\
+           --description "Service Project" service
+
+   - The guide also shows tutorial examples (``example`` domain, ``myproject``, ``myuser``,
+     ``myrole``); see conscious deviation 8 below.
+
+10. Verify operation (``keystone-verify-ubuntu.html``):
+    - Authenticate as ``admin`` against ``http://controller:5000/v3`` in domain ``Default``
+      / project ``admin``.
+
+11. Create OpenStack client environment scripts (``keystone-openrc-ubuntu.html``):
+    - Write ``admin-openrc`` with::
+
+          export OS_PROJECT_DOMAIN_NAME=Default
+          export OS_USER_DOMAIN_NAME=Default
+          export OS_PROJECT_NAME=admin
+          export OS_USERNAME=admin
+          export OS_PASSWORD=ADMIN_PASS
+          export OS_AUTH_URL=http://controller:5000/v3
+          export OS_IDENTITY_API_VERSION=3
+          export OS_IMAGE_API_VERSION=2
 
 What was established on the Ubuntu 24.04 development machine (read-only inspection):
 - ``apt-cache policy keystone`` shows ``2:27.0.0-0ubuntu1.1~cloud2`` in
@@ -73,39 +99,35 @@ What was established on the Ubuntu 24.04 development machine (read-only inspecti
   and ``python3-keystone`` depends on ``keystone-common`` and ``python3-pymysql``.
 - ``dpkg -S`` confirms:
   - ``python3-keystone: /usr/bin/keystone-manage``
+  - ``python3-openstackclient: /usr/bin/openstack`` (``7.4.0-0ubuntu1~cloud0``)
   - ``keystone-common: /etc/keystone`` (with ``/etc/keystone/keystone.conf`` listed in
     ``/var/lib/dpkg/info/keystone-common.conffiles``; ``keystone-common.postinst`` sets
     ``/etc/keystone`` to ``0750`` ``keystone:keystone``, ``/etc/keystone/keystone.conf`` to
     ``0640`` ``keystone:keystone``, ``/etc/keystone/fernet-keys`` to ``0700``
-    ``keystone:keystone``, and ``/var/log/keystone`` to ``0750`` ``keystone:adm``. Because
-    ``/etc/keystone`` is ``0750`` ``keystone:keystone``, ``/etc/keystone/keystone.conf`` is
-    not readable by an unprivileged user on the development machine.)
+    ``keystone:keystone``, and ``/var/log/keystone`` to ``0750`` ``keystone:adm``).
   - ``keystone: /etc/apache2/sites-available/keystone.conf`` (enabled by
     ``/var/lib/dpkg/info/keystone.postinst`` via ``apache2_invoke ensite keystone.conf``,
     configuring ``Listen 5000`` and ``<VirtualHost *:5000>`` with ``WSGIDaemonProcess
     keystone-public user=keystone group=keystone`` and ``/usr/bin/keystone-wsgi-public``).
   - ``apache2: /etc/apache2/apache2.conf`` (``2.4.58-1ubuntu8.15``) and
-    ``/usr/lib/systemd/system/apache2.service``. The pristine ``/etc/apache2/apache2.conf``
-    conffile (MD5 ``354c9e6d2b88a0a3e0548f853840674c``) contains no ``ServerName`` line
-    (on the development machine ``ServerName controller`` had been added on line 1).
-- Inspection of ``/usr/lib/python3/dist-packages/keystone/`` (from ``python3-keystone
-  2:27.0.0-0ubuntu1.1~cloud1``) confirms:
+    ``/usr/lib/systemd/system/apache2.service``.
+- Inspection of ``/usr/lib/python3/dist-packages/keystone/`` confirms:
   - ``keystone/conf/fernet_tokens.py`` defaults ``[fernet_tokens] key_repository`` to
     ``/etc/keystone/fernet-keys/``.
   - ``keystone/conf/credential.py`` defaults ``[credential] key_repository`` to
     ``/etc/keystone/credential-keys/``.
   - ``keystone/common/fernet_utils.py`` ``FernetUtils.initialize_key_repository()`` returns
-    immediately with exit status 0 if key ``0`` already exists in ``key_repository``, and
-    otherwise creates primary key ``1`` and staged key ``0`` owned by ``--keystone-user`` /
-    ``--keystone-group`` with ``umask(0o177)``.
+    immediately with exit status 0 if key ``0`` already exists in ``key_repository``.
+  - ``keystone/cmd/cli.py`` (lines 64-235) ``BootStrap.do_bootstrap()`` reads
+    ``self.password = os.environ.get('OS_BOOTSTRAP_PASSWORD') or
+    CONF.command.bootstrap_password``.
   - ``keystone/cmd/bootstrap.py`` ``Bootstrapper.bootstrap()`` is idempotent: it ensures
     the ``Default`` domain, ``admin`` project, default roles (``reader``, ``member``,
     ``manager``, ``admin``, ``service``), role assignments, ``RegionOne`` region, and
     ``keystone`` (``identity``) service endpoints, and creates the ``admin`` user or resets
-    its password to ``--bootstrap-password`` if authentication with the current password
-    fails.
+    its password to ``OS_BOOTSTRAP_PASSWORD``.
 
-Deviations from the guide page:
+Deviations from the guide pages:
 1. Precondition on :class:`SecretStore`: both ``KEYSTONE_DBPASS`` and ``ADMIN_PASS`` must
    exist in ``/etc/openstack-forge/secrets.json`` (created by ``openstack-forge secrets
    init``). The step never generates secrets itself; if the store or either secret is
@@ -127,31 +149,44 @@ Deviations from the guide page:
    ``keystone-manage`` as ``root`` can create or touch a root-owned log file in
    ``/var/log/keystone`` (by default ``keystone-manage`` logs to stderr when ``log_file``
    is unset).
-5. ``/etc/apache2/apache2.conf`` is edited with :func:`disable_lines_and_set_block` using
+5. ``/usr/bin/keystone-manage bootstrap`` receives ``ADMIN_PASS`` via
+   ``env_params={"password": "OS_BOOTSTRAP_PASSWORD"}`` rather than ``--bootstrap-password
+   ADMIN_PASS`` in ``argv``, keeping ``ADMIN_PASS`` in ``/proc/<pid>/environ`` (mode
+   ``0400``, readable only by ``root``) instead of ``/proc/<pid>/cmdline`` (``ps``).
+6. ``/etc/apache2/apache2.conf`` is edited with :func:`disable_lines_and_set_block` using
    the ``# BEGIN openstack-forge keystone-apache`` managed block (``ServerName controller``)
-   while commenting out any active ``ServerName`` lines outside the block so no prior
-   ``ServerName`` directive conflicts with it.
-6. ``systemctl restart apache2`` is used instead of ``service apache2 restart``.
+   while commenting out any active ``ServerName`` lines outside the block.
+7. ``systemctl restart apache2`` is used instead of ``service apache2 restart``.
+8. ``keystone-users-ubuntu.html``: :class:`KeystoneStep` idempotently creates the required
+   ``service`` project in domain ``default`` via :func:`ensure_service_project` (using
+   ``openstack.project-list`` and ``openstack.project-create-service`` with
+   ``env_params={"admin_password": "OS_PASSWORD"}``) and consciously omits the tutorial-only
+   ``example`` domain, ``myproject`` project, ``myuser`` user, ``myrole`` role, and
+   ``demo-openrc`` file so production clusters do not carry unused example accounts.
+9. ``keystone-openrc-ubuntu.html``: because the guide states *"The paths of the client
+   environment scripts are unrestricted... ensure that they are accessible and located in a
+   secure place appropriate for your deployment, as they do contain sensitive credentials"*,
+   ``admin-openrc`` is written to ``/etc/openstack-forge/admin-openrc`` inside the ``0700``
+   directory ``/etc/openstack-forge`` with file mode ``0600`` (owned by the effective UID,
+   refusing symlinks and overly permissive modes, never creating ``admin-openrc.orig``, and
+   masking ``ADMIN_PASS`` in :attr:`FileChange.diff`).
 
-Password delivery and ``/proc/<pid>/cmdline`` (``ps``) note:
-- ``KEYSTONE_DBPASS`` is delivered to ``/usr/bin/mariadb`` via ``stdin`` and written to
-  ``/etc/keystone/keystone.conf`` (mode ``0640``, ``keystone:keystone``), so it never
-  appears in ``argv``.
-- ``ADMIN_PASS`` is passed to ``/usr/bin/keystone-manage bootstrap --bootstrap-password
-  {password} ...`` in ``argv`` as prescribed by the official guide (note that
-  ``keystone/cmd/cli.py`` also accepts ``OS_BOOTSTRAP_PASSWORD`` in the environment).
-  OpenStack Forge masks ``ADMIN_PASS`` as ``********`` in ``build_shown_argv``,
-  :class:`PlannedCommand`, dry-run output, :attr:`CommandResult.argv`, the audit log, and
-  all error messages, but local users on the host can read ``/proc/<pid>/cmdline`` (``ps``)
-  for the duration of ``keystone-manage bootstrap``.
+Password delivery and ``/proc/<pid>/cmdline`` (``ps``) guarantee:
+- Neither ``KEYSTONE_DBPASS`` (sent via ``stdin_param="sql"`` and written to ``0640``
+  ``/etc/keystone/keystone.conf``) nor ``ADMIN_PASS`` (sent via ``env_params`` as
+  ``OS_BOOTSTRAP_PASSWORD`` to ``keystone-manage bootstrap`` and ``OS_PASSWORD`` to
+  ``/usr/bin/openstack``, and written to ``0600`` ``/etc/openstack-forge/admin-openrc``)
+  ever appears in ``argv`` or ``/proc/<pid>/cmdline`` (``ps``) during the ``keystone`` step.
 """
 
 from __future__ import annotations
 
+import os
 import re
-from collections.abc import Mapping
+import stat
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar
 
 from openstack_forge.execution.commands import (
@@ -162,6 +197,7 @@ from openstack_forge.execution.commands import (
     KEYSTONE_MANAGE_FERNET_SETUP,
     SYSTEMCTL_RESTART,
     CommandExecutor,
+    validate_parameter,
 )
 from openstack_forge.execution.engine import VerifyResult
 from openstack_forge.execution.errors import (
@@ -179,12 +215,27 @@ from openstack_forge.execution.files import (
     disable_lines_and_set_block,
     ini_set_many,
 )
-from openstack_forge.execution.fsutil import read_text_file, resolve_target
+from openstack_forge.execution.fsutil import (
+    atomic_write_text,
+    read_text_file,
+    resolve_target,
+    unified_diff,
+)
+from openstack_forge.execution.openstack_cli import (
+    SERVICE_PROJECT_NAME,
+    ensure_service_project,
+    plan_create_service_project,
+    plan_project_list,
+    service_project_problems,
+    service_project_ready,
+)
 from openstack_forge.execution.preview import PlannedCommand, StepPreview
 from openstack_forge.execution.redaction import MASK, redact_text
 from openstack_forge.execution.secrets import (
     DEFAULT_SECRET_LENGTH,
     DEFAULT_SECRETS_TARGET,
+    SECRETS_DIR_MODE,
+    SECRETS_FILE_MODE,
     SecretStore,
 )
 from openstack_forge.execution.service_checks import (
@@ -215,6 +266,10 @@ KEYSTONE_CONF_TARGET = "/etc/keystone/keystone.conf"
 APACHE2_CONF_TARGET = "/etc/apache2/apache2.conf"
 APACHE2_BLOCK_NAME = "openstack-forge keystone-apache"
 APACHE2_SERVER_NAME_LINE = "ServerName controller"
+
+ADMIN_OPENRC_TARGET = "/etc/openstack-forge/admin-openrc"
+ADMIN_OPENRC_DIR_MODE = SECRETS_DIR_MODE
+ADMIN_OPENRC_MODE = SECRETS_FILE_MODE
 
 FERNET_KEYS_TARGET = "/etc/keystone/fernet-keys"
 CREDENTIAL_KEYS_TARGET = "/etc/keystone/credential-keys"
@@ -253,13 +308,12 @@ DB_SYNC_NOTE = (
     "if log_file is enabled in keystone.conf, running keystone-manage as root can create a "
     "root-owned log file in /var/log/keystone)."
 )
-BOOTSTRAP_PS_NOTE = (
-    "Bootstrap idempotence and /proc/<pid>/cmdline (ps) limitation: 'keystone-manage "
-    "bootstrap' is idempotent in Keystone (ensuring the Default domain, admin project, "
-    "default roles, admin user password, RegionOne, and identity http://controller:5000/v3/ "
-    "endpoints). OpenStack Forge masks ADMIN_PASS as '********' everywhere, but because "
-    "'--bootstrap-password' is passed in argv per the official guide, local users on the "
-    "host can read it from /proc/<pid>/cmdline (ps) for the duration of the command."
+BOOTSTRAP_ENV_NOTE = (
+    "Bootstrap and CLI password delivery via env_params: 'keystone-manage bootstrap' "
+    "receives ADMIN_PASS via OS_BOOTSTRAP_PASSWORD (verified in "
+    "/usr/lib/python3/dist-packages/keystone/cmd/cli.py) and '/usr/bin/openstack' receives "
+    "ADMIN_PASS via OS_PASSWORD. Neither KEYSTONE_DBPASS nor ADMIN_PASS ever appears in "
+    "argv or /proc/<pid>/cmdline (ps); /proc/<pid>/environ is readable only by root."
 )
 PACKAGE_NOTE = (
     "Ubuntu 24.04 package facts (established read-only on the dev machine): keystone "
@@ -268,16 +322,16 @@ PACKAGE_NOTE = (
     "python3-pymysql); keystone.postinst enables /etc/apache2/sites-available/keystone.conf "
     "on port 5000."
 )
-SCOPE_NOTE = (
-    "Scope boundary: creating the 'service' project and non-admin user/project "
-    "(keystone-users-ubuntu.html) and writing admin-openrc / demo-openrc "
-    "(keystone-openrc-ubuntu.html) belong to the next milestone, not this step."
+USERS_AND_OPENRC_NOTE = (
+    "Post-bootstrap deviation (keystone-users-ubuntu.html & keystone-openrc-ubuntu.html): "
+    "creates the 'service' project in domain 'default' and writes "
+    "/etc/openstack-forge/admin-openrc (mode 0600, no .orig backup); tutorial-only "
+    "'example' domain, 'myproject', 'myuser', 'myrole', and 'demo-openrc' are omitted."
 )
 NOT_CHECKED = (
-    "Not checked: no HTTP /v3 token request against http://controller:5000/v3/ is "
-    "performed, the SQL schema version from keystone-manage db_sync and the bootstrap "
-    "catalog rows inside the keystone database are not queried directly, and creating the "
-    "'service' project / openrc files belongs to the next step."
+    "Not checked: the SQL schema version from keystone-manage db_sync is not queried "
+    "directly (live Keystone /v3 authentication and the 'service' project are verified via "
+    "openstack.project-list)."
 )
 
 
@@ -409,6 +463,179 @@ def verify_apache2_conf_text(text: str) -> list[str]:
     return problems
 
 
+def render_admin_openrc(admin_password: str) -> str:
+    """Render the ``admin-openrc`` script prescribed by ``keystone-openrc-ubuntu.html``."""
+    validate_parameter("secret", "admin_password", admin_password)
+    return (
+        "export OS_PROJECT_DOMAIN_NAME=Default\n"
+        "export OS_USER_DOMAIN_NAME=Default\n"
+        "export OS_PROJECT_NAME=admin\n"
+        "export OS_USERNAME=admin\n"
+        f"export OS_PASSWORD={admin_password}\n"
+        "export OS_AUTH_URL=http://controller:5000/v3\n"
+        "export OS_IDENTITY_API_VERSION=3\n"
+        "export OS_IMAGE_API_VERSION=2\n"
+    )
+
+
+def verify_admin_openrc_text(text: str, admin_password: str) -> list[str]:
+    """Pure check: ``text`` matches :func:`render_admin_openrc` without leaking the secret."""
+    expected = render_admin_openrc(admin_password)
+    if text == expected:
+        return []
+    expected_lines = expected.strip().split("\n")
+    actual_lines = [line.strip() for line in text.strip().split("\n") if line.strip()]
+    missing_or_wrong: list[str] = []
+    for expected_line in expected_lines:
+        key, _, _ = expected_line.partition("=")
+        matching = [line for line in actual_lines if line.startswith(f"{key}=")]
+        if not matching:
+            missing_or_wrong.append(f"missing {key!r}")
+        elif matching != [expected_line]:
+            missing_or_wrong.append(f"mismatch for {key!r}")
+    if len(actual_lines) != len(expected_lines) and not missing_or_wrong:
+        missing_or_wrong.append("unexpected extra or duplicate lines")
+    detail = ", ".join(missing_or_wrong) or "content does not match expected exports"
+    return [f"{ADMIN_OPENRC_TARGET} content mismatch ({detail})"]
+
+
+def _reject_openrc_symlinks(root: Path, path: Path, display: str) -> None:
+    root_dir = Path(root).resolve(strict=True)
+    display_dir = str(PurePosixPath(display).parent)
+    rel_parts = path.relative_to(root_dir).parts
+    current = root_dir
+    for part in rel_parts[:-1]:
+        current = current / part
+        if current.is_symlink():
+            raise UnsafePathError(
+                f"Refusing to use directory {display_dir}: {current} is a symlink"
+            )
+    if path.is_symlink():
+        raise UnsafePathError(f"Refusing to modify {display}: it is a symlink")
+
+
+def _check_openrc_directory(parent: Path, display_dir: str, expected_uid: int) -> None:
+    if parent.is_symlink():
+        raise UnsafePathError(f"Refusing to use directory {display_dir}: it is a symlink")
+    dir_stat = parent.stat(follow_symlinks=False)
+    if not stat.S_ISDIR(dir_stat.st_mode):
+        raise UnsafePathError(f"Parent {display_dir} is not a directory")
+    if dir_stat.st_uid != expected_uid:
+        raise PreconditionError(
+            f"Directory {display_dir} is owned by uid {dir_stat.st_uid}, "
+            f"expected current effective uid {expected_uid}"
+        )
+    dir_mode = stat.S_IMODE(dir_stat.st_mode)
+    if dir_mode & 0o077 != 0:
+        raise PreconditionError(
+            f"Directory {display_dir} has mode {dir_mode:04o}, which is more permissive than "
+            f"{ADMIN_OPENRC_DIR_MODE:04o} (group/other bits must be 0)"
+        )
+
+
+def _check_openrc_file(path: Path, display: str, expected_uid: int) -> None:
+    if path.is_symlink():
+        raise UnsafePathError(f"Refusing to modify {display}: it is a symlink")
+    file_stat = path.stat(follow_symlinks=False)
+    if not stat.S_ISREG(file_stat.st_mode):
+        raise UnsafePathError(f"Refusing to modify {display}: it is not a regular file")
+    if file_stat.st_uid != expected_uid:
+        raise PreconditionError(
+            f"{display} is owned by uid {file_stat.st_uid}, "
+            f"expected current effective uid {expected_uid}"
+        )
+    file_mode = stat.S_IMODE(file_stat.st_mode)
+    if file_mode & 0o177 != 0:
+        raise PreconditionError(
+            f"{display} has mode {file_mode:04o}, which is more permissive than "
+            f"{ADMIN_OPENRC_MODE:04o} (execute, group and other bits must be 0)"
+        )
+
+
+def write_admin_openrc(
+    root: Path,
+    admin_password: str,
+    *,
+    dry_run: bool = False,
+    euid: Callable[[], int] = os.geteuid,
+) -> FileChange:
+    """Write ``/etc/openstack-forge/admin-openrc`` with mode ``0600`` and no ``.orig`` backup."""
+    expected = render_admin_openrc(admin_password)
+    path, display = resolve_target(root, ADMIN_OPENRC_TARGET)
+    display_dir = str(PurePosixPath(display).parent)
+    _reject_openrc_symlinks(root, path, display)
+    expected_uid = euid()
+    parent = path.parent
+
+    if parent.exists():
+        _check_openrc_directory(parent, display_dir, expected_uid)
+
+    existing: str | None = None
+    if path.exists():
+        _check_openrc_file(path, display, expected_uid)
+        existing = read_text_file(path, display)
+
+    changed = existing != expected
+    diff = (
+        unified_diff(existing or "", expected, display).replace(admin_password, MASK)
+        if changed
+        else ""
+    )
+    if not dry_run and changed:
+        if not parent.exists():
+            parent.parent.mkdir(parents=True, exist_ok=True)
+            parent.mkdir(mode=ADMIN_OPENRC_DIR_MODE, exist_ok=False)
+            os.chmod(parent, ADMIN_OPENRC_DIR_MODE)
+            _check_openrc_directory(parent, display_dir, expected_uid)
+        atomic_write_text(path, expected, mode=ADMIN_OPENRC_MODE)
+        _check_openrc_file(path, display, expected_uid)
+    return FileChange(
+        path=display,
+        changed=changed,
+        created=existing is None,
+        backup=None,
+        diff=diff,
+    )
+
+
+edit_admin_openrc = write_admin_openrc
+
+
+def verify_admin_openrc(
+    root: Path,
+    admin_password: str | None,
+    *,
+    euid: Callable[[], int] = os.geteuid,
+) -> list[str]:
+    """Verify ``/etc/openstack-forge/admin-openrc`` exists, is ``0600``, and has expected lines."""
+    path, display = resolve_target(root, ADMIN_OPENRC_TARGET)
+    display_dir = str(PurePosixPath(display).parent)
+    _reject_openrc_symlinks(root, path, display)
+    expected_uid = euid()
+    parent = path.parent
+
+    if not parent.exists():
+        return [f"{display} does not exist (directory {display_dir} is missing)"]
+    try:
+        _check_openrc_directory(parent, display_dir, expected_uid)
+    except PreconditionError as exc:
+        return [str(exc)]
+
+    if not path.exists():
+        return [f"{display} does not exist"]
+    try:
+        _check_openrc_file(path, display, expected_uid)
+    except PreconditionError as exc:
+        return [str(exc)]
+
+    text = read_text_file(path, display)
+    if text is None:  # pragma: no cover - defensive after path.exists()
+        return [f"{display} does not exist"]
+    if admin_password is None:
+        return []
+    return verify_admin_openrc_text(text, admin_password)
+
+
 def verify_keystone_key_repositories(root: Path) -> list[str]:
     """Check that ``/etc/keystone/fernet-keys`` and ``/etc/keystone/credential-keys`` exist
     under ``root`` and each contains a non-empty regular key file ``0``."""
@@ -508,17 +735,24 @@ class KeystoneStep:
                 f"and this block is appended:\n{block}"
             )
 
+        try:
+            file_changes.append(write_admin_openrc(self.root, admin_password, dry_run=True))
+        except PreconditionError as exc:
+            notes.append(f"Precondition not yet met for {ADMIN_OPENRC_TARGET}: {exc}")
+
         sql_cmd = plan_service_database_sql((KEYSTONE_DB_NAME,), KEYSTONE_DB_USER, db_password)
         bootstrap_cmd = _plan_bootstrap(admin_password)
+        create_service_project_cmd = plan_create_service_project(admin_password)
+        query_project_list_cmd = plan_project_list(admin_password)
 
         notes += [
             "Both configuration files are edited after 'apt-get install --yes keystone' and "
             "before 'keystone-manage db_sync' and 'systemctl restart apache2'.",
             SQL_STDIN_NOTE,
             DB_SYNC_NOTE,
-            BOOTSTRAP_PS_NOTE,
+            BOOTSTRAP_ENV_NOTE,
             PACKAGE_NOTE,
-            SCOPE_NOTE,
+            USERS_AND_OPENRC_NOTE,
             "apt-get install downloads from the configured apt sources (network).",
         ]
         return StepPreview(
@@ -531,25 +765,31 @@ class KeystoneStep:
                 RUN_CREDENTIAL_SETUP,
                 bootstrap_cmd,
                 RESTART_APACHE2,
+                create_service_project_cmd,
             ),
             read_only_commands=(
                 QUERY_KEYSTONE_PACKAGE,
                 QUERY_APACHE2_ACTIVE,
                 QUERY_MARIADB_STATE,
+                query_project_list_cmd,
             ),
             notes=tuple(notes),
         )
 
     def check(self) -> bool:
-        """True if secrets, files, keys, package, Apache, and MariaDB state are ready."""
+        """True if secrets, files, keys, package, Apache, MariaDB, and 'service' are ready."""
         try:
-            db_password, _admin_password = _load_keystone_secrets(self.root)
+            db_password, admin_password = _load_keystone_secrets(self.root)
         except PreconditionError:
             return False
         try:
             if edit_keystone_conf(self.root, db_password, dry_run=True).changed:
                 return False
             if edit_apache2_conf(self.root, dry_run=True).changed:
+                return False
+            if write_admin_openrc(self.root, admin_password, dry_run=True).changed:
+                return False
+            if verify_admin_openrc(self.root, admin_password):
                 return False
             if verify_keystone_key_repositories(self.root):
                 return False
@@ -559,10 +799,13 @@ class KeystoneStep:
             return False
         if unit_active_problems(self.executor, APACHE2_UNIT):
             return False
-        return service_database_ready(self.executor, (KEYSTONE_DB_NAME,), KEYSTONE_DB_USER)
+        if not service_database_ready(self.executor, (KEYSTONE_DB_NAME,), KEYSTONE_DB_USER):
+            return False
+        return service_project_ready(self.executor, admin_password)
 
     def apply(self) -> None:
-        """Provision MariaDB, install keystone, edit configs, sync/setup/bootstrap, restart."""
+        """Provision MariaDB, install keystone, edit configs, sync/setup/bootstrap, restart,
+        ensure the 'service' project, and write /etc/openstack-forge/admin-openrc."""
         db_password, admin_password = _load_keystone_secrets(self.root)
         provision_service_database(
             self.executor, (KEYSTONE_DB_NAME,), KEYSTONE_DB_USER, db_password
@@ -575,13 +818,17 @@ class KeystoneStep:
         self.executor.run(RUN_CREDENTIAL_SETUP.command_id, RUN_CREDENTIAL_SETUP.params)
         self.executor.run(KEYSTONE_MANAGE_BOOTSTRAP, {"password": admin_password})
         self.executor.run(RESTART_APACHE2.command_id, RESTART_APACHE2.params)
+        ensure_service_project(self.executor, admin_password)
+        write_admin_openrc(self.root, admin_password, dry_run=False)
 
     def verify(self) -> VerifyResult:
-        """Verify secrets, files, Fernet/credential keys, package, Apache, and MariaDB state."""
+        """Verify secrets, files, Fernet/credential keys, package, Apache, MariaDB, and
+        the Keystone 'service' project."""
         problems: list[str] = []
         db_password: str | None = None
+        admin_password: str | None = None
         try:
-            db_password, _admin_password = _load_keystone_secrets(self.root)
+            db_password, admin_password = _load_keystone_secrets(self.root)
         except PreconditionError as exc:
             problems.append(str(exc))
 
@@ -606,6 +853,11 @@ class KeystoneStep:
             problems += verify_apache2_conf_text(apache_text)
 
         try:
+            problems += verify_admin_openrc(self.root, admin_password)
+        except (UnsafePathError, FileFormatError) as exc:
+            return VerifyResult(False, f"{exc}. {NOT_CHECKED}")
+
+        try:
             problems += verify_keystone_key_repositories(self.root)
         except UnsafePathError as exc:
             return VerifyResult(False, f"{exc}. {NOT_CHECKED}")
@@ -614,6 +866,8 @@ class KeystoneStep:
             problems.append(f"{KEYSTONE_PACKAGE} is not installed")
         problems += unit_active_problems(self.executor, APACHE2_UNIT)
         problems += service_database_problems(self.executor, (KEYSTONE_DB_NAME,), KEYSTONE_DB_USER)
+        if admin_password is not None:
+            problems += service_project_problems(self.executor, admin_password)
 
         if problems:
             return VerifyResult(False, f"{'; '.join(problems)}. {NOT_CHECKED}")
@@ -621,9 +875,11 @@ class KeystoneStep:
             True,
             f"{KEYSTONE_PACKAGE} is installed; {keystone_display} sets [database] connection "
             f"and [token] provider = fernet; {apache_display} sets '{APACHE2_SERVER_NAME_LINE}'; "
+            f"{ADMIN_OPENRC_TARGET} is present (0600); "
             f"{FERNET_KEYS_TARGET} and {CREDENTIAL_KEYS_TARGET} are initialized; MariaDB "
             f"database {KEYSTONE_DB_NAME!r} and grants for {KEYSTONE_DB_USER!r} exist; "
-            f"{APACHE2_UNIT} is active. {NOT_CHECKED}",
+            f"{APACHE2_UNIT} is active; Keystone project {SERVICE_PROJECT_NAME!r} exists. "
+            f"{NOT_CHECKED}",
         )
 
 

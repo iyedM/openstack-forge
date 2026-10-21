@@ -113,7 +113,7 @@ All steps are **unverified**.
 | `rabbitmq` | controller | none listed | [Message queue for Ubuntu](https://docs.openstack.org/install-guide/environment-messaging-ubuntu.html) |
 | `memcached` | controller | `/etc/memcached.conf` | [Memcached for Ubuntu](https://docs.openstack.org/install-guide/environment-memcached-ubuntu.html) |
 | `etcd` | controller | `/etc/default/etcd` | [Etcd for Ubuntu](https://docs.openstack.org/install-guide/environment-etcd-ubuntu.html) |
-| `keystone` | controller | `/etc/keystone/keystone.conf`, `/etc/apache2/apache2.conf` | [Keystone for Ubuntu (2025.1)](https://docs.openstack.org/keystone/2025.1/install/keystone-install-ubuntu.html) |
+| `keystone` | controller | `/etc/keystone/keystone.conf`, `/etc/apache2/apache2.conf`, `/etc/openstack-forge/admin-openrc` | [Keystone for Ubuntu (2025.1)](https://docs.openstack.org/keystone/2025.1/install/keystone-install-ubuntu.html) |
 
 The `depends_on` chain follows the order of the "Environment" chapter of the installation
 guide and the Keystone 2025.1 guide, and is itself unverified:

@@ -2,9 +2,9 @@
 
 `openstack_forge.execution` contains the confined file-editing primitives, redaction helper,
 secrets store, state store, step engine, an allowlisted command layer, a reusable MariaDB
-SQL provisioning brick, and nine implemented deployment steps: `hosts-file`,
-`time-sync-controller`, `time-sync-other`, `openstack-packages`, `mariadb`, `rabbitmq`,
-`memcached`, `etcd`, and `keystone`.
+SQL provisioning brick, a reusable `/usr/bin/openstack` CLI provisioning brick, and nine
+implemented deployment steps: `hosts-file`, `time-sync-controller`, `time-sync-other`,
+`openstack-packages`, `mariadb`, `rabbitmq`, `memcached`, `etcd`, and `keystone`.
 
 **All nine steps are marked `unverified` in the step catalog, and none has ever run on a
 real host.** Every other catalog step is rejected as "not implemented" by
@@ -18,9 +18,9 @@ root. [`time-sync-controller`](#step-time-sync-controller-openstack_forgeexecuti
 [`etcd`](#step-etcd-openstack_forgeexecutionetcd),
 and [`keystone`](#step-keystone-openstack_forgeexecutionkeystone)
 run system commands (`apt-get`, `add-apt-repository`, `apt-cache`, `systemctl`,
-`dpkg-query`, `rabbitmqctl`, `mariadb`, `keystone-manage`), only through the
-[command execution layer](#command-execution-layer), whose registry contains exactly twenty
-reviewed commands. Nothing uses `sudo` or `su`.
+`dpkg-query`, `rabbitmqctl`, `mariadb`, `keystone-manage`, `openstack`), only through the
+[command execution layer](#command-execution-layer), whose registry contains exactly
+thirty-one reviewed commands. Nothing uses `sudo` or `su`.
 
 **Network:** OpenStack Forge's Python code opens no network connection. Some of the
 commands it runs do: `apt-get update`, `apt-get install` and `add-apt-repository` download
@@ -317,9 +317,12 @@ OpenStack passwords (`SECRET_SPECS` / `SECRET_NAMES`):
        `^[A-Z][A-Z0-9_]*$` and forbidden from colliding with `SANITIZED_ENV` keys `PATH`,
        `LC_ALL`, `LANG`, `DEBIAN_FRONTEND`). On Linux, `/proc/<pid>/environ` is readable only
        by the same user and `root`, unlike `/proc/<pid>/cmdline` (`ps`) which is
-       world-readable by default. No spec in `DEFAULT_REGISTRY` uses `env_params` yet.
+       world-readable by default. Used by `keystone-manage.bootstrap`
+       (`OS_BOOTSTRAP_PASSWORD`) and all 11 `openstack.*` commands (`OS_PASSWORD`).
     3. `argv` placeholder with `sensitive_params` / type `"secret"`: used only when an
-       external tool offers no `stdin`, environment variable, or `0600` file option.
+       external tool offers no `stdin`, environment variable, or `0600` file option (for
+       example `rabbitmqctl add_user` / `change_password` and the target service user's
+       `--password {user_password}` in `openstack user create` / `openstack user set`).
   - When an external tool only accepts a password as a command-line argument in `argv` (for
     example `rabbitmqctl add_user openstack RABBIT_PASS` and
     `rabbitmqctl change_password openstack RABBIT_PASS`), any local user on the machine can
@@ -415,7 +418,7 @@ locking against two engines sharing a state file, and no timeout around a step's
 `openstack_forge.execution.commands` (with `audit.py`) is the only code in the project that
 may start a process on behalf of a deployment step. It exists so that steps (for example
 installing a package or restarting a service) have one reviewed path for doing so.
-`DEFAULT_REGISTRY` contains exactly the twenty reviewed commands below, and a test pins
+`DEFAULT_REGISTRY` contains exactly the thirty-one reviewed commands below, and a test pins
 their argv, parameter types, exit codes and `mutates` flags, so adding or changing one is a
 deliberate edit. The tests only ever run harmless `sys.executable` one-liners; everything
 else uses a fake backend.
@@ -441,13 +444,25 @@ else uses a fake backend.
 | `keystone-manage.db-sync` | `/usr/bin/keystone-manage db_sync` | yes | no | 0 | Guide (`keystone-install-ubuntu.html`): `keystone-manage db_sync` (`dpkg -S`: `python3-keystone: /usr/bin/keystone-manage`). Invoked directly as `root` instead of `su -s /bin/sh -c ...` because `CommandSpec` forbids `su`. Timeout 300 s. |
 | `keystone-manage.fernet-setup` | `/usr/bin/keystone-manage fernet_setup --keystone-user keystone --keystone-group keystone` | yes | no | 0 | Guide (`keystone-install-ubuntu.html`): initializes `/etc/keystone/fernet-keys` owned by `keystone:keystone` (`FernetUtils.initialize_key_repository` is idempotent if key `0` exists). Timeout 60 s. |
 | `keystone-manage.credential-setup` | `/usr/bin/keystone-manage credential_setup --keystone-user keystone --keystone-group keystone` | yes | no | 0 | Guide (`keystone-install-ubuntu.html`): initializes `/etc/keystone/credential-keys` owned by `keystone:keystone`. Timeout 60 s. |
-| `keystone-manage.bootstrap` | `/usr/bin/keystone-manage bootstrap --bootstrap-password {password} --bootstrap-admin-url http://controller:5000/v3/ --bootstrap-internal-url http://controller:5000/v3/ --bootstrap-public-url http://controller:5000/v3/ --bootstrap-region-id RegionOne` | yes | no | 0 | Guide (`keystone-install-ubuntu.html`): idempotently bootstraps the `Default` domain, `admin` project/user/role, `RegionOne`, and `http://controller:5000/v3/` endpoints (`password` is type `secret`, masked everywhere). Timeout 120 s. |
+| `keystone-manage.bootstrap` | `/usr/bin/keystone-manage bootstrap --bootstrap-admin-url http://controller:5000/v3/ --bootstrap-internal-url http://controller:5000/v3/ --bootstrap-public-url http://controller:5000/v3/ --bootstrap-region-id RegionOne` (`env_params={"password": "OS_BOOTSTRAP_PASSWORD"}`) | yes | no | 0 | Guide (`keystone-install-ubuntu.html`) + `/usr/lib/python3/dist-packages/keystone/cmd/cli.py`: `BootStrap.do_bootstrap()` reads `os.environ.get('OS_BOOTSTRAP_PASSWORD') or CONF.command.bootstrap_password`, so `ADMIN_PASS` is delivered via `OS_BOOTSTRAP_PASSWORD` in `/proc/<pid>/environ` (never `argv`). Timeout 120 s. |
+| `openstack.project-list` | `/usr/bin/openstack ... project list --domain default -f json` (`env_params={"admin_password": "OS_PASSWORD"}`) | no | no (local controller `http://controller:5000/v3`) | 0 | `python3-openstackclient`: lists projects in the `default` domain as JSON (`ID`, `Name`). Timeout 30 s. |
+| `openstack.project-create-service` | `/usr/bin/openstack ... project create --domain default --description "Service Project" service -f json` (`env_params={"admin_password": "OS_PASSWORD"}`) | yes | no (local controller) | 0 | Guide (`keystone-users-ubuntu.html`): `openstack project create --domain default --description "Service Project" service`. Timeout 60 s. |
+| `openstack.user-list` | `/usr/bin/openstack ... user list --domain default -f json` (`env_params={"admin_password": "OS_PASSWORD"}`) | no | no (local controller) | 0 | `python3-openstackclient`: lists users in the `default` domain as JSON (`ID`, `Name`). Timeout 30 s. |
+| `openstack.user-create` | `/usr/bin/openstack ... user create --domain default --password {user_password} {username} -f json` (`env_params={"admin_password": "OS_PASSWORD"}`) | yes | no (local controller) | 0 | Guide (`glance`/`placement`/`nova`/`neutron`/`cinder` install pages): `openstack user create --domain default --password-prompt <user>` (`--password-prompt` requires `stdin.isatty()`, so `--password {user_password}` is used non-interactively). Timeout 60 s. |
+| `openstack.user-set-password` | `/usr/bin/openstack ... user set --domain default --password {user_password} {username}` (`env_params={"admin_password": "OS_PASSWORD"}`) | yes | no (local controller) | 0 | `python3-openstackclient` (`SetUser`): converges the service user's password when `apply()` runs and the user already exists. Timeout 60 s. |
+| `openstack.role-assignment-list` | `/usr/bin/openstack ... role assignment list --user {username} --user-domain default --project {project} --project-domain default --names -f json` (`env_params={"admin_password": "OS_PASSWORD"}`) | no | no (local controller) | 0 | `python3-openstackclient` (`ListRoleAssignment`): lists role assignments (`Role`, `User`, `Project`) as JSON. Timeout 30 s. |
+| `openstack.role-add-user-project` | `/usr/bin/openstack ... role add --project {project} --project-domain default --user {username} --user-domain default {role}` (`env_params={"admin_password": "OS_PASSWORD"}`) | yes | no (local controller) | 0 | Guide (`glance`/`placement`/`nova`/`neutron`/`cinder` install pages): `openstack role add --project service --user <user> admin` (idempotent in Keystone v3 `PUT`, checked first via `role-assignment-list`). Timeout 60 s. |
+| `openstack.service-list` | `/usr/bin/openstack ... service list -f json` (`env_params={"admin_password": "OS_PASSWORD"}`) | no | no (local controller) | 0 | `python3-openstackclient`: lists catalog services (`ID`, `Name`, `Type`) as JSON. Timeout 30 s. |
+| `openstack.service-create` | `/usr/bin/openstack ... service create --name {service_name} {service_type} -f json` (`env_params={"admin_password": "OS_PASSWORD"}`) | yes | no (local controller) | 0 | Guide (`glance`/`placement`/`nova`/`neutron`/`cinder` install pages): `openstack service create --name <name> --description ... <type>` (`--description` omitted so multi-word prose never flows through parameter validation; checked first via `service-list` to avoid duplicate UUIDs). Timeout 60 s. |
+| `openstack.endpoint-list` | `/usr/bin/openstack ... endpoint list -f json` (`env_params={"admin_password": "OS_PASSWORD"}`) | no | no (local controller) | 0 | `python3-openstackclient`: lists catalog endpoints (`ID`, `Region`, `Service Name`, `Service Type`, `Enabled`, `Interface`, `URL`) as JSON. Timeout 30 s. |
+| `openstack.endpoint-create` | `/usr/bin/openstack ... endpoint create --region RegionOne {service_type} {interface} {url} -f json` (`env_params={"admin_password": "OS_PASSWORD"}`) | yes | no (local controller) | 0 | Guide (`glance`/`placement`/`nova`/`neutron`/`cinder` install pages): `openstack endpoint create --region RegionOne <type> public|internal|admin <url>` (checked first via `endpoint-list` to avoid duplicate UUIDs). Timeout 60 s. |
 
 Each path is the one installed on Ubuntu 24.04 by the package named by `dpkg -S`: `apt`
 (`apt-get`, `apt-cache`), `software-properties-common` (`add-apt-repository`), `systemd`,
 `dpkg`, `rabbitmq-server` (`/usr/sbin/rabbitmqctl`), `mariadb-client-core`
-(`/usr/bin/mariadb`), and `python3-keystone` (`/usr/bin/keystone-manage`); `PATH` is never
-searched. No other
+(`/usr/bin/mariadb`), `python3-keystone` (`/usr/bin/keystone-manage`), and
+`python3-openstackclient` (`/usr/bin/openstack`, installed via `update-alternatives` from
+`/usr/bin/python3-openstack`); `PATH` is never searched. No other
 apt or dpkg option is used: in particular no `--force-*`, no `-o Dpkg::Options`, no lock
 timeout, and no `upgrade`, `dist-upgrade` or `reboot` command exists in the registry. A
 configuration file prompt from dpkg therefore makes the command fail (stdin is `/dev/null`)
@@ -496,6 +511,9 @@ Every value must be a string and is checked **before** anything runs or is logge
 | `absolute_path` | `/`-separated segments of `[A-Za-z0-9._@+-]`, no empty, `.` or `..` segment |
 | `secret` | `[A-Za-z0-9]{32,256}`, marked sensitive automatically |
 | `sql_stdin` | `[\x20-\x7e\n]{1,4096}` (printable ASCII plus LF only; no CR, NUL or tabs), **permitted only when declared as `stdin_param`** (never in `argv` or `env_params`), marked sensitive automatically |
+| `openstack_name` | `[a-z][a-z0-9_-]{0,63}`, e.g. `service`, `glance`, `compute`, `volumev3` |
+| `endpoint_interface` | `public`, `internal`, or `admin` |
+| `endpoint_url` | `http://controller:<port>[/<path>]` where `<port>` is 1–65535 and optional `/<path>` uses `[A-Za-z0-9._/-]` with no `..` or `//` (also permits the literal `%\(tenant_id\)s` token for Cinder v3 if needed) |
 
 Missing or unexpected parameters are errors too. For sensitive parameters (including types
 `secret` and `sql_stdin`), `ParameterError` masks the rejected value as `'********'`. There
@@ -989,12 +1007,79 @@ section that creates one or more MariaDB databases and grants `ALL PRIVILEGES` t
   plugin by default, so `/usr/bin/mariadb` run as effective UID 0 connects over the local
   Unix socket without a root password.
 
+## Reusable `/usr/bin/openstack` CLI provisioning brick (`openstack_forge.execution.openstack_cli`)
+
+Every OpenStack controller service after Keystone (Glance, Placement, Nova, Neutron,
+Cinder) provisions its Keystone identity resources through `/usr/bin/openstack`
+(`python3-openstackclient`):
+
+1. Create the shared `service` project (`keystone-users-ubuntu.html`):
+   `openstack project create --domain default --description "Service Project" service`
+2. Create the service user and assign the `admin` role in the `service` project:
+   - `openstack user create --domain default --password-prompt <service>`
+   - `openstack role add --project service --user <service> admin`
+3. Create the service entity and its three `RegionOne` endpoints (`public`, `internal`,
+   `admin`):
+   - `openstack service create --name <name> --description "<desc>" <type>`
+   - `openstack endpoint create --region RegionOne <type> public <url>`
+   - `openstack endpoint create --region RegionOne <type> internal <url>`
+   - `openstack endpoint create --region RegionOne <type> admin <url>`
+
+Established on an Ubuntu 24.04 development machine with read-only commands
+(`python3-openstackclient` `7.4.0-0ubuntu1~cloud0` in `noble-updates/epoxy/main`):
+
+- `/usr/bin/openstack` is a symlink managed by `update-alternatives` in
+  `python3-openstackclient.postinst` (`/usr/bin/openstack -> /etc/alternatives/openstack ->
+  /usr/bin/python3-openstack`, owned by `python3-openstackclient`).
+- Every `openstack.*` `CommandSpec` authenticates as `admin` against
+  `http://controller:5000/v3` using fixed literal arguments (`--os-project-domain-name
+  Default --os-user-domain-name Default --os-project-name admin --os-username admin
+  --os-auth-url http://controller:5000/v3 --os-identity-api-version 3`) and passes
+  `ADMIN_PASS` via `env_params={"admin_password": "OS_PASSWORD"}`. `ADMIN_PASS` therefore
+  never appears in `argv` or `/proc/<pid>/cmdline` (`ps`).
+- **Why `--password-prompt` cannot be used with `stdin_param`:** inspection of
+  `/usr/lib/python3/dist-packages/openstackclient/identity/v3/user.py` (`CreateUser`,
+  `SetUser`) and `/usr/lib/python3/dist-packages/osc_lib/utils/__init__.py`
+  (`get_password`, lines 562–580) shows that `--password-prompt` checks `stdin.isatty()` and
+  raises `CommandError("No terminal detected attempting to read password")` when `stdin` is
+  a pipe (`subprocess.PIPE`), and `python-openstackclient` provides no environment variable
+  for the target user's password (`OS_PASSWORD` is the authenticating admin's password).
+  Therefore `openstack.user-create` and `openstack.user-set-password` pass `--password
+  {user_password}` (`"secret"`) in `argv` (masked as `********` everywhere by OpenStack
+  Forge, though visible in `/proc/<pid>/cmdline` for the duration of that subcommand), while
+  `ADMIN_PASS` stays in `OS_PASSWORD` (`env_params`).
+- **Idempotence and avoiding duplicate UUIDs in Keystone v3:**
+  - `ensure_service_project(executor, admin_password)`: runs `openstack.project-list` (`-f
+    json`) first; creates `service` only if absent (`409 Conflict` if called twice), and
+    raises `ExecutionError` if duplicate `service` projects exist.
+  - `ensure_service_user(executor, admin_password, username, user_password)`: runs
+    `openstack.user-list` (`-f json`) first; runs `openstack.user-create` if absent or
+    `openstack.user-set-password` if already present (converging the password to
+    `secrets.json`); then runs `openstack.role-assignment-list` (`--names -f json`, parsing
+    both `"<name>@Default"` and `"<name>"`) and runs `openstack.role-add-user-project` only
+    if the `admin` role is not yet assigned.
+  - `ensure_service_catalog(executor, admin_password, service_name, service_type, url)`:
+    Keystone v3 `POST /v3/services` and `POST /v3/endpoints` do **not** enforce uniqueness
+    and create duplicate entries with new UUIDs if `service create` or `endpoint create` is
+    run unconditionally on a rerun. `ensure_service_catalog()` always queries
+    `openstack.service-list` and `openstack.endpoint-list` (`-f json`) first, creates only
+    what is missing, and fails with `ExecutionError` if duplicates, a disabled service or
+    endpoint, a type mismatch, or a URL mismatch already exist.
+
 ## Step: `keystone` (`openstack_forge.execution.keystone`)
 
-**Unverified, and never run on a real host.** Source:
-<https://docs.openstack.org/keystone/2025.1/install/keystone-install-ubuntu.html> (raw
-source: `doc/source/install/keystone-install-ubuntu.rst` on `stable/2025.1` in
-`openstack/keystone`), which prescribes for Ubuntu:
+**Unverified, and never run on a real host.** Sources:
+
+- <https://docs.openstack.org/keystone/2025.1/install/keystone-install-ubuntu.html>
+  (`doc/source/install/keystone-install-ubuntu.rst`)
+- <https://docs.openstack.org/keystone/2025.1/install/keystone-users-ubuntu.html>
+  (`doc/source/install/common/keystone-users.inc`)
+- <https://docs.openstack.org/keystone/2025.1/install/keystone-verify-ubuntu.html>
+  (`doc/source/install/keystone-verify-ubuntu.rst`)
+- <https://docs.openstack.org/keystone/2025.1/install/keystone-openrc-ubuntu.html>
+  (`doc/source/install/common/keystone-openrc.inc`)
+
+Together these four pages prescribe for Ubuntu:
 
 1. Prerequisites — create the `keystone` MariaDB database and grant `ALL PRIVILEGES ON
    keystone.*` to `'keystone'@'localhost'` and `'keystone'@'%'` identified by
@@ -1011,15 +1096,22 @@ source: `doc/source/install/keystone-install-ubuntu.rst` on `stable/2025.1` in
 6. Bootstrap the Identity service:
    `keystone-manage bootstrap --bootstrap-password ADMIN_PASS --bootstrap-admin-url http://controller:5000/v3/ --bootstrap-internal-url http://controller:5000/v3/ --bootstrap-public-url http://controller:5000/v3/ --bootstrap-region-id RegionOne`;
 7. Edit `/etc/apache2/apache2.conf` to configure `ServerName controller`;
-8. Restart the Apache service (`service apache2 restart`).
+8. Restart the Apache service (`service apache2 restart`);
+9. Create the `service` project (`keystone-users-ubuntu.html`):
+   `openstack project create --domain default --description "Service Project" service`
+   (the demo `mydomain`/`myproject`/`myuser`/`myrole` examples on that page are
+   explicitly omitted);
+10. Write the administrative client environment script (`keystone-openrc-ubuntu.html`),
+    written to `/etc/openstack-forge/admin-openrc` (parent directory mode `0700`, file mode
+    `0600`, no `.orig` backup).
 
 It runs only on the controller (constructing it for another role raises `ExecutionError`).
 
 | Phase | What happens |
 | ----- | ------------ |
-| `check()` | Pure first (runs zero external commands if any fails): `KEYSTONE_DBPASS` and `ADMIN_PASS` must exist in `SecretStore(root)`; `/etc/keystone/keystone.conf` and `/etc/apache2/apache2.conf` must exist and need no edit; and `/etc/keystone/fernet-keys/0` and `/etc/keystone/credential-keys/0` must exist and be non-empty. Otherwise `True` only if, in order: `dpkg-query --status keystone` reports it installed, `systemctl is-active apache2` prints `active`, and `mariadb.query-sql` confirms the `keystone` database and `'keystone'@'localhost'` + `'keystone'@'%'` grants exist. |
-| `apply()` | Precondition: loads `KEYSTONE_DBPASS` and `ADMIN_PASS` from `SecretStore(root)` (`PreconditionError` telling the operator to run `openstack-forge secrets init`). Then provisions the `keystone` MariaDB database and grants via `mariadb.execute-sql` (`stdin`); runs `apt-get install --yes keystone`; edits `/etc/keystone/keystone.conf` (`ini_set_many`) and `/etc/apache2/apache2.conf` (`disable_lines_and_set_block`); runs `keystone-manage db_sync`, `keystone-manage fernet_setup --keystone-user keystone --keystone-group keystone`, `keystone-manage credential_setup --keystone-user keystone --keystone-group keystone`, and `keystone-manage bootstrap ...`; then runs `systemctl restart apache2`. |
-| `verify()` | Checks `KEYSTONE_DBPASS` and `ADMIN_PASS` in `SecretStore(root)`, `/etc/keystone/keystone.conf` (`[database] connection` and `[token] provider = fernet`), `/etc/apache2/apache2.conf` (`ServerName controller` in the managed block with no active `ServerName` outside it), `/etc/keystone/fernet-keys/0` and `/etc/keystone/credential-keys/0`, `keystone` installed, `apache2` active, and the `keystone` MariaDB database and grants. |
+| `check()` | Pure first (runs zero external commands if any fails): `KEYSTONE_DBPASS` and `ADMIN_PASS` must exist in `SecretStore(root)`; `/etc/keystone/keystone.conf` and `/etc/apache2/apache2.conf` must exist and need no edit; `/etc/openstack-forge/admin-openrc` must exist with mode `0600` (and parent mode `0700`) and match the rendered `ADMIN_PASS` script; and `/etc/keystone/fernet-keys/0` and `/etc/keystone/credential-keys/0` must exist and be non-empty. Otherwise `True` only if, in order: `dpkg-query --status keystone` reports it installed, `systemctl is-active apache2` prints `active`, `mariadb.query-sql` confirms the `keystone` database and `'keystone'@'localhost'` + `'keystone'@'%'` grants exist, and `openstack.project-list` confirms the `service` project exists in the `default` domain (which also verifies `/v3` token authentication against `http://controller:5000/v3` as `admin`). |
+| `apply()` | Precondition: loads `KEYSTONE_DBPASS` and `ADMIN_PASS` from `SecretStore(root)` (`PreconditionError` telling the operator to run `openstack-forge secrets init`). Then provisions the `keystone` MariaDB database and grants via `mariadb.execute-sql` (`stdin`); runs `apt-get install --yes keystone`; edits `/etc/keystone/keystone.conf` (`ini_set_many`) and `/etc/apache2/apache2.conf` (`disable_lines_and_set_block`); runs `keystone-manage db_sync`, `keystone-manage fernet_setup --keystone-user keystone --keystone-group keystone`, `keystone-manage credential_setup --keystone-user keystone --keystone-group keystone`, and `keystone-manage bootstrap ...` (`OS_BOOTSTRAP_PASSWORD` via `env_params`); runs `systemctl restart apache2`; ensures the `service` project exists (`ensure_service_project`: `openstack.project-list` then `openstack.project-create-service` if missing, `OS_PASSWORD` via `env_params`); and writes `/etc/openstack-forge/admin-openrc` (mode `0600`, parent `0700`, no `.orig` backup). |
+| `verify()` | Checks `KEYSTONE_DBPASS` and `ADMIN_PASS` in `SecretStore(root)`, `/etc/keystone/keystone.conf` (`[database] connection` and `[token] provider = fernet`), `/etc/apache2/apache2.conf` (`ServerName controller` in the managed block with no active `ServerName` outside it), `/etc/openstack-forge/admin-openrc` (content, mode `0600`, parent mode `0700`), `/etc/keystone/fernet-keys/0` and `/etc/keystone/credential-keys/0`, `keystone` installed, `apache2` active, the `keystone` MariaDB database and grants, and the `service` project in Keystone via `openstack.project-list` (authenticating over HTTP `/v3` against `http://controller:5000/v3` as `admin`). |
 
 Established on an Ubuntu 24.04 development machine with read-only commands:
 
@@ -1046,9 +1138,12 @@ Established on an Ubuntu 24.04 development machine with read-only commands:
   - `FernetUtils.initialize_key_repository()` is idempotent (returns immediately with exit 0
     if key `0` already exists, and otherwise creates keys `0` and `1` owned by
     `--keystone-user` / `--keystone-group` with `umask(0o177)`);
-  - `Bootstrapper.bootstrap()` is idempotent (ensures the `Default` domain, `admin` project,
-    default roles, role assignments, `RegionOne`, and `http://controller:5000/v3/`
-    `identity` endpoints, and creates or updates the `admin` user password).
+  - `BootStrap.do_bootstrap()` in `/usr/lib/python3/dist-packages/keystone/cmd/cli.py`
+    (lines 64–235) reads `self.password = os.environ.get('OS_BOOTSTRAP_PASSWORD') or
+    CONF.command.bootstrap_password`, and `Bootstrapper.bootstrap()` is idempotent (ensures
+    the `Default` domain, `admin` project, default roles, role assignments, `RegionOne`, and
+    `http://controller:5000/v3/` `identity` endpoints, and creates or updates the `admin`
+    user password).
 
 Deviations, trade-offs, and scope boundary:
 
@@ -1064,17 +1159,23 @@ Deviations, trade-offs, and scope boundary:
   `ServerName controller` / `# END openstack-forge keystone-apache` while commenting out any
   active `ServerName` lines outside the block so no earlier `ServerName` directive conflicts
   with it.
-- **Password delivery and `/proc/<pid>/cmdline` (`ps`) exposure:** `KEYSTONE_DBPASS` is sent
-  to `/usr/bin/mariadb` over `stdin` and written to `/etc/keystone/keystone.conf`, so it
-  never appears in `argv`. `ADMIN_PASS` is passed in `argv` to `keystone-manage bootstrap
-  --bootstrap-password {password}` as on the guide page (masked as `********` everywhere by
-  OpenStack Forge, but readable in `/proc/<pid>/cmdline` (`ps`) by local users on the host
-  for the duration of the command).
+- **Zero password exposure in `argv` (`ps`) during the `keystone` step:** `KEYSTONE_DBPASS`
+  is sent to `/usr/bin/mariadb` over `stdin` (`stdin_param="sql"`) and written to
+  `/etc/keystone/keystone.conf`. `ADMIN_PASS` is passed to `keystone-manage bootstrap` via
+  `env_params={"password": "OS_BOOTSTRAP_PASSWORD"}` and to `/usr/bin/openstack` via
+  `env_params={"admin_password": "OS_PASSWORD"}` (stored in `/proc/<pid>/environ`, readable
+  only by `root`), and written to `/etc/openstack-forge/admin-openrc` (mode `0600`). Neither
+  `KEYSTONE_DBPASS` nor `ADMIN_PASS` ever appears in `argv` or `/proc/<pid>/cmdline` (`ps`)
+  during the `keystone` step.
 - **Scope boundary (`keystone-users-ubuntu.html` and `keystone-openrc-ubuntu.html`):**
-  creating the `service` project and non-admin domain/project/user/role and writing
-  `admin-openrc` / `demo-openrc` belong to the next milestone, not this step.
-- **What `verify()` does not check:** no HTTP `/v3` token request against
-  `http://controller:5000/v3/` is performed, and the SQL schema version from `db_sync` and
-  bootstrap catalog rows inside the `keystone` database are not queried directly.
+  only the `service` project required by OpenStack services and
+  `/etc/openstack-forge/admin-openrc` (mode `0600`, no `.orig` backup) are created; the guide's
+  illustrative `mydomain`, `myproject`, `myuser`, `myrole`, and `demo-openrc` examples are
+  omitted.
+- **What `verify()` checks and does not check:** `verify()` runs `openstack.project-list`
+  against `http://controller:5000/v3` as `admin`, which exercises live HTTP `/v3` token
+  issuance and confirms the `service` project exists in the `default` domain; the SQL schema
+  version from `db_sync` is not queried directly.
+
 
 

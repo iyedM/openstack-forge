@@ -97,12 +97,32 @@ def _is_clean_absolute_path(value: str) -> bool:
 
 
 MAX_SQL_STDIN_LENGTH = 4096
+_ENDPOINT_URL_RE = re.compile(
+    r"https?://(?P<host>[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?)"
+    r":(?P<port>[1-9][0-9]{0,4})(?P<path>(?:/[A-Za-z0-9._-]+)*/?)"
+)
 
 
 def _is_valid_sql_stdin(value: str) -> bool:
     if not (1 <= len(value) <= MAX_SQL_STDIN_LENGTH):
         return False
     return all(char == "\n" or (" " <= char <= "~") for char in value)
+
+
+def _is_valid_endpoint_url(value: str) -> bool:
+    match = _ENDPOINT_URL_RE.fullmatch(value)
+    if match is None:
+        return False
+    port = int(match["port"])
+    if not (1 <= port <= 65535):
+        return False
+    host = match["host"]
+    if ".." in host or any(
+        not label or label.startswith("-") or label.endswith("-") for label in host.split(".")
+    ):
+        return False
+    path = match["path"]
+    return all(part not in (".", "..") for part in path.split("/") if part)
 
 
 PARAM_TYPES: Mapping[str, ParamType] = {
@@ -150,6 +170,22 @@ PARAM_TYPES: Mapping[str, ParamType] = {
             re.compile(r"[\x20-\x7e\n]{1,4096}"),
             "printable ASCII SQL statements separated by LF (at most 4096 characters)",
             extra_check=_is_valid_sql_stdin,
+        ),
+        ParamType(
+            "openstack_name",
+            re.compile(r"[a-z][a-z0-9_-]{0,62}"),
+            'an OpenStack resource name or type such as "service", "glance", or "image"',
+        ),
+        ParamType(
+            "endpoint_interface",
+            re.compile(r"public|internal|admin"),
+            'an OpenStack endpoint interface ("public", "internal", or "admin")',
+        ),
+        ParamType(
+            "endpoint_url",
+            _ENDPOINT_URL_RE,
+            'an HTTP(S) endpoint URL such as "http://controller:9292" or "http://controller:8774/v2.1"',
+            extra_check=_is_valid_endpoint_url,
         ),
     )
 }
@@ -211,8 +247,8 @@ class CommandSpec:
       ``^[A-Z][A-Z0-9_]*$`` and must not collide with :data:`SANITIZED_ENV` keys
       (``PATH``, ``LC_ALL``, ``LANG``, ``DEBIAN_FRONTEND``). On Linux, ``/proc/<pid>/environ``
       is readable only by the same user and ``root``, unlike ``/proc/<pid>/cmdline`` (``ps``)
-      which is world-readable by default. No spec in :data:`DEFAULT_REGISTRY` uses
-      ``env_params`` yet.
+      which is world-readable by default. Used by ``keystone-manage.bootstrap``
+      (``OS_BOOTSTRAP_PASSWORD``) and the ``openstack.*`` specs (``OS_PASSWORD``).
     - Process-table limitation: when an external tool only accepts a password in ``argv``
       (and cannot read it from ``stdin``, an environment variable, or a ``0600`` file), any
       local user on the machine can read ``argv`` from ``/proc/<pid>/cmdline`` (``ps``) for
@@ -462,6 +498,39 @@ KEYSTONE_MANAGE_DB_SYNC = "keystone-manage.db-sync"
 KEYSTONE_MANAGE_FERNET_SETUP = "keystone-manage.fernet-setup"
 KEYSTONE_MANAGE_CREDENTIAL_SETUP = "keystone-manage.credential-setup"
 KEYSTONE_MANAGE_BOOTSTRAP = "keystone-manage.bootstrap"
+OPENSTACK_PROJECT_LIST = "openstack.project-list"
+OPENSTACK_PROJECT_CREATE_SERVICE = "openstack.project-create-service"
+OPENSTACK_USER_LIST = "openstack.user-list"
+OPENSTACK_USER_CREATE = "openstack.user-create"
+OPENSTACK_USER_SET_PASSWORD = "openstack.user-set-password"
+OPENSTACK_ROLE_ASSIGNMENT_LIST = "openstack.role-assignment-list"
+OPENSTACK_ROLE_ADD_USER_PROJECT = "openstack.role-add-user-project"
+OPENSTACK_SERVICE_LIST = "openstack.service-list"
+OPENSTACK_SERVICE_CREATE = "openstack.service-create"
+OPENSTACK_ENDPOINT_LIST = "openstack.endpoint-list"
+OPENSTACK_ENDPOINT_CREATE = "openstack.endpoint-create"
+
+# Fixed literal admin authentication flags for /usr/bin/openstack (package
+# "python3-openstackclient", verified with `dpkg -S /usr/bin/openstack`).
+# The admin password is supplied via env_params={"admin_password": "OS_PASSWORD"} so no
+# shell sourcing of admin-openrc is needed and ADMIN_PASS never appears in argv.
+OPENSTACK_ADMIN_AUTH_ARGS: tuple[str, ...] = (
+    "/usr/bin/openstack",
+    "--os-auth-url",
+    "http://controller:5000/v3",
+    "--os-project-domain-name",
+    "Default",
+    "--os-user-domain-name",
+    "Default",
+    "--os-project-name",
+    "admin",
+    "--os-username",
+    "admin",
+    "--os-identity-api-version",
+    "3",
+    "--os-interface",
+    "internal",
+)
 
 APT_FAILURE_HINT = (
     "apt-get may have stopped part-way, leaving packages half-installed or "
@@ -509,6 +578,14 @@ KEYSTONE_MANAGE_FAILURE_HINT = (
     "'active', that 'controller' resolves in /etc/hosts ('hosts-file' step), and that "
     "/etc/keystone/keystone.conf has the expected [database] connection. OpenStack Forge "
     "does not attempt any automatic recovery."
+)
+
+OPENSTACK_CLI_FAILURE_HINT = (
+    "/usr/bin/openstack authenticates as 'admin' against the Keystone Identity API at "
+    "'http://controller:5000/v3': check that 'systemctl is-active apache2' is 'active', "
+    "that 'controller' resolves in /etc/hosts ('hosts-file' step), that the 'keystone' "
+    "step has been applied, and inspect /var/log/apache2/keystone.log (or "
+    "'journalctl -u apache2'). OpenStack Forge does not attempt any automatic recovery."
 )
 
 SYSTEM_COMMANDS: tuple[CommandSpec, ...] = (
@@ -816,16 +893,15 @@ SYSTEM_COMMANDS: tuple[CommandSpec, ...] = (
         #  --bootstrap-internal-url http://controller:5000/v3/
         #  --bootstrap-public-url http://controller:5000/v3/
         #  --bootstrap-region-id RegionOne".
-        # Idempotent by design (`keystone/cmd/bootstrap.py`): ensures Default domain, admin
-        # project, default roles, admin user (creating or updating password to ADMIN_PASS),
-        # RegionOne, and identity service endpoints. `{password}` is masked as `********`
-        # everywhere by OpenStack Forge, while remaining visible in `/proc/<pid>/cmdline` (ps)
-        # for the duration of the command.
+        # Verified in `/usr/lib/python3/dist-packages/keystone/cmd/cli.py` (lines 64-235):
+        # `BootStrap.do_bootstrap()` reads `os.environ.get('OS_BOOTSTRAP_PASSWORD') or
+        # CONF.command.bootstrap_password`. Passing `password` via
+        # `env_params={"password": "OS_BOOTSTRAP_PASSWORD"}` keeps `ADMIN_PASS` in
+        # `/proc/<pid>/environ` (readable only by root and the same uid) rather than in
+        # `argv` / `/proc/<pid>/cmdline` (`ps`).
         (
             "/usr/bin/keystone-manage",
             "bootstrap",
-            "--bootstrap-password",
-            "{password}",
             "--bootstrap-admin-url",
             "http://controller:5000/v3/",
             "--bootstrap-internal-url",
@@ -842,6 +918,231 @@ SYSTEM_COMMANDS: tuple[CommandSpec, ...] = (
             "Bootstrap the Keystone Identity service admin user, project, roles, and endpoints"
         ),
         failure_hint=KEYSTONE_MANAGE_FAILURE_HINT,
+        env_params={"password": "OS_BOOTSTRAP_PASSWORD"},
+    ),
+    CommandSpec(
+        OPENSTACK_PROJECT_LIST,
+        # /usr/bin/openstack (package "python3-openstackclient", verified with `dpkg -S`).
+        # `openstackclient/identity/v3/project.py` (`ListProject`): lists projects in domain
+        # `default` as JSON (`[{"ID": "...", "Name": "..."}]`). Also verifies live Keystone
+        # `/v3` HTTP API reachability and `admin` authentication (`keystone-verify-ubuntu.html`).
+        (*OPENSTACK_ADMIN_AUTH_ARGS, "project", "list", "--domain", "default", "-f", "json"),
+        {"admin_password": "secret"},
+        timeout=60,
+        mutates=False,
+        description="List Keystone projects in domain 'default' as JSON (read-only)",
+        failure_hint=OPENSTACK_CLI_FAILURE_HINT,
+        env_params={"admin_password": "OS_PASSWORD"},
+    ),
+    CommandSpec(
+        OPENSTACK_PROJECT_CREATE_SERVICE,
+        # /usr/bin/openstack (package "python3-openstackclient").
+        # Guide (https://docs.openstack.org/keystone/2025.1/install/keystone-users-ubuntu.html):
+        # 'openstack project create --domain default --description "Service Project" service'.
+        # Fixed literal arguments so `"Service Project"` (with a space) requires no parameter.
+        (
+            *OPENSTACK_ADMIN_AUTH_ARGS,
+            "project",
+            "create",
+            "--domain",
+            "default",
+            "--description",
+            "Service Project",
+            "service",
+            "-f",
+            "json",
+        ),
+        {"admin_password": "secret"},
+        timeout=60,
+        mutates=True,
+        description="Create the Keystone 'service' project in domain 'default'",
+        failure_hint=OPENSTACK_CLI_FAILURE_HINT,
+        env_params={"admin_password": "OS_PASSWORD"},
+    ),
+    CommandSpec(
+        OPENSTACK_USER_LIST,
+        # /usr/bin/openstack (`openstackclient/identity/v3/user.py` `ListUser`):
+        # lists users in domain `default` as JSON (`[{"ID": "...", "Name": "..."}]`).
+        (*OPENSTACK_ADMIN_AUTH_ARGS, "user", "list", "--domain", "default", "-f", "json"),
+        {"admin_password": "secret"},
+        timeout=60,
+        mutates=False,
+        description="List Keystone users in domain 'default' as JSON (read-only)",
+        failure_hint=OPENSTACK_CLI_FAILURE_HINT,
+        env_params={"admin_password": "OS_PASSWORD"},
+    ),
+    CommandSpec(
+        OPENSTACK_USER_CREATE,
+        # /usr/bin/openstack (`openstackclient/identity/v3/user.py` `CreateUser`).
+        # Why `--password {user_password}` is in argv while `admin_password` is in env_params:
+        # `CreateUser.take_action()` (lines 286-289) calls `osc_lib.utils.get_password(stdin)`
+        # when `--password-prompt` is used, and `/usr/lib/python3/dist-packages/osc_lib/utils/`
+        # `__init__.py` (lines 562-580) checks `stdin.isatty()` and raises
+        # `CommandError("No terminal detected attempting to read password")` when stdin is a
+        # pipe; nor does `CreateUser` read an env var for the new user's password.
+        (
+            *OPENSTACK_ADMIN_AUTH_ARGS,
+            "user",
+            "create",
+            "--domain",
+            "default",
+            "--password",
+            "{user_password}",
+            "{user}",
+            "-f",
+            "json",
+        ),
+        {"admin_password": "secret", "user": "openstack_name", "user_password": "secret"},
+        timeout=60,
+        mutates=True,
+        description="Create one Keystone user in domain 'default'",
+        failure_hint=OPENSTACK_CLI_FAILURE_HINT,
+        env_params={"admin_password": "OS_PASSWORD"},
+    ),
+    CommandSpec(
+        OPENSTACK_USER_SET_PASSWORD,
+        # /usr/bin/openstack (`openstackclient/identity/v3/user.py` `SetUser`, lines 507-636).
+        # Used when `user list` shows that `{user}` already exists (`CreateUser` raises
+        # `ConflictException` if the user already exists, and `user list` does not expose
+        # password hashes, so converging the password requires `user set --password`).
+        (
+            *OPENSTACK_ADMIN_AUTH_ARGS,
+            "user",
+            "set",
+            "--domain",
+            "default",
+            "--password",
+            "{user_password}",
+            "{user}",
+        ),
+        {"admin_password": "secret", "user": "openstack_name", "user_password": "secret"},
+        timeout=60,
+        mutates=True,
+        description="Converge the password of an existing Keystone user in domain 'default'",
+        failure_hint=OPENSTACK_CLI_FAILURE_HINT,
+        env_params={"admin_password": "OS_PASSWORD"},
+    ),
+    CommandSpec(
+        OPENSTACK_ROLE_ASSIGNMENT_LIST,
+        # /usr/bin/openstack (`openstackclient/identity/v3/role_assignment.py`
+        # `ListRoleAssignment`, lines 63-250): lists role assignments resolved to names
+        # (`--names -f json`).
+        (*OPENSTACK_ADMIN_AUTH_ARGS, "role", "assignment", "list", "--names", "-f", "json"),
+        {"admin_password": "secret"},
+        timeout=60,
+        mutates=False,
+        description="List Keystone role assignments with resolved names as JSON (read-only)",
+        failure_hint=OPENSTACK_CLI_FAILURE_HINT,
+        env_params={"admin_password": "OS_PASSWORD"},
+    ),
+    CommandSpec(
+        OPENSTACK_ROLE_ADD_USER_PROJECT,
+        # /usr/bin/openstack (`openstackclient/identity/v3/role.py` `AddRole`, lines 197-296):
+        # 'openstack role add --project <project> --user <user> <role>'.
+        (
+            *OPENSTACK_ADMIN_AUTH_ARGS,
+            "role",
+            "add",
+            "--project",
+            "{project}",
+            "--user",
+            "{user}",
+            "{role}",
+        ),
+        {
+            "admin_password": "secret",
+            "project": "openstack_name",
+            "user": "openstack_name",
+            "role": "openstack_name",
+        },
+        timeout=60,
+        mutates=True,
+        description="Assign a Keystone role to a user on a project",
+        failure_hint=OPENSTACK_CLI_FAILURE_HINT,
+        env_params={"admin_password": "OS_PASSWORD"},
+    ),
+    CommandSpec(
+        OPENSTACK_SERVICE_LIST,
+        # /usr/bin/openstack (`openstackclient/identity/v3/service.py` `ListService`,
+        # lines 144-172): lists services (`[{"ID": "...", "Name": "...", "Type": "..."}]`).
+        (*OPENSTACK_ADMIN_AUTH_ARGS, "service", "list", "-f", "json"),
+        {"admin_password": "secret"},
+        timeout=60,
+        mutates=False,
+        description="List Keystone service catalog entries as JSON (read-only)",
+        failure_hint=OPENSTACK_CLI_FAILURE_HINT,
+        env_params={"admin_password": "OS_PASSWORD"},
+    ),
+    CommandSpec(
+        OPENSTACK_SERVICE_CREATE,
+        # /usr/bin/openstack (`openstackclient/identity/v3/service.py` `CreateService`,
+        # lines 56-104): creates a service with `--name {service_name} {service_type}`.
+        # Note: in Keystone v3, `create_service` does NOT check uniqueness and creates a
+        # duplicate UUID if invoked twice; callers must inspect `openstack.service-list` first.
+        (
+            *OPENSTACK_ADMIN_AUTH_ARGS,
+            "service",
+            "create",
+            "--name",
+            "{service_name}",
+            "{service_type}",
+            "-f",
+            "json",
+        ),
+        {
+            "admin_password": "secret",
+            "service_name": "openstack_name",
+            "service_type": "openstack_name",
+        },
+        timeout=60,
+        mutates=True,
+        description="Create one Keystone service catalog entry",
+        failure_hint=OPENSTACK_CLI_FAILURE_HINT,
+        env_params={"admin_password": "OS_PASSWORD"},
+    ),
+    CommandSpec(
+        OPENSTACK_ENDPOINT_LIST,
+        # /usr/bin/openstack (`openstackclient/identity/v3/endpoint.py` `ListEndpoint`,
+        # lines 176-281): lists endpoints (`ID`, `Region`, `Service Name`, `Service Type`,
+        # `Enabled`, `Interface`, `URL`) as JSON.
+        (*OPENSTACK_ADMIN_AUTH_ARGS, "endpoint", "list", "-f", "json"),
+        {"admin_password": "secret"},
+        timeout=60,
+        mutates=False,
+        description="List Keystone service endpoints as JSON (read-only)",
+        failure_hint=OPENSTACK_CLI_FAILURE_HINT,
+        env_params={"admin_password": "OS_PASSWORD"},
+    ),
+    CommandSpec(
+        OPENSTACK_ENDPOINT_CREATE,
+        # /usr/bin/openstack (`openstackclient/identity/v3/endpoint.py` `CreateEndpoint`,
+        # lines 74-134): creates an endpoint in `RegionOne` for `{service_name}` and
+        # `{interface}` (`public`, `internal`, or `admin`) at `{url}`.
+        # Note: in Keystone v3, `endpoints.create` creates a duplicate UUID if invoked twice;
+        # callers must inspect `openstack.endpoint-list` first.
+        (
+            *OPENSTACK_ADMIN_AUTH_ARGS,
+            "endpoint",
+            "create",
+            "--region",
+            "RegionOne",
+            "{service_name}",
+            "{interface}",
+            "{url}",
+            "-f",
+            "json",
+        ),
+        {
+            "admin_password": "secret",
+            "service_name": "openstack_name",
+            "interface": "endpoint_interface",
+            "url": "endpoint_url",
+        },
+        timeout=60,
+        mutates=True,
+        description="Create one Keystone service endpoint in RegionOne",
+        failure_hint=OPENSTACK_CLI_FAILURE_HINT,
+        env_params={"admin_password": "OS_PASSWORD"},
     ),
 )
 

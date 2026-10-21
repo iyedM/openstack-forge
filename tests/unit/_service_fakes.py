@@ -7,11 +7,13 @@ local IP sanitized to ``192.0.2.170`` for the repository).
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
-from openstack_forge.execution import ProcessOutput
+from openstack_forge.execution import OPENSTACK_ADMIN_AUTH_ARGS, ProcessOutput
 
 DEV_MACHINE_SANITIZED_IP = "192.0.2.170"
 
@@ -30,7 +32,7 @@ CreateEntry = tuple[str, str] | Sequence[tuple[str, str]]
 
 class ServiceHost:
     """Simulates dpkg-query, apt-cache policy, apt-get install, systemctl, rabbitmqctl,
-    mariadb, and keystone-manage.
+    mariadb, keystone-manage, and /usr/bin/openstack.
 
     ``creates`` maps a package to the (root-relative path, content) pair (or sequence of
     pairs) its installation writes under the temporary root, imitating the package;
@@ -57,6 +59,11 @@ class ServiceHost:
         rabbit_permissions: Mapping[str, Mapping[str, tuple[str, str, str]]] | None = None,
         mariadb_databases: set[str] | frozenset[str] = frozenset(),
         mariadb_grants: set[tuple[str, str, str]] | frozenset[tuple[str, str, str]] = frozenset(),
+        openstack_projects: Sequence[Mapping[str, Any]] | None = None,
+        openstack_users: Sequence[Mapping[str, Any]] | None = None,
+        openstack_role_assignments: Sequence[Mapping[str, Any]] | None = None,
+        openstack_services: Sequence[Mapping[str, Any]] | None = None,
+        openstack_endpoints: Sequence[Mapping[str, Any]] | None = None,
     ) -> None:
         self.root = root
         self.installed = set(installed)
@@ -81,8 +88,26 @@ class ServiceHost:
         self.mariadb_passwords: dict[tuple[str, str], str] = {}
         self.keystone_db_synced: bool = False
         self.keystone_bootstrapped: dict[str, str] | None = None
+        self.openstack_projects: list[dict[str, Any]] = [
+            dict(item) for item in (openstack_projects or ())
+        ]
+        self.openstack_users: list[dict[str, Any]] = [
+            dict(item) for item in (openstack_users or ())
+        ]
+        self.openstack_user_passwords: dict[str, str] = {}
+        self.openstack_role_assignments: list[dict[str, Any]] = [
+            dict(item) for item in (openstack_role_assignments or ())
+        ]
+        self.openstack_services: list[dict[str, Any]] = [
+            dict(item) for item in (openstack_services or ())
+        ]
+        self.openstack_endpoints: list[dict[str, Any]] = [
+            dict(item) for item in (openstack_endpoints or ())
+        ]
+        self.openstack_os_passwords: list[str] = []
         self.calls: list[tuple[str, ...]] = []
         self.stdin_calls: list[tuple[tuple[str, ...], str | None]] = []
+        self.env_calls: list[tuple[tuple[str, ...], dict[str, str]]] = []
         self.failures: dict[tuple[str, ...], ProcessOutput] = {}
         self.snapshots: list[tuple[str, str | None]] = []
         self.multi_snapshots: list[tuple[str, dict[str, str | None]]] = []
@@ -97,6 +122,7 @@ class ServiceHost:
     ) -> ProcessOutput:
         self.calls.append(argv)
         self.stdin_calls.append((argv, stdin))
+        self.env_calls.append((argv, dict(env)))
         if argv in self.failures:
             return self.failures[argv]
         if argv[:2] in self.failures:
@@ -239,16 +265,168 @@ class ServiceHost:
         ):
             self._init_fernet_repo("etc/keystone/credential-keys")
             return ProcessOutput(0, "", "")
-        if argv[:3] == ("/usr/bin/keystone-manage", "bootstrap", "--bootstrap-password"):
+        if argv == (
+            "/usr/bin/keystone-manage",
+            "bootstrap",
+            "--bootstrap-admin-url",
+            "http://controller:5000/v3/",
+            "--bootstrap-internal-url",
+            "http://controller:5000/v3/",
+            "--bootstrap-public-url",
+            "http://controller:5000/v3/",
+            "--bootstrap-region-id",
+            "RegionOne",
+        ):
+            password = env.get("OS_BOOTSTRAP_PASSWORD")
+            if not password:
+                return ProcessOutput(
+                    1,
+                    "ERROR: Either --bootstrap-password argument or "
+                    "OS_BOOTSTRAP_PASSWORD must be set.\n",
+                    "",
+                )
             self.keystone_bootstrapped = {
-                "password": argv[3],
-                "admin_url": argv[5],
-                "internal_url": argv[7],
-                "public_url": argv[9],
-                "region_id": argv[11],
+                "password": password,
+                "admin_url": argv[3],
+                "internal_url": argv[5],
+                "public_url": argv[7],
+                "region_id": argv[9],
             }
+            if not any(p.get("Name") == "admin" for p in self.openstack_projects):
+                self.openstack_projects.append({"ID": "proj-admin", "Name": "admin"})
+            if not any(u.get("Name") == "admin" for u in self.openstack_users):
+                self.openstack_users.append({"ID": "user-admin", "Name": "admin"})
+            self.openstack_user_passwords["admin"] = password
             return ProcessOutput(0, "", "")
+        if argv[: len(OPENSTACK_ADMIN_AUTH_ARGS)] == OPENSTACK_ADMIN_AUTH_ARGS:
+            return self._run_openstack_cli(argv[len(OPENSTACK_ADMIN_AUTH_ARGS) :], env)
         raise AssertionError(f"unexpected argv {argv!r}")
+
+    def _run_openstack_cli(self, sub: tuple[str, ...], env: Mapping[str, str]) -> ProcessOutput:
+        os_password = env.get("OS_PASSWORD")
+        if not os_password:
+            return ProcessOutput(
+                1, "", "Missing value auth-password required for auth plugin password\n"
+            )
+        if (
+            self.keystone_bootstrapped is not None
+            and os_password != self.keystone_bootstrapped["password"]
+        ):
+            return ProcessOutput(
+                1, "", "The request you have made requires authentication. (HTTP 401)\n"
+            )
+        self.openstack_os_passwords.append(os_password)
+
+        if sub == ("project", "list", "--domain", "default", "-f", "json"):
+            return ProcessOutput(0, json.dumps(self.openstack_projects), "")
+        if sub == (
+            "project",
+            "create",
+            "--domain",
+            "default",
+            "--description",
+            "Service Project",
+            "service",
+            "-f",
+            "json",
+        ):
+            if any(p.get("Name") == "service" for p in self.openstack_projects):
+                return ProcessOutput(
+                    1,
+                    "",
+                    "Conflict occurred attempting to store project - Duplicate Entry (HTTP 409)\n",
+                )
+            created = {"ID": f"proj-{len(self.openstack_projects) + 1}", "Name": "service"}
+            self.openstack_projects.append(created)
+            return ProcessOutput(0, json.dumps(created), "")
+        if sub == ("user", "list", "--domain", "default", "-f", "json"):
+            return ProcessOutput(0, json.dumps(self.openstack_users), "")
+        if (
+            len(sub) == 9
+            and sub[:5] == ("user", "create", "--domain", "default", "--password")
+            and sub[7:] == ("-f", "json")
+        ):
+            user_password, user = sub[5], sub[6]
+            if any(u.get("Name") == user for u in self.openstack_users):
+                return ProcessOutput(
+                    1,
+                    "",
+                    f"Conflict occurred attempting to store user - Duplicate Entry {user} "
+                    "(HTTP 409)\n",
+                )
+            created_user = {"ID": f"user-{user}", "Name": user}
+            self.openstack_users.append(created_user)
+            self.openstack_user_passwords[user] = user_password
+            return ProcessOutput(0, json.dumps(created_user), "")
+        if len(sub) == 7 and sub[:5] == ("user", "set", "--domain", "default", "--password"):
+            user_password, user = sub[5], sub[6]
+            if not any(u.get("Name") == user for u in self.openstack_users):
+                return ProcessOutput(1, "", f"No user with a name or ID of '{user}' exists.\n")
+            self.openstack_user_passwords[user] = user_password
+            return ProcessOutput(0, "", "")
+        if sub == ("role", "assignment", "list", "--names", "-f", "json"):
+            return ProcessOutput(0, json.dumps(self.openstack_role_assignments), "")
+        if len(sub) == 7 and sub[:3] == ("role", "add", "--project") and sub[4] == "--user":
+            project, user, role = sub[3], sub[5], sub[6]
+            entry = {
+                "Role": role,
+                "User": f"{user}@Default",
+                "Group": "",
+                "Project": f"{project}@Default",
+                "Domain": "",
+                "System": "",
+                "Inherited": False,
+            }
+            if entry not in self.openstack_role_assignments:
+                self.openstack_role_assignments.append(entry)
+            return ProcessOutput(0, "", "")
+        if sub == ("service", "list", "-f", "json"):
+            return ProcessOutput(0, json.dumps(self.openstack_services), "")
+        if (
+            len(sub) == 7
+            and sub[:3] == ("service", "create", "--name")
+            and sub[5:] == ("-f", "json")
+        ):
+            service_name, service_type = sub[3], sub[4]
+            # Keystone v3 creates a duplicate UUID if service create is invoked twice.
+            svc = {
+                "ID": f"svc-{len(self.openstack_services) + 1}",
+                "Name": service_name,
+                "Type": service_type,
+            }
+            self.openstack_services.append(svc)
+            return ProcessOutput(0, json.dumps(svc), "")
+        if sub == ("endpoint", "list", "-f", "json"):
+            return ProcessOutput(0, json.dumps(self.openstack_endpoints), "")
+        if (
+            len(sub) == 9
+            and sub[:4] == ("endpoint", "create", "--region", "RegionOne")
+            and sub[7:] == ("-f", "json")
+        ):
+            service_name, interface, url = sub[4], sub[5], sub[6]
+            matching = [
+                svc
+                for svc in self.openstack_services
+                if svc.get("Name") == service_name or svc.get("Type") == service_name
+            ]
+            if not matching:
+                return ProcessOutput(
+                    1, "", f"No service with a type, name or ID of '{service_name}' exists.\n"
+                )
+            svc = matching[0]
+            # Keystone v3 creates a duplicate UUID if endpoint create is invoked twice.
+            ep = {
+                "ID": f"ep-{len(self.openstack_endpoints) + 1}",
+                "Region": "RegionOne",
+                "Service Name": svc["Name"],
+                "Service Type": svc["Type"],
+                "Enabled": True,
+                "Interface": interface,
+                "URL": url,
+            }
+            self.openstack_endpoints.append(ep)
+            return ProcessOutput(0, json.dumps(ep), "")
+        raise AssertionError(f"unexpected openstack subcommand {sub!r}")
 
     def _init_fernet_repo(self, relative_dir: str) -> None:
         repo = self.root / relative_dir

@@ -1042,6 +1042,7 @@ def test_canary_secret_never_leaks_outside_the_0600_secrets_file(
     for note in keystone_preview_before.notes:
         assert CANARY not in note
 
+    keystone_calls_start = len(host.calls)
     keystone_report = engine.run([keystone_step])
     assert keystone_report.ok
     keystone_report_text = format_report(keystone_report)
@@ -1051,6 +1052,11 @@ def test_canary_secret_never_leaks_outside_the_0600_secrets_file(
     }
     assert host.keystone_bootstrapped is not None
     assert host.keystone_bootstrapped["password"] == CANARY
+    assert any(p["Name"] == "service" for p in host.openstack_projects)
+    # Neither KEYSTONE_DBPASS (stdin_param) nor ADMIN_PASS (env_params) ever
+    # appears in argv during the keystone step.
+    for argv in host.calls[keystone_calls_start:]:
+        assert all(CANARY not in arg for arg in argv)
 
     # Backend raising a raw RuntimeError containing CANARY
     raising_executor = CommandExecutor(
@@ -1079,7 +1085,8 @@ def test_canary_secret_never_leaks_outside_the_0600_secrets_file(
     ):
         assert CANARY not in text, f"CANARY leaked into {surface_name}"
 
-    # Walk all files under tmp_path: only secrets.json, keystone.conf, and app.conf contain CANARY.
+    # Walk all files under tmp_path: only secrets.json, admin-openrc, keystone.conf,
+    # and app.conf contain CANARY.
     files_with_canary = sorted(
         path.relative_to(root).as_posix()
         for path in root.rglob("*")
@@ -1088,6 +1095,10 @@ def test_canary_secret_never_leaks_outside_the_0600_secrets_file(
     assert files_with_canary == [
         "etc/app.conf",
         "etc/keystone/keystone.conf",
+        "etc/openstack-forge/admin-openrc",
         "etc/openstack-forge/secrets.json",
     ]
+    admin_openrc_path = root / "etc/openstack-forge/admin-openrc"
+    assert stat.S_IMODE(admin_openrc_path.stat().st_mode) == 0o600
+    assert not (root / "etc/openstack-forge/admin-openrc.orig").exists()
     assert stat.S_IMODE(secrets_path.stat().st_mode) == 0o600

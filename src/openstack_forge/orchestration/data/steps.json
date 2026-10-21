@@ -89,8 +89,12 @@
       "title": "Install and configure the Keystone Identity service",
       "roles": ["controller"],
       "depends_on": ["mariadb", "memcached"],
-      "files_modified": ["/etc/keystone/keystone.conf", "/etc/apache2/apache2.conf"],
-      "verification": "keystone is installed, /etc/keystone/keystone.conf sets [database] connection and [token] provider = fernet, /etc/apache2/apache2.conf sets ServerName controller, Fernet and credential key repositories are initialized, the keystone MariaDB database and grants exist, and apache2 is active (HTTP /v3 token requests are not checked yet).",
+      "files_modified": [
+        "/etc/keystone/keystone.conf",
+        "/etc/apache2/apache2.conf",
+        "/etc/openstack-forge/admin-openrc"
+      ],
+      "verification": "keystone is installed, /etc/keystone/keystone.conf sets [database] connection and [token] provider = fernet, /etc/apache2/apache2.conf sets ServerName controller, /etc/openstack-forge/admin-openrc exists with mode 0600, Fernet and credential key repositories are initialized, the keystone MariaDB database and grants exist, apache2 is active, and the Keystone 'service' project exists in domain 'default'.",
       "doc_url": "https://docs.openstack.org/keystone/2025.1/install/keystone-install-ubuntu.html",
       "status": "unverified"
     }

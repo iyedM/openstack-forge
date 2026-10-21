@@ -280,6 +280,34 @@ All notable changes to this project will be documented in this file.
   `mariadb.query-sql`, `keystone-manage.db-sync`, `keystone-manage.fernet-setup`,
   `keystone-manage.credential-setup`, and `keystone-manage.bootstrap`, with
   `MARIADB_SQL_FAILURE_HINT` and `KEYSTONE_MANAGE_FAILURE_HINT`.
+- Reusable `/usr/bin/openstack` CLI provisioning brick
+  (`openstack_forge.execution.openstack_cli`) and three new parameter types in
+  `openstack_forge.execution.commands`:
+  - `"openstack_name"` (`^[a-z][a-z0-9_-]{0,63}$`), `"endpoint_interface"`
+    (`public|internal|admin`), and `"endpoint_url"`
+    (`^http://controller:(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])(?:/[A-Za-z0-9._/-]+)?$`
+    with no `..` or `//`, also permitting the literal `%\(tenant_id\)s` token).
+  - Eleven reviewed `/usr/bin/openstack` command specs in `DEFAULT_REGISTRY`
+    (`openstack.project-list`, `openstack.project-create-service`, `openstack.user-list`,
+    `openstack.user-create`, `openstack.user-set-password`,
+    `openstack.role-assignment-list`, `openstack.role-add-user-project`,
+    `openstack.service-list`, `openstack.service-create`, `openstack.endpoint-list`,
+    `openstack.endpoint-create`), all authenticating against `http://controller:5000/v3` as
+    `admin` with `env_params={"admin_password": "OS_PASSWORD"}` and
+    `OPENSTACK_CLI_FAILURE_HINT`.
+  - Pure JSON parsers (`parse_project_list`, `parse_user_list`,
+    `parse_role_assignment_list`, `parse_service_list`, `parse_endpoint_list`), pure state
+    verifiers, and idempotent convergence helpers (`ensure_service_project`,
+    `ensure_service_user`, `ensure_service_catalog`, `service_project_ready`,
+    `service_user_ready`, `service_catalog_ready`, and `*_problems`) that query `-f json`
+    first to prevent duplicate UUIDs in Keystone v3.
+- Completed the `keystone` controller step (`keystone-users-ubuntu.html`,
+  `keystone-verify-ubuntu.html`, and `keystone-openrc-ubuntu.html`):
+  - creates and verifies the `service` project in the `default` domain via
+    `ensure_service_project` / `service_project_ready` / `service_project_problems`
+    (verifying HTTP `/v3` token issuance against `http://controller:5000/v3` as `admin`);
+  - writes and verifies `<root>/etc/openstack-forge/admin-openrc` (parent directory mode
+    `0700`, file mode `0600`, no `.orig` backup, redacted diff).
 
 ### Changed
 
@@ -340,9 +368,14 @@ All notable changes to this project will be documented in this file.
   modules, tests, `_service_fakes.py` and `docs/engine/README.md` with the RFC 5737
   documentation address `192.0.2.170`.
 - `IMPLEMENTED_STEPS` pin deliberately updated to all nine catalog steps (adds `rabbitmq`
-  and `keystone`), and the `DEFAULT_REGISTRY` test deliberately pins twenty reviewed
-  commands (adds the five `/usr/sbin/rabbitmqctl`, two `/usr/bin/mariadb`, and four
-  `/usr/bin/keystone-manage` specs).
+  and `keystone`), and the `DEFAULT_REGISTRY` test deliberately pins thirty-one reviewed
+  commands (adds the five `/usr/sbin/rabbitmqctl`, two `/usr/bin/mariadb`, four
+  `/usr/bin/keystone-manage`, and eleven `/usr/bin/openstack` specs).
+- `keystone-manage.bootstrap` now delivers `ADMIN_PASS` via
+  `env_params={"password": "OS_BOOTSTRAP_PASSWORD"}` instead of `--bootstrap-password
+  {password}` in `argv` (confirmed in `/usr/lib/python3/dist-packages/keystone/cmd/cli.py`),
+  so neither `KEYSTONE_DBPASS` (`stdin_param`) nor `ADMIN_PASS` (`env_params`) ever appears
+  in `argv` or `/proc/<pid>/cmdline` (`ps`) during the `keystone` step.
 
 ### Fixed
 

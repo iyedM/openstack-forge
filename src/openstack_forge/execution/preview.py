@@ -24,11 +24,16 @@ class PlannedCommand:
     params: Mapping[str, str] = field(default_factory=dict)
 
     def __repr__(self) -> str:
-        from openstack_forge.execution.redaction import redact_data
+        from openstack_forge.execution.commands import DEFAULT_REGISTRY
+        from openstack_forge.execution.redaction import MASK, redact_data
 
+        params_copy = dict(self.params)
+        if self.command_id in DEFAULT_REGISTRY.ids():
+            for key in DEFAULT_REGISTRY.get(self.command_id).sensitive_params:
+                if key in params_copy:
+                    params_copy[key] = MASK
         return (
-            f"PlannedCommand(command_id={self.command_id!r}, "
-            f"params={redact_data(dict(self.params))!r})"
+            f"PlannedCommand(command_id={self.command_id!r}, params={redact_data(params_copy)!r})"
         )
 
     def argv(self, registry: CommandRegistry) -> tuple[str, ...]:

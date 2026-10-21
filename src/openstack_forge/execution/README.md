@@ -1,9 +1,10 @@
 # Execution package
 
 Confined file edits, redaction, secrets store, state store, step engine, the allowlisted
-command layer, the reusable MariaDB SQL provisioning brick, and the implemented
-`hosts-file`, `time-sync-controller`, `time-sync-other`, `openstack-packages`, `mariadb`,
-`rabbitmq`, `memcached`, `etcd`, and `keystone` steps used by `openstack-forge apply`.
+command layer, the reusable MariaDB SQL provisioning brick, the reusable `/usr/bin/openstack`
+CLI provisioning brick, and the implemented `hosts-file`, `time-sync-controller`,
+`time-sync-other`, `openstack-packages`, `mariadb`, `rabbitmq`, `memcached`, `etcd`, and
+`keystone` steps used by `openstack-forge apply`.
 Imported lazily by the `apply` and `secrets` CLI handlers so that `config validate`,
 `doctor`, and `plan` never import it.
 
@@ -23,12 +24,16 @@ Imported lazily by the `apply` and `secrets` CLI handlers so that `config valida
 - `engine.py` - `Engine.run()` / `Engine.resume()` over check/apply/verify steps.
 - `commands.py` - allowlisted `CommandSpec`s (including `sensitive_params`, `stdin_param`,
   `env_params`, and `sql_stdin`), typed parameter validation, `CommandRegistry`
-  (`DEFAULT_REGISTRY` holds the twenty reviewed system commands), and `CommandExecutor`
+  (`DEFAULT_REGISTRY` holds the thirty-one reviewed system commands), and `CommandExecutor`
   with an injectable backend, sanitized environment, SIGTERM-then-SIGKILL timeouts,
   redacted and truncated output.
 - `sql.py` - reusable MariaDB database and user-grant provisioning brick via `stdin`
   (`build_service_database_sql()`, `provision_service_database()`, `service_database_ready()`,
   `service_database_problems()`).
+- `openstack_cli.py` - reusable `/usr/bin/openstack` CLI provisioning brick
+  (`ensure_service_project()`, `ensure_service_user()`, `ensure_service_catalog()`,
+  `service_project_ready()`, `service_user_ready()`, `service_catalog_ready()`, and JSON
+  output parsers).
 - `chrony.py` - the `time-sync-controller` and `time-sync-other` steps (unverified, never
   run on a real host).
 - `openstack_packages.py` - the `openstack-packages` step (unverified, never run on a real
