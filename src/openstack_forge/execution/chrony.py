@@ -3,6 +3,8 @@
 Follows the official controller page
 (https://docs.openstack.org/install-guide/environment-ntp-controller.html), for Ubuntu:
 
+0. (not in the page) ``apt-get update``, because a fresh image may have stale or empty
+   package lists; it downloads them over the network;
 1. install the ``chrony`` package;
 2. in ``/etc/chrony/chrony.conf``, add ``server NTP_SERVER iburst`` for each configured
    server (the guide: "add, change, or remove the following keys as necessary"; here the
@@ -24,8 +26,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
+from openstack_forge.execution.apt_output import parse_dpkg_status
 from openstack_forge.execution.commands import (
     APT_GET_INSTALL,
+    APT_GET_UPDATE,
     DPKG_QUERY_STATUS,
     SYSTEMCTL_IS_ACTIVE,
     SYSTEMCTL_RESTART,
@@ -55,6 +59,7 @@ CHRONY_UNIT = "chrony"  # the guide restarts it as "service chrony restart"
 # Active "pool ..." and "server ..." source directives.
 SOURCE_LINE_RE = re.compile(r"^\s*(?:pool|server)\s+\S")
 
+UPDATE_PACKAGE_LISTS = PlannedCommand(APT_GET_UPDATE)
 INSTALL_CHRONY = PlannedCommand(APT_GET_INSTALL, {"package": CHRONY_PACKAGE})
 RESTART_CHRONY = PlannedCommand(SYSTEMCTL_RESTART, {"unit": CHRONY_UNIT})
 QUERY_CHRONY_PACKAGE = PlannedCommand(DPKG_QUERY_STATUS, {"package": CHRONY_PACKAGE})
@@ -156,15 +161,6 @@ def verify_chrony_text(text: str, config: Mapping[str, Any]) -> list[str]:
     return problems
 
 
-def parse_dpkg_status(text: str) -> bool:
-    """True if a ``dpkg-query --status`` entry says ``Status: install ok installed``."""
-    for line in text.splitlines():
-        if line.startswith("Status:"):
-            words = line.split(":", 1)[1].split()
-            return len(words) == 3 and words[1] == "ok" and words[2] == "installed"
-    return False
-
-
 @dataclass(frozen=True)
 class TimeSyncControllerStep:
     """Executable ``time-sync-controller`` step (file edits under ``root``, commands via
@@ -203,9 +199,13 @@ class TimeSyncControllerStep:
                 f"{CHRONY_PACKAGE} package, after which this block is appended:\n{block}"
             )
         notes.append("The file is edited after the install command and before the restart.")
+        notes.append(
+            "apt-get update and apt-get install download from the configured apt sources "
+            "(network); OpenStack Forge's Python code opens no connection itself."
+        )
         return StepPreview(
             file_changes=file_changes,
-            commands=(INSTALL_CHRONY, RESTART_CHRONY),
+            commands=(UPDATE_PACKAGE_LISTS, INSTALL_CHRONY, RESTART_CHRONY),
             read_only_commands=(QUERY_CHRONY_PACKAGE, QUERY_CHRONY_ACTIVE),
             notes=tuple(notes),
         )
@@ -220,7 +220,9 @@ class TimeSyncControllerStep:
         return self._package_installed()
 
     def apply(self) -> None:
-        """Install chrony, edit chrony.conf, then restart chrony."""
+        """Update the package lists, install chrony, edit chrony.conf, restart chrony."""
+        # A fresh image may have stale or empty package lists, and then the install fails.
+        self.executor.run(UPDATE_PACKAGE_LISTS.command_id, UPDATE_PACKAGE_LISTS.params)
         self.executor.run(INSTALL_CHRONY.command_id, INSTALL_CHRONY.params)
         edit_chrony_conf(self.root, self.config, dry_run=False)
         self.executor.run(RESTART_CHRONY.command_id, RESTART_CHRONY.params)

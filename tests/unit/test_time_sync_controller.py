@@ -19,6 +19,7 @@ import pytest
 from openstack_forge.cli import main
 from openstack_forge.config import ConfigValidationError, load_config, validate_config
 from openstack_forge.execution import (
+    APT_UPDATE_FAILURE_HINT,
     CHRONY_BLOCK_NAME,
     DEFAULT_AUDIT_TARGET,
     DEFAULT_REGISTRY,
@@ -61,6 +62,7 @@ makestep 1 3
 BEGIN, END = f"# BEGIN {CHRONY_BLOCK_NAME}", f"# END {CHRONY_BLOCK_NAME}"
 
 DPKG = ("/usr/bin/dpkg-query", "--status", "chrony")
+UPDATE = ("/usr/bin/apt-get", "update")
 APT = ("/usr/bin/apt-get", "install", "--yes", "chrony")
 RESTART = ("/usr/bin/systemctl", "restart", "chrony")
 IS_ACTIVE = ("/usr/bin/systemctl", "is-active", "chrony")
@@ -96,6 +98,8 @@ class FakeHost:
             if self.installed:
                 return ProcessOutput(0, "Package: chrony\nStatus: install ok installed\n", "")
             return ProcessOutput(1, "", "dpkg-query: package 'chrony' is not installed\n")
+        if argv == UPDATE:
+            return ProcessOutput(0, "Reading package lists... Done\n", "")
         if argv == APT:
             self.installed = True
             conf = self.root / "etc/chrony/chrony.conf"
@@ -317,7 +321,7 @@ def test_fresh_host_install_edit_restart_verify(tmp_path: Path, config: dict) ->
     assert report.ok, report.failure
     assert [o.outcome for o in report.outcomes] == [Outcome.APPLIED]
     # check() stops at the missing file, so no dpkg-query is needed before applying.
-    assert host.calls == [APT, RESTART, IS_ACTIVE]
+    assert host.calls == [UPDATE, APT, RESTART, IS_ACTIVE]
     assert (
         (root / "etc/chrony/chrony.conf")
         .read_text()
@@ -360,7 +364,31 @@ def test_configured_file_but_missing_package_reinstalls(root: Path, config, tmp_
         [_step(root, config, _executor(tmp_path, host))]
     )
     assert report.ok
-    assert host.calls == [DPKG, APT, RESTART, IS_ACTIVE]
+    assert host.calls == [DPKG, UPDATE, APT, RESTART, IS_ACTIVE]
+
+
+def test_apply_updates_the_package_lists_before_installing(root: Path, config, tmp_path) -> None:
+    # A fresh image may have stale or empty package lists.
+    _write_conf(root)
+    host = FakeHost(root)
+    _step(root, config, _executor(tmp_path, host)).apply()
+    assert host.calls[:2] == [UPDATE, APT]
+    assert host.calls.count(UPDATE) == 1
+
+
+def test_failed_update_stops_before_the_install(root: Path, config, tmp_path) -> None:
+    _write_conf(root)
+    host = FakeHost(root)
+    host.failures[UPDATE] = ProcessOutput(100, "", "E: Failed to fetch http://mirror/...\n")
+    report = Engine(StateStore(tmp_path / "state.json")).run(
+        [_step(root, config, _executor(tmp_path, host))]
+    )
+    failure = report.failure
+    assert (failure.phase, failure.message) == (Phase.APPLY, "apply() raised UnexpectedExitError")
+    assert APT_UPDATE_FAILURE_HINT in failure.next_action
+    assert "network" in failure.next_action
+    assert host.calls == [UPDATE]  # no install, no file edit, no restart
+    assert (root / "etc/chrony/chrony.conf").read_text() == SAMPLE_CONF
 
 
 def test_mutating_commands_are_refused_under_a_non_host_root(
@@ -376,7 +404,7 @@ def test_mutating_commands_are_refused_under_a_non_host_root(
     assert report.failure.phase is Phase.APPLY
     assert report.failure.message == f"apply() raised {MutationRefusedError.__name__}"
     assert "not '/'" in report.failure.details
-    assert APT not in host.calls and RESTART not in host.calls
+    assert APT not in host.calls and RESTART not in host.calls and UPDATE not in host.calls
     assert (root / "etc/chrony/chrony.conf").read_text() == SAMPLE_CONF  # apply stopped first
 
 
@@ -419,7 +447,7 @@ def test_apt_failure_suggests_dpkg_and_lock_checks(root: Path, config, tmp_path)
     assert "dpkg --audit" in failure.next_action
     assert "lock" in failure.next_action
     assert "does not attempt any automatic recovery" in failure.next_action
-    assert host.calls == [APT]  # no retry, no recovery command
+    assert host.calls == [UPDATE, APT]  # no retry, no recovery command
     for text in (failure.details, store.path.read_text(), executor.audit_log.path.read_text()):
         assert "S3CRETPASS" not in text
     assert MASK in failure.details
@@ -438,12 +466,13 @@ def test_audit_records_for_a_successful_run(root: Path, config, tmp_path) -> Non
     # check() already fails on the file (no block yet), so dpkg-query is not needed.
     starts = [e for e in executor.audit_log.read() if e["event"] == "start"]
     assert [(e["command_id"], e["argv"], e["mutates"]) for e in starts] == [
+        ("apt-get.update", list(UPDATE), True),
         ("apt-get.install", list(APT), True),
         ("systemctl.restart", list(RESTART), True),
         ("systemctl.is-active", list(IS_ACTIVE), False),
     ]
     finishes = [e for e in executor.audit_log.read() if e["event"] == "finish"]
-    assert [e["outcome"] for e in finishes] == ["ok"] * 3
+    assert [e["outcome"] for e in finishes] == ["ok"] * 4
 
 
 # --- CLI ------------------------------------------------------------------------------------
@@ -469,14 +498,16 @@ def test_cli_dry_run_shows_diff_and_exact_argv(
     assert "+allow 10.10.40.0/24" in out
     assert (
         "Commands apply() would run, in order, if check() finds the step not done:\n"
+        "  /usr/bin/apt-get update\n"
         "  /usr/bin/apt-get install --yes chrony\n"
         "  /usr/bin/systemctl restart chrony\n"
     ) in out
     assert (
-        "Read-only commands check() and verify() would run (not run in a dry run):\n"
+        "Read-only commands check(), apply() and verify() may run (not run in a dry run):\n"
         "  /usr/bin/dpkg-query --status chrony\n"
         "  /usr/bin/systemctl is-active chrony\n"
     ) in out
+    assert "download from the configured apt sources (network)" in out
     assert path.read_text() == SAMPLE_CONF
     assert not (root / DEFAULT_STATE_TARGET.lstrip("/")).exists()
     assert not (root / DEFAULT_AUDIT_TARGET.lstrip("/")).exists()

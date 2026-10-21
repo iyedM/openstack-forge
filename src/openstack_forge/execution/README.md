@@ -1,7 +1,8 @@
 # Execution package
 
-Confined file edits, redaction, state store, step engine, and the implemented `hosts-file`
-step used by `openstack-forge apply`. Imported lazily by the `apply` CLI handler so that
+Confined file edits, redaction, state store, step engine, the allowlisted command layer,
+and the implemented `hosts-file`, `time-sync-controller` and `openstack-packages` steps used
+by `openstack-forge apply`. Imported lazily by the `apply` CLI handler so that
 `config validate`, `doctor`, and `plan` never import it.
 
 ## Modules
@@ -16,10 +17,13 @@ step used by `openstack-forge apply`. Imported lazily by the `apply` CLI handler
 - `state.py` - `StateStore`, the 0600 JSON step-status file.
 - `engine.py` - `Engine.run()` / `Engine.resume()` over check/apply/verify steps.
 - `commands.py` - allowlisted `CommandSpec`s, typed parameter validation,
-  `CommandRegistry` (`DEFAULT_REGISTRY` holds the four reviewed system commands), and
+  `CommandRegistry` (`DEFAULT_REGISTRY` holds the seven reviewed system commands), and
   `CommandExecutor` with an injectable backend, sanitized environment, SIGTERM-then-SIGKILL
   timeouts, redacted and truncated output.
 - `chrony.py` - the `time-sync-controller` step (unverified, never run on a real host).
+- `openstack_packages.py` - the `openstack-packages` step (unverified, never run on a real
+  host).
+- `apt_output.py` - pure parsers for `dpkg-query --status` and `apt-cache policy` output.
 - `preview.py` - `StepPreview` / `PlannedCommand` used by `apply` dry runs.
 - `steps.py` - `IMPLEMENTED_STEPS` and `build_step()`.
 - `audit.py` - `AuditLog`, the append-only 0600 JSON-lines record of executed commands.

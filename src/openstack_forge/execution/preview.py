@@ -38,7 +38,8 @@ class StepPreview:
     """Dry-run description of a step.
 
     ``commands`` are the mutating commands ``apply()`` would run, in order;
-    ``read_only_commands`` are those ``check()`` and ``verify()`` would run.
+    ``read_only_commands`` are those ``check()``, ``verify()`` and ``apply()`` (for its
+    preconditions) may run.
     """
 
     file_changes: tuple[FileChange, ...] = ()

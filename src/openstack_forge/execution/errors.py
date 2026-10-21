@@ -27,6 +27,14 @@ class EngineError(ExecutionError):
     """The engine was called with steps that do not match its recorded state."""
 
 
+class PreconditionError(ExecutionError):
+    """A step cannot run because something it relies on is missing from the host.
+
+    Steps never fix such a precondition silently (for example by installing a package
+    that was not asked for); the operator has to.
+    """
+
+
 class CommandError(ExecutionError):
     """Base class for errors of the allowlisted command layer.
 

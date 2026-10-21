@@ -1,0 +1,8 @@
+python3-openstackclient:
+  Installed: (none)
+  Candidate: 7.4.0-0ubuntu1~cloud0
+  Version table:
+     7.4.0-0ubuntu1~cloud0 500
+        500 http://ubuntu-cloud.archive.canonical.com/ubuntu noble-updates/epoxy/main amd64 Packages
+     6.6.0-0ubuntu2 500
+        500 http://archive.ubuntu.com/ubuntu noble/main amd64 Packages

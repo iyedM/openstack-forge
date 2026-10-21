@@ -252,8 +252,9 @@ def test_duplicate_registration_is_rejected() -> None:
 
 
 def test_default_registry_contains_exactly_the_reviewed_commands() -> None:
-    # Deliberately updated in milestone 8: these are the only real commands, and any new
-    # one must be added here on purpose after review.
+    # Deliberately updated in milestone 8, then in milestone 9 (apt-get update,
+    # add-apt-repository --cloud, apt-cache policy): these are the only real commands, and
+    # any new one must be added here on purpose after review.
     specs = {spec_id: DEFAULT_REGISTRY.get(spec_id) for spec_id in DEFAULT_REGISTRY.ids()}
     assert {
         spec_id: (spec.argv, dict(spec.params), spec.mutates, spec.allowed_exit_codes)
@@ -263,6 +264,24 @@ def test_default_registry_contains_exactly_the_reviewed_commands() -> None:
             ("/usr/bin/apt-get", "install", "--yes", "{package}"),
             {"package": "package_name"},
             True,
+            frozenset({0}),
+        ),
+        "apt-get.update": (
+            ("/usr/bin/apt-get", "update"),
+            {},
+            True,
+            frozenset({0}),
+        ),
+        "add-apt-repository.cloud-archive": (
+            ("/usr/bin/add-apt-repository", "--yes", "--cloud", "{pocket}"),
+            {"pocket": "cloud_archive_pocket"},
+            True,
+            frozenset({0}),
+        ),
+        "apt-cache.policy": (
+            ("/usr/bin/apt-cache", "policy", "{package}"),
+            {"package": "package_name"},
+            False,
             frozenset({0}),
         ),
         "systemctl.restart": (
@@ -287,6 +306,23 @@ def test_default_registry_contains_exactly_the_reviewed_commands() -> None:
     assert all(spec.timeout > 0 for spec in specs.values())
     assert "--yes" in specs["apt-get.install"].argv
     assert specs["apt-get.install"].failure_hint
+    # add-apt-repository must stay non-interactive and must keep its own update.
+    assert "--yes" in specs["add-apt-repository.cloud-archive"].argv
+    assert "--no-update" not in specs["add-apt-repository.cloud-archive"].argv
+    assert specs["add-apt-repository.cloud-archive"].failure_hint
+    assert "network" in specs["apt-get.update"].failure_hint
+    assert "network" in specs["apt-get.update"].description
+    # No upgrade, dist-upgrade or reboot can be expressed with the registry.
+    words = {word for spec in specs.values() for word in spec.argv}
+    assert not words & {"upgrade", "dist-upgrade", "full-upgrade", "reboot", "--no-update"}
+
+
+@pytest.mark.parametrize(
+    "pocket", ["ppa:owner/name", "cloud-archive:epoxy;id", "--remove", "cloud-archive:"]
+)
+def test_add_apt_repository_only_accepts_a_cloud_archive_pocket(pocket: str) -> None:
+    with pytest.raises(ParameterError):
+        DEFAULT_REGISTRY.get("add-apt-repository.cloud-archive").build_argv({"pocket": pocket})
 
 
 def test_executor_has_no_free_form_entry_point() -> None:

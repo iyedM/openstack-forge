@@ -270,8 +270,15 @@ class CommandRegistry:
 # The only real commands OpenStack Forge may run. Each argv[0] is the literal path that
 # the named Ubuntu 24.04 package installs (checked with `dpkg -S`), so PATH is never
 # searched. Options are limited to ones justified by the tools' manual pages.
+#
+# The Python code never opens a network connection itself, but apt-get update,
+# apt-get install and add-apt-repository download package lists and packages from the
+# configured apt sources: running them uses the network.
 
 APT_GET_INSTALL = "apt-get.install"
+APT_GET_UPDATE = "apt-get.update"
+ADD_APT_REPOSITORY_CLOUD_ARCHIVE = "add-apt-repository.cloud-archive"
+APT_CACHE_POLICY = "apt-cache.policy"
 SYSTEMCTL_RESTART = "systemctl.restart"
 SYSTEMCTL_IS_ACTIVE = "systemctl.is-active"
 DPKG_QUERY_STATUS = "dpkg-query.status"
@@ -282,6 +289,23 @@ APT_FAILURE_HINT = (
     "apt-get reported that it could not get the dpkg lock, another package manager (for "
     "example unattended-upgrades) is running: wait for it to finish; do not delete lock "
     "files. OpenStack Forge does not attempt any automatic recovery."
+)
+
+APT_UPDATE_FAILURE_HINT = (
+    "apt-get update downloads the package lists over the network: check that this node "
+    "can reach its configured apt sources (DNS, proxy, firewall, mirror) and read the "
+    "'E:'/'W:' lines above. If apt-get reported that it could not get a lock, another "
+    "package manager (for example unattended-upgrades) is running: wait for it to finish; "
+    "do not delete lock files. OpenStack Forge does not attempt any automatic recovery."
+)
+
+ADD_APT_REPOSITORY_FAILURE_HINT = (
+    "add-apt-repository writes an apt source entry and then updates the package lists over "
+    "the network: check whether the Ubuntu Cloud Archive entry was added (for example with "
+    "'add-apt-repository --list') and whether this node can reach the Ubuntu Cloud Archive "
+    "and its other apt sources. If a lock could not be obtained, another package manager "
+    "is running: wait for it to finish; do not delete lock files. OpenStack Forge does not "
+    "attempt any automatic recovery."
 )
 
 SYSTEM_COMMANDS: tuple[CommandSpec, ...] = (
@@ -297,6 +321,56 @@ SYSTEM_COMMANDS: tuple[CommandSpec, ...] = (
         mutates=True,
         description="Install one Debian package",
         failure_hint=APT_FAILURE_HINT,
+    ),
+    CommandSpec(
+        APT_GET_UPDATE,
+        # /usr/bin/apt-get (package "apt"). apt-get(8): "update is used to resynchronize
+        # the package index files from their sources", fetched from the locations in the
+        # apt sources: it USES THE NETWORK. It takes no option here: it asks no question,
+        # and DIAGNOSTICS says it "returns zero on normal operation, decimal 100 on error".
+        # It changes /var/lib/apt/lists, hence mutates=True (and the root/uid checks).
+        ("/usr/bin/apt-get", "update"),
+        timeout=600,
+        mutates=True,
+        description="Download the package lists from the configured apt sources (network)",
+        failure_hint=APT_UPDATE_FAILURE_HINT,
+    ),
+    CommandSpec(
+        ADD_APT_REPOSITORY_CLOUD_ARCHIVE,
+        # /usr/bin/add-apt-repository (package "software-properties-common", NOT "apt").
+        # add-apt-repository(1):
+        # - "-y, --yes  Assume yes to all queries": the non-interactive option (stdin is
+        #   /dev/null, so a prompt would otherwise fail).
+        # - "-C, --cloud  Add an Ubuntu Cloud Archive. Must be in the format
+        #   cloud-archive:CANAME ... If not specified, the pocket defaults to -updates."
+        #   The guide's positional form (add-apt-repository cloud-archive:epoxy) is the
+        #   LINE argument, which the man page calls "deprecated" and "not recommended as
+        #   the autodetection of which line format is intended can be ambiguous".
+        # - Does it run an update? Yes: "-n, --no-update  After adding the repository, do
+        #   not update the package cache." means it updates by default. --no-update is not
+        #   used, so it refreshes the package lists itself (over the network) and no
+        #   separate apt-get update is needed after it.
+        ("/usr/bin/add-apt-repository", "--yes", "--cloud", "{pocket}"),
+        {"pocket": "cloud_archive_pocket"},
+        timeout=600,
+        mutates=True,
+        description="Enable one Ubuntu Cloud Archive pocket, then update the package lists",
+        failure_hint=ADD_APT_REPOSITORY_FAILURE_HINT,
+    ),
+    CommandSpec(
+        APT_CACHE_POLICY,
+        # /usr/bin/apt-cache (package "apt"). apt-cache(8): it "does not manipulate the
+        # state of the system"; "policy [pkg...] ... prints out detailed information about
+        # the priority selection of the named package" (its versions and the apt sources
+        # providing them), from the local package lists: apt-cache "works independently of
+        # the availability of the configured sources (e.g. offline)".
+        # DIAGNOSTICS: "returns zero on normal operation, decimal 100 on error". An unknown
+        # package still exits 0, with nothing on stdout and an "N:" notice on stderr.
+        ("/usr/bin/apt-cache", "policy", "{package}"),
+        {"package": "package_name"},
+        timeout=60,
+        mutates=False,
+        description="Show the versions of one package and the apt sources providing them",
     ),
     CommandSpec(
         SYSTEMCTL_RESTART,

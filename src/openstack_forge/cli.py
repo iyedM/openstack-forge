@@ -200,8 +200,8 @@ def _apply(args: argparse.Namespace) -> int:
 
     if args.yes and step.declares_commands and not host_root:
         print(
-            f"Error: Step {step_id!r} runs system commands (package installation, service "
-            f"restart), which would act on this host and not on {root_path}. --yes with "
+            f"Error: Step {step_id!r} runs system commands (such as package installation), "
+            f"which would act on this host and not on {root_path}. --yes with "
             "--root other than '/' is refused for such steps; run without --yes to see the "
             "dry run.",
             file=sys.stderr,
@@ -259,7 +259,7 @@ def _print_preview(preview: Any, registry: Any) -> None:
         for command in preview.commands:
             print(f"  {command.describe(registry)}")
     if preview.read_only_commands:
-        print("Read-only commands check() and verify() would run (not run in a dry run):")
+        print("Read-only commands check(), apply() and verify() may run (not run in a dry run):")
         for command in preview.read_only_commands:
             print(f"  {command.describe(registry)}")
 
@@ -349,7 +349,10 @@ def build_parser(runner: CommandRunner | None = None) -> argparse.ArgumentParser
         "--step",
         required=True,
         metavar="STEP_ID",
-        help="Catalog step id to run (implemented: hosts-file, time-sync-controller).",
+        help=(
+            "Catalog step id to run "
+            "(implemented: hosts-file, time-sync-controller, openstack-packages)."
+        ),
     )
     apply_parser.add_argument(
         "--node",

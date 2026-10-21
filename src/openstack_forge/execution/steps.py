@@ -16,6 +16,10 @@ from openstack_forge.execution.chrony import (
 )
 from openstack_forge.execution.commands import CommandExecutor
 from openstack_forge.execution.hosts import HOSTS_STEP_ID, make_hosts_file_step
+from openstack_forge.execution.openstack_packages import (
+    OPENSTACK_PACKAGES_STEP_ID,
+    make_openstack_packages_step,
+)
 
 # factory(root, config, local_node, *, executor) -> step. Steps expose ``id``, ``check()``,
 # ``apply()``, ``verify()``, ``dry_run_preview()`` and ``declares_commands``.
@@ -24,6 +28,7 @@ StepFactory = Callable[..., Any]
 IMPLEMENTED_STEPS: Mapping[str, StepFactory] = {
     HOSTS_STEP_ID: make_hosts_file_step,
     TIME_SYNC_CONTROLLER_STEP_ID: make_time_sync_controller_step,
+    OPENSTACK_PACKAGES_STEP_ID: make_openstack_packages_step,
 }
 
 

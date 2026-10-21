@@ -5,10 +5,13 @@ each node would go through to prepare an OpenStack 2025.1 (Epoxy) deployment.
 
 It is strictly read-only. It reads the configuration file and the step catalog bundled
 with the package, and nothing else: it runs no command, opens no network connection,
-connects to no node and changes nothing. In `openstack-forge apply`, only the
-`hosts-file` step is currently implemented (using confined file operations only, with no
-external commands or network access), it remains marked **unverified** in the catalog,
-and it has not been run on a real VM; see [`docs/engine/README.md`](../engine/README.md).
+connects to no node and changes nothing. In `openstack-forge apply`, three steps are
+implemented: `hosts-file` (confined file operations only, no external command, no
+network), `time-sync-controller` and `openstack-packages`. The last two run reviewed
+system commands; OpenStack Forge's Python code opens no connection, but the apt commands
+they run (`apt-get update`, `apt-get install`, `add-apt-repository`) use the network. All
+three remain marked **unverified** in the catalog and none has been run on a real host;
+see [`docs/engine/README.md`](../engine/README.md).
 
 ## Usage
 
@@ -116,9 +119,10 @@ local wait; on every other node it is a wait for the controller's `time-sync-con
 runs `time-sync-other`) waiting for a step it does not run. Supporting per-role
 dependencies (for example `depends_on` keyed by role) is future work.
 
-`time-sync-controller` is implemented by `openstack-forge apply` (see
-[`docs/engine`](../engine/README.md)); `time-sync-other` is not, and its documentation page
-has not been read yet.
+`time-sync-controller` and `openstack-packages` are implemented by `openstack-forge apply`
+(see [`docs/engine`](../engine/README.md)); `time-sync-other` is not, and its documentation
+page has not been read yet. `openstack-packages` takes its Ubuntu Cloud Archive pocket from
+the supported release table, not from the catalog title.
 
 ### Open decision: network configuration
 

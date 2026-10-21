@@ -1,4 +1,4 @@
-"""Execution building blocks and implemented steps (`hosts-file`).
+"""Execution building blocks and implemented steps.
 
 This package is imported lazily by ``openstack-forge apply`` so that read-only CLI
 commands (``config validate``, ``doctor``, ``plan``) and ``openstack_forge.orchestration``
@@ -6,10 +6,22 @@ never import it. The file edits and the ``hosts-file`` step run no external comm
 use no network; they write only below an explicitly given root directory.
 
 External commands can only run through :class:`CommandExecutor` and an allowlist
-:class:`CommandRegistry`; :data:`DEFAULT_REGISTRY` holds the four reviewed system commands
-used by the (unverified) ``time-sync-controller`` step.
+:class:`CommandRegistry`; :data:`DEFAULT_REGISTRY` holds the seven reviewed system
+commands used by the (unverified) ``time-sync-controller`` and ``openstack-packages``
+steps. The Python code never opens a network connection itself, but some of those
+commands do: ``apt-get update``, ``apt-get install`` and ``add-apt-repository`` download
+from the configured apt sources.
 """
 
+from openstack_forge.execution.apt_output import (
+    REPOSITORY_CHECK_UNCONFIRMED,
+    AptPolicy,
+    AptSource,
+    cloud_archive_sources,
+    cloud_archive_suite,
+    describe_cloud_archive_suite,
+    parse_apt_policy,
+)
 from openstack_forge.execution.audit import AUDIT_FILE_MODE, DEFAULT_AUDIT_TARGET, AuditLog
 from openstack_forge.execution.chrony import (
     CHRONY_BLOCK_NAME,
@@ -23,8 +35,13 @@ from openstack_forge.execution.chrony import (
     verify_chrony_text,
 )
 from openstack_forge.execution.commands import (
+    ADD_APT_REPOSITORY_CLOUD_ARCHIVE,
+    ADD_APT_REPOSITORY_FAILURE_HINT,
+    APT_CACHE_POLICY,
     APT_FAILURE_HINT,
     APT_GET_INSTALL,
+    APT_GET_UPDATE,
+    APT_UPDATE_FAILURE_HINT,
     DEFAULT_OUTPUT_LIMIT,
     DEFAULT_REGISTRY,
     DEFAULT_TERM_GRACE_PERIOD,
@@ -71,6 +88,7 @@ from openstack_forge.execution.errors import (
     FileFormatError,
     MutationRefusedError,
     ParameterError,
+    PreconditionError,
     RootEscapeError,
     StateError,
     UnexpectedExitError,
@@ -104,6 +122,14 @@ from openstack_forge.execution.hosts import (
     verify_hosts_file,
     verify_hosts_text,
 )
+from openstack_forge.execution.openstack_packages import (
+    OPENSTACK_CLIENT_PACKAGE,
+    OPENSTACK_PACKAGES_STEP_ID,
+    SOFTWARE_PROPERTIES_PACKAGE,
+    OpenStackPackagesStep,
+    cloud_archive_pocket,
+    make_openstack_packages_step,
+)
 from openstack_forge.execution.preview import PlannedCommand, StepPreview
 from openstack_forge.execution.redaction import MASK, redact_data, redact_text
 from openstack_forge.execution.state import (
@@ -115,8 +141,27 @@ from openstack_forge.execution.state import (
 from openstack_forge.execution.steps import IMPLEMENTED_STEPS, build_step
 
 __all__ = [
+    "ADD_APT_REPOSITORY_CLOUD_ARCHIVE",
+    "ADD_APT_REPOSITORY_FAILURE_HINT",
+    "APT_CACHE_POLICY",
     "APT_FAILURE_HINT",
     "APT_GET_INSTALL",
+    "APT_GET_UPDATE",
+    "APT_UPDATE_FAILURE_HINT",
+    "OPENSTACK_CLIENT_PACKAGE",
+    "OPENSTACK_PACKAGES_STEP_ID",
+    "REPOSITORY_CHECK_UNCONFIRMED",
+    "SOFTWARE_PROPERTIES_PACKAGE",
+    "AptPolicy",
+    "AptSource",
+    "OpenStackPackagesStep",
+    "PreconditionError",
+    "cloud_archive_pocket",
+    "cloud_archive_sources",
+    "cloud_archive_suite",
+    "describe_cloud_archive_suite",
+    "make_openstack_packages_step",
+    "parse_apt_policy",
     "CHRONY_BLOCK_NAME",
     "CHRONY_CONF_TARGET",
     "DEFAULT_AUDIT_TARGET",

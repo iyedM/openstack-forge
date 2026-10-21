@@ -1,16 +1,23 @@
 # Execution engine and `openstack-forge apply`
 
 `openstack_forge.execution` contains the confined file-editing primitives, redaction helper,
-state store, step engine, an allowlisted command layer, and two implemented deployment
-steps: `hosts-file` and `time-sync-controller`.
+state store, step engine, an allowlisted command layer, and three implemented deployment
+steps: `hosts-file`, `time-sync-controller` and `openstack-packages`.
 
-**Both steps are marked `unverified` in the step catalog, and neither has ever run on a
+**All three steps are marked `unverified` in the step catalog, and none has ever run on a
 real host.** Every other catalog step is rejected as "not implemented" by
 `openstack-forge apply`. `hosts-file` is pure Python file operations confined to the target
 root. [`time-sync-controller`](#step-time-sync-controller-openstack_forgeexecutionchrony)
-is the first step that runs system commands (`apt-get`, `systemctl`, `dpkg-query`), only
-through the [command execution layer](#command-execution-layer), whose registry contains
-exactly four reviewed commands. Nothing uses `sudo` or the network.
+and [`openstack-packages`](#step-openstack-packages-openstack_forgeexecutionopenstack_packages)
+run system commands (`apt-get`, `add-apt-repository`, `apt-cache`, `systemctl`,
+`dpkg-query`), only through the [command execution layer](#command-execution-layer), whose
+registry contains exactly seven reviewed commands. Nothing uses `sudo`.
+
+**Network:** OpenStack Forge's Python code opens no network connection. Some of the
+commands it runs do: `apt-get update`, `apt-get install` and `add-apt-repository` download
+package lists and packages from the node's configured apt sources (and, for
+`openstack-packages`, the Ubuntu Cloud Archive). `hosts-file`, `config validate`, `doctor`
+and `plan` use no network.
 
 ## Why a separate package
 
@@ -184,17 +191,18 @@ openstack-forge apply --config cluster.yaml --step STEP_ID [--node HOSTNAME] [--
 | Option | Meaning |
 | ------ | ------- |
 | `--config PATH` | Cluster configuration (default: `cluster.yaml`), validated before use. |
-| `--step STEP_ID` | Catalog step ID to apply (required). Only steps registered in `IMPLEMENTED_STEPS` (`hosts-file`, `time-sync-controller`) can run; any other catalog step exits with code 1 and `"not implemented"`. |
+| `--step STEP_ID` | Catalog step ID to apply (required). Only steps registered in `IMPLEMENTED_STEPS` (`hosts-file`, `time-sync-controller`, `openstack-packages`) can run; any other catalog step exits with code 1 and `"not implemented"`. |
 | `--node HOSTNAME` | Target node hostname. If omitted, matched against the local machine's hostname (`socket.gethostname()`). |
 | `--root PATH` | Target filesystem root (default: `/`). Used by tests to confine all writes to a temporary directory. |
-| `--yes` | Write changes, run the step's commands and update the state file. Without `--yes`, `apply` runs in **dry-run** mode: it prints the redacted unified diff and the exact argv of every command the step would run, writes nothing, runs nothing, and exits 0. |
+| `--yes` | Write changes, run the step's commands and update the state file. The commands of `time-sync-controller` and `openstack-packages` use the network through apt. Without `--yes`, `apply` runs in **dry-run** mode: it prints the redacted unified diff and the exact argv of every command the step would run, writes nothing, runs nothing, and exits 0. |
 
 - **Catalog status warning:** `apply` prints a visible `WARNING` line when a step is marked
-  `unverified` in `steps.json`, which both implemented steps are.
+  `unverified` in `steps.json`, which all implemented steps are.
 - **Dry run:** shows the file diff (or, when the file does not exist yet because its
-  package is not installed, the block that will be appended), then the mutating commands
-  `apply()` would run in order, then the read-only commands `check()` and `verify()` would
-  run. A dry run does not evaluate `check()`, because that would run commands.
+  package is not installed, the block that will be appended), notes, then the mutating
+  commands `apply()` would run in order, then the read-only commands `check()`, `apply()`
+  (for its preconditions) and `verify()` may run. A dry run does not evaluate `check()`,
+  because that would run commands.
 - **Steps that run commands and `--root`:** for a step that declares commands, `--yes`
   with a `--root` that does not resolve to `/` is refused with exit code 1 before anything
   is written: those commands would act on the real host, not on the root directory. (The
@@ -283,25 +291,29 @@ locking against two engines sharing a state file, and no timeout around a step's
 ## Command execution layer
 
 `openstack_forge.execution.commands` (with `audit.py`) is the only code in the project that
-may start a process on behalf of a deployment step. It exists so that future steps (for
-example installing a package or restarting a service) have one reviewed path for doing so.
-`DEFAULT_REGISTRY` contains exactly the four reviewed commands below, and a test pins
+may start a process on behalf of a deployment step. It exists so that steps (for example
+installing a package or restarting a service) have one reviewed path for doing so.
+`DEFAULT_REGISTRY` contains exactly the seven reviewed commands below, and a test pins
 their argv, parameter types, exit codes and `mutates` flags, so adding or changing one is a
 deliberate edit. The tests only ever run harmless `sys.executable` one-liners; everything
 else uses a fake backend.
 
-| Id | argv | Mutates | Allowed exit codes | Justification |
-| -- | ---- | ------- | ------------------ | ------------- |
-| `apt-get.install` | `/usr/bin/apt-get install --yes {package}` | yes | 0 | apt(8) "SCRIPT USAGE": scripts should use `apt-get`, not `apt`. apt-get(8) `--yes`: "assume yes ... run non-interactively", still aborting on held, unauthenticated or essential packages. Timeout 900 s. |
-| `systemctl.restart` | `/usr/bin/systemctl restart {unit}` | yes | 0 | systemctl(1): stops and starts the unit, starting it if it was not running. Timeout 120 s. |
-| `systemctl.is-active` | `/usr/bin/systemctl is-active {unit}` | no | 0-4 | systemctl(1): exit 0 if active, non-zero otherwise; the LSB codes 1-4 all mean "not active", and the man page advises reading the printed state, so callers also require the output `active`. |
-| `dpkg-query.status` | `/usr/bin/dpkg-query --status {package}` | no | 0, 1 | dpkg-query(1): `--status` shows the status database entry; exit 1 means the package was not found, 2 is fatal. |
+| Id | argv | Mutates | Network | Allowed exit codes | Justification |
+| -- | ---- | ------- | ------- | ------------------ | ------------- |
+| `apt-get.install` | `/usr/bin/apt-get install --yes {package}` | yes | yes (downloads packages) | 0 | apt(8) "SCRIPT USAGE": scripts should use `apt-get`, not `apt`. apt-get(8) `--yes`: "assume yes ... run non-interactively", still aborting on held, unauthenticated or essential packages. Timeout 900 s. |
+| `apt-get.update` | `/usr/bin/apt-get update` | yes (`/var/lib/apt/lists`) | **yes** | 0 | apt-get(8): "update is used to resynchronize the package index files from their sources"; no option needed (it asks nothing); DIAGNOSTICS: 0 on success, 100 on error. Timeout 600 s. |
+| `add-apt-repository.cloud-archive` | `/usr/bin/add-apt-repository --yes --cloud {pocket}` | yes | **yes** (it updates the lists) | 0 | add-apt-repository(1): `-y, --yes` "Assume yes to all queries" (non-interactive); `-C, --cloud` "Add an Ubuntu Cloud Archive ... cloud-archive:CANAME ... the pocket defaults to -updates" (the positional LINE form used by the guide is "deprecated"); `-n, --no-update` "After adding the repository, do not update the package cache", i.e. **it updates the package lists by default**, so no separate `apt-get update` follows it. Timeout 600 s. |
+| `apt-cache.policy` | `/usr/bin/apt-cache policy {package}` | no | no | 0 | apt-cache(8): "does not manipulate the state of the system", works from the local lists "(e.g. offline)"; `policy pkg` prints the package's versions and the sources providing them. DIAGNOSTICS: 0 normally, 100 on error; an unknown package exits 0 with empty stdout and an `N:` notice on stderr. |
+| `systemctl.restart` | `/usr/bin/systemctl restart {unit}` | yes | no | 0 | systemctl(1): stops and starts the unit, starting it if it was not running. Timeout 120 s. |
+| `systemctl.is-active` | `/usr/bin/systemctl is-active {unit}` | no | no | 0-4 | systemctl(1): exit 0 if active, non-zero otherwise; the LSB codes 1-4 all mean "not active", and the man page advises reading the printed state, so callers also require the output `active`. |
+| `dpkg-query.status` | `/usr/bin/dpkg-query --status {package}` | no | no | 0, 1 | dpkg-query(1): `--status` shows the status database entry; exit 1 means the package was not found, 2 is fatal. |
 
-Each path is the one installed by the `apt`, `systemd` and `dpkg` packages on Ubuntu 24.04
-(checked with `dpkg -S`); `PATH` is never searched. No other apt or dpkg option is used:
-in particular no `--force-*`, no `-o Dpkg::Options` and no lock timeout. A configuration
-file prompt from dpkg therefore makes the command fail (stdin is `/dev/null`) instead of
-being answered automatically.
+Each path is the one installed on Ubuntu 24.04 by the package named by `dpkg -S`: `apt`
+(`apt-get`, `apt-cache`), `software-properties-common` (`add-apt-repository`), `systemd`
+and `dpkg`; `PATH` is never searched. No other apt or dpkg option is used: in particular no
+`--force-*`, no `-o Dpkg::Options`, no lock timeout, and no `upgrade`, `dist-upgrade` or
+`reboot` command exists in the registry. A configuration file prompt from dpkg therefore
+makes the command fail (stdin is `/dev/null`) instead of being answered automatically.
 
 ### Allowlist, not command strings
 
@@ -361,7 +373,9 @@ Missing or unexpected parameters are errors too. There is no free-text type.
   error, and the engine appends it to the suggested next action. `apt-get.install` uses
   it to say that apt may have left packages half-installed or half-configured (inspect
   with `dpkg --audit`) and that a "could not get lock" error means another package manager
-  is running (wait; do not delete lock files). No recovery is attempted automatically.
+  is running (wait; do not delete lock files). `apt-get.update` and
+  `add-apt-repository.cloud-archive` point at network reachability of the apt sources and
+  the same lock advice. No recovery is attempted automatically.
 - **Typed errors.** `CommandNotFoundError` (missing or non-executable binary),
   `CommandTimeoutError`, `UnexpectedExitError` (exit code not in `allowed_exit_codes`; carries
   the code and redacted stderr), `ParameterError`, `UnknownCommandError`,
@@ -419,7 +433,7 @@ lines and `allow <subnet>`, and restart the service.
 | Phase | What happens |
 | ----- | ------------ |
 | `check()` | True only if `chrony.conf` needs no edit (pure) **and** `dpkg-query --status chrony` reports `install ok installed`. The file is checked first, so `dpkg-query` is only run when the file is already correct. |
-| `apply()` | `apt-get install --yes chrony`; then the file edit; then `systemctl restart chrony`. |
+| `apply()` | `apt-get update` (a fresh image may have stale or empty package lists; this uses the network); `apt-get install --yes chrony`; then the file edit; then `systemctl restart chrony`. |
 | `verify()` | Pure check that the managed block exists with the expected content and contains `allow <networks.management.subnet>` (and, with `ntp_servers`, that no active `pool`/`server` line is left outside it), plus `systemctl is-active chrony` printing `active`. |
 
 The file edit, in `chrony.conf` only, between `# BEGIN openstack-forge time-sync` and
@@ -440,6 +454,8 @@ controller.
 
 Deviations from the page, and limits:
 
+- `apt-get update` before the install is not on the page; it is there because a freshly
+  installed image may have stale or empty package lists.
 - The page restarts with `service chrony restart`; this step uses `systemctl restart chrony`.
 - The page says to "add, change, or remove" keys as necessary; commenting out the existing
   sources when servers are configured is this project's reading of it.
@@ -448,4 +464,49 @@ Deviations from the page, and limits:
   has not been reviewed yet; `verify()` says so in its details.
 - `time-sync-other` (the other nodes) is in the catalog but not implemented; its page has
   not been read.
+
+## Step: `openstack-packages` (`openstack_forge.execution.openstack_packages`)
+
+**Unverified, and never run on a real host.** It follows
+<https://docs.openstack.org/install-guide/environment-packages-ubuntu.html>, which for
+OpenStack 2025.1 (Epoxy) on Ubuntu 24.04 says to run `add-apt-repository
+cloud-archive:epoxy` "on all nodes that run OpenStack services", then
+`apt install python3-openstackclient`. The step runs on every role.
+
+The pocket is never written in the step: it is the `cloud_archive` of the configuration's
+entry in the supported release table (`openstack_forge.config.releases`), validated as a
+`cloud_archive_pocket` parameter.
+
+| Phase | What happens |
+| ----- | ------------ |
+| `check()` | True only if `dpkg-query --status python3-openstackclient` reports `install ok installed` **and** `apt-cache policy python3-openstackclient` lists an apt source whose suite is `<series>-updates/<name>` for the pocket (for example `noble-updates/epoxy`). The package alone is not enough: Ubuntu 24.04's own archive ships `python3-openstackclient` too (2024.1). |
+| `apply()` | Precondition: `dpkg-query --status software-properties-common` must report it installed (it provides `/usr/bin/add-apt-repository`); otherwise `PreconditionError` names the package, and nothing is installed. Then `add-apt-repository --yes --cloud <pocket>` (which updates the package lists itself), then `apt-get install --yes python3-openstackclient`. |
+| `verify()` | The same two checks, each reported separately in the details ("is not installed", "is not enabled"), always followed by a sentence saying the repository check is unconfirmed on a real host. |
+
+No `apt-get update` is run by this step, because `add-apt-repository` updates the package
+lists unless given `--no-update` (add-apt-repository(1)). No upgrade, dist-upgrade or
+reboot is run, and no other package is requested (apt still installs the client's
+dependencies). `add-apt-repository` and `apt-get` use the network; the Python code does
+not. `--yes` with a `--root` other than `/` is refused, as for every step that declares
+commands.
+
+How the repository is detected: `apt-cache policy` was run read-only on an Ubuntu 24.04
+development machine to see the real output format. Each source line looks like
+`500 http://ubuntu-cloud.archive.canonical.com/ubuntu noble-updates/epoxy/main amd64 Packages`;
+only the suite (`noble-updates/epoxy`) is compared, not the URI, so mirrors count. The
+test fixtures in `tests/fixtures/apt/` are synthetic, modeled on that output.
+
+Deviations from the page, and limits:
+
+- The page uses the positional form `add-apt-repository cloud-archive:epoxy`; the step
+  uses `--cloud cloud-archive:epoxy` because the man page calls the positional LINE form
+  deprecated and ambiguous, and `--yes` because stdin is `/dev/null`.
+- **The Ubuntu Cloud Archive suite naming (`<series>-<pocket>/<name>`) is an assumption
+  not yet confirmed on a host where this step ran**; `verify()` says so.
+- Any Ubuntu series name is accepted in the suite, and source priorities are ignored.
+- `check()` does not require the installed version to come from the pocket: a client
+  installed from Ubuntu's own archive before the pocket was enabled counts as done.
+- `add-apt-repository` is run even if the pocket is already configured (for its update);
+  that re-running it is harmless is assumed, not confirmed.
+- The step does not install `software-properties-common`; the operator must.
 

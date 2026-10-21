@@ -1,0 +1,6 @@
+python3-openstackclient:
+  Installed: (none)
+  Candidate: 6.6.0-0ubuntu2
+  Version table:
+     6.6.0-0ubuntu2 500
+        500 http://archive.ubuntu.com/ubuntu noble/main amd64 Packages

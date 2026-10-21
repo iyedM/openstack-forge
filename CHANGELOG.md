@@ -54,8 +54,10 @@ All notable changes to this project will be documented in this file.
 - `docs/plan/README.md`, including when a step may be marked verified.
 - Execution building blocks in a new `openstack_forge.execution` package, kept separate
   so that `orchestration` and the CLI stay read-only (a test checks they never import it).
-  No real installation step exists yet: there is no `apply` command, no catalog step is
-  executed, and nothing runs commands, uses `sudo` or the network.
+  When this entry was written no real installation step existed: there was no `apply`
+  command, no catalog step was executed, and nothing ran commands, used `sudo` or the
+  network. (Superseded: see the `time-sync-controller` and `openstack-packages` entries
+  below; their apt commands use the network.)
   - `managed_block()` and `ini_set()` (line-based, comment-preserving, no `configparser`)
     with target paths confined to an injectable root, redacted unified diffs, `changed`
     flags, idempotent re-runs that write nothing, a one-time `<file>.orig` backup, and
@@ -125,6 +127,28 @@ All notable changes to this project will be documented in this file.
   `--root` other than `/` is refused for steps that run commands; command audit log at
   `<root>/var/log/openstack-forge/commands.log` (0600).
 - `comment_out_lines(..., exclude_block=...)` to leave a managed block's own lines alone.
+- `openstack-packages` step (`openstack_forge.execution.openstack_packages`), for every
+  role. **Unverified and never run on a real host.** Following the official "OpenStack
+  packages for Ubuntu" page: `add-apt-repository --yes --cloud <pocket>`, then
+  `apt-get install --yes python3-openstackclient`; no upgrade, dist-upgrade or reboot, no
+  other package requested. The pocket comes from the supported release table
+  (`cloud-archive:epoxy` for Ubuntu 24.04 / 2025.1), never from the step code.
+  - `check()` requires both the installed client (`dpkg-query --status`) and an apt source
+    for the pocket in `apt-cache policy python3-openstackclient`, because Ubuntu 24.04's
+    own archive also ships the client.
+  - `apply()` first requires `software-properties-common` (which provides
+    `add-apt-repository`) and fails with `PreconditionError` naming it if it is missing;
+    it never installs it.
+  - `verify()` reports which part failed and always says the repository check (the Ubuntu
+    Cloud Archive suite naming `<series>-updates/<name>`) is unconfirmed on a real host.
+- Three reviewed command specs: `apt-get update` (uses the network), `add-apt-repository
+  --yes --cloud {pocket}` (non-interactive; it updates the package lists itself, per
+  add-apt-repository(1) `--no-update`) and `apt-cache policy {package}` (read-only), with
+  paths from `dpkg -S`, man page justifications and failure hints.
+- `openstack_forge.execution.apt_output`: pure parsers for `dpkg-query --status` and
+  `apt-cache policy` output, with synthetic fixtures in `tests/fixtures/apt/` modeled on
+  real output read on an Ubuntu 24.04 machine.
+- `PreconditionError` for steps whose host prerequisites are missing.
 
 ### Changed
 
@@ -153,6 +177,16 @@ All notable changes to this project will be documented in this file.
   possible half-configured dpkg state and the dpkg lock, without any automatic recovery.
 - The registry test now pins the four reviewed commands instead of asserting an empty
   registry; `IMPLEMENTED_STEPS` moved to `openstack_forge.execution.steps`.
+- `time-sync-controller` now runs `apt-get update` before `apt-get install --yes chrony`,
+  because a fresh image may have stale or empty package lists.
+- The registry test deliberately pins seven reviewed commands (adds `apt-get.update`,
+  `add-apt-repository.cloud-archive`, `apt-cache.policy`).
+- `apply` dry runs label the read-only commands as those `check()`, `apply()` (for its
+  preconditions) and `verify()` may run; `parse_dpkg_status` moved to `apt_output` (still
+  importable from `chrony` and `openstack_forge.execution`).
+- Documentation no longer says that the project or `apply` uses no network: the Python
+  code opens no connection, but the apt commands it runs (`apt-get update`, `apt-get
+  install`, `add-apt-repository`) do.
 
 ### Fixed
 
