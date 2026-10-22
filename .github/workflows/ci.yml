@@ -26,7 +26,9 @@ jobs:
         run: python -m pytest
 
       - name: Run Ruff
-        run: python -m ruff check .
+        run: |
+          python -m ruff check .
+          python -m ruff format --check .
 
   # Re-checks the declared minimum jsonschema (pyproject.toml) against what Ubuntu 24.04
   # ships: python3-jsonschema and python3-yaml from apt, used through a venv with system

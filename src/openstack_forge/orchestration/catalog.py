@@ -11,6 +11,8 @@ A ``depends_on`` entry is either a step id, which applies on every role of the s
 
 from __future__ import annotations
 
+import copy
+import functools
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -98,9 +100,8 @@ def package_resource(relative_path: str) -> Traversable:
     return resource
 
 
-def load_catalog_schema(path: Path | None = None) -> dict[str, Any]:
-    """Load the step catalog JSON Schema and check that it is itself a valid schema."""
-    schema = _read_json(package_resource(CATALOG_SCHEMA_RESOURCE) if path is None else path)
+def _load_catalog_schema_from_source(source: Path | Traversable) -> dict[str, Any]:
+    schema = _read_json(source)
     try:
         Draft202012Validator.check_schema(schema)
     except SchemaError as exc:
@@ -108,14 +109,36 @@ def load_catalog_schema(path: Path | None = None) -> dict[str, Any]:
     return schema
 
 
-def load_catalog(path: Path | None = None) -> StepCatalog:
-    """Load the bundled step catalog (or ``path``), validate it and return it."""
-    source = package_resource(CATALOG_RESOURCE) if path is None else path
+@functools.lru_cache(maxsize=1)
+def _bundled_catalog_schema() -> dict[str, Any]:
+    return _load_catalog_schema_from_source(package_resource(CATALOG_SCHEMA_RESOURCE))
+
+
+def load_catalog_schema(path: Path | None = None) -> dict[str, Any]:
+    """Load the step catalog JSON Schema and check that it is itself a valid schema."""
+    if path is None:
+        return copy.deepcopy(_bundled_catalog_schema())
+    return _load_catalog_schema_from_source(path)
+
+
+def _load_catalog_from_source(source: Path | Traversable) -> StepCatalog:
     data = _read_json(source)
-    issues = validate_catalog(data, load_catalog_schema())
+    issues = validate_catalog(data, _bundled_catalog_schema())
     if issues:
         raise CatalogError(f"Step catalog {source} is invalid:", issues)
     return _build_catalog(data)
+
+
+@functools.lru_cache(maxsize=1)
+def _bundled_catalog() -> StepCatalog:
+    return _load_catalog_from_source(package_resource(CATALOG_RESOURCE))
+
+
+def load_catalog(path: Path | None = None) -> StepCatalog:
+    """Load the bundled step catalog (or ``path``), validate it and return it."""
+    if path is None:
+        return _bundled_catalog()
+    return _load_catalog_from_source(path)
 
 
 def validate_catalog(data: Any, schema: Mapping[str, Any]) -> list[ValidationIssue]:

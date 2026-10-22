@@ -9,6 +9,7 @@ test:
 
 lint:
 	python3 -m ruff check .
+	python3 -m ruff format --check .
 
 format:
 	python3 -m ruff format .

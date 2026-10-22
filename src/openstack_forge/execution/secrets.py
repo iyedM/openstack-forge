@@ -271,6 +271,8 @@ class SecretStore:
             else build_secret_specs((*EXTRA_SECRET_SPECS, *extra_specs))
         )
         self.secret_names: tuple[str, ...] = tuple(self.specs)
+        self._cache_stat_key: tuple[int, int, int] | None = None
+        self._cached_secrets: dict[str, str] | None = None
 
     def ensure(self) -> EnsureResult:
         """Create missing secrets and keep existing ones; never overwrite existing values."""
@@ -281,8 +283,8 @@ class SecretStore:
             if not parent.exists():  # pragma: no cover - defensive
                 raise SecretError(f"Secrets directory {self.display_dir} does not exist")
             self._check_directory()
-            self._check_file()
-            existing = self._read_and_validate()
+            file_stat = self._check_file()
+            existing = self._read_and_validate(file_stat)
         else:
             if parent.exists():
                 self._check_directory()
@@ -316,7 +318,9 @@ class SecretStore:
         payload = json.dumps(merged, indent=2, sort_keys=True) + "\n"
         atomic_write_text(self.path, payload, mode=SECRETS_FILE_MODE)
         self._check_directory()
-        self._check_file()
+        new_stat = self._check_file()
+        self._cache_stat_key = (new_stat.st_ino, new_stat.st_mtime_ns, new_stat.st_size)
+        self._cached_secrets = dict(merged)
         return EnsureResult(
             path=self.display_path,
             created=missing,
@@ -338,8 +342,8 @@ class SecretStore:
                 f"Secrets file {self.display_path} does not exist; "
                 "run 'openstack-forge secrets init' first"
             )
-        self._check_file()
-        loaded = self._read_and_validate()
+        file_stat = self._check_file()
+        loaded = self._read_and_validate(file_stat)
         register_secrets(loaded.values())
         if require_complete:
             missing = [name for name in self.secret_names if name not in loaded]
@@ -408,7 +412,7 @@ class SecretStore:
                 f"permissive than {SECRETS_DIR_MODE:04o} (group/other bits must be 0)"
             )
 
-    def _check_file(self) -> None:
+    def _check_file(self) -> os.stat_result:
         if self.path.is_symlink():
             raise UnsafePathError(
                 f"Refusing to use secrets file {self.display_path}: it is a symlink"
@@ -431,8 +435,20 @@ class SecretStore:
                 f"permissive than {SECRETS_FILE_MODE:04o} "
                 "(execute, group and other bits must be 0)"
             )
+        return file_stat
 
-    def _read_and_validate(self) -> dict[str, str]:
+    def _read_and_validate(self, file_stat: os.stat_result | None = None) -> dict[str, str]:
+        stat_key = (
+            (file_stat.st_ino, file_stat.st_mtime_ns, file_stat.st_size)
+            if file_stat is not None
+            else None
+        )
+        if (
+            stat_key is not None
+            and stat_key == self._cache_stat_key
+            and self._cached_secrets is not None
+        ):
+            return dict(self._cached_secrets)
         try:
             text = self.path.read_bytes().decode("utf-8")
         except UnicodeDecodeError as exc:
@@ -453,4 +469,7 @@ class SecretStore:
         for key, value in raw.items():
             name = validate_secret_name(key, self.specs)
             validated[name] = validate_secret_value(name, value)
+        if stat_key is not None:
+            self._cache_stat_key = stat_key
+            self._cached_secrets = dict(validated)
         return validated

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+import functools
 import json
 from collections import Counter
 from collections.abc import Iterable, Mapping
@@ -42,9 +44,7 @@ def schema_resource() -> Traversable:
     return package
 
 
-def load_schema(path: Path | None = None) -> dict[str, Any]:
-    """Load the cluster JSON Schema (the bundled one by default) and check that it is valid."""
-    source = schema_resource() if path is None else path
+def _load_schema_from_source(source: Path | Traversable) -> dict[str, Any]:
     try:
         schema = json.loads(source.read_text(encoding="utf-8"))
     except OSError as exc:
@@ -59,9 +59,28 @@ def load_schema(path: Path | None = None) -> dict[str, Any]:
     return schema
 
 
+@functools.lru_cache(maxsize=1)
+def _bundled_schema_and_validator() -> tuple[dict[str, Any], Draft202012Validator]:
+    schema = _load_schema_from_source(schema_resource())
+    validator = Draft202012Validator(schema, format_checker=Draft202012Validator.FORMAT_CHECKER)
+    return schema, validator
+
+
+def load_schema(path: Path | None = None) -> dict[str, Any]:
+    """Load the cluster JSON Schema (the bundled one by default) and check that it is valid."""
+    if path is None:
+        schema, _ = _bundled_schema_and_validator()
+        return copy.deepcopy(schema)
+    return _load_schema_from_source(path)
+
+
 def validate_schema(data: Any, schema: Mapping[str, Any]) -> list[ValidationIssue]:
     """Return every structural problem in ``data``, ordered by location."""
-    validator = Draft202012Validator(schema, format_checker=Draft202012Validator.FORMAT_CHECKER)
+    bundled_schema, bundled_validator = _bundled_schema_and_validator()
+    if schema == bundled_schema:
+        validator = bundled_validator
+    else:
+        validator = Draft202012Validator(schema, format_checker=Draft202012Validator.FORMAT_CHECKER)
     errors = sorted(validator.iter_errors(data), key=lambda e: _sort_key(e.absolute_path))
     issues: list[ValidationIssue] = []
     for error in errors:

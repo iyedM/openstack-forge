@@ -9,24 +9,12 @@ import sys
 import tempfile
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from openstack_forge import __version__
-from openstack_forge.config import ConfigError, ConfigValidationError, find_release, load_config
-from openstack_forge.diagnostics import (
-    CommandRunner,
-    DoctorError,
-    format_report_json,
-    format_report_table,
-    run_doctor,
-)
-from openstack_forge.orchestration import (
-    OrchestrationError,
-    build_plan,
-    format_plan_json,
-    format_plan_text,
-    load_catalog,
-)
+
+if TYPE_CHECKING:
+    from openstack_forge.diagnostics import CommandRunner
 
 Handler = Callable[[argparse.Namespace], int]
 
@@ -159,6 +147,8 @@ def _init(args: argparse.Namespace) -> int:
 
 def _load_validated_config(path: str) -> dict[str, Any] | None:
     """Load and validate a configuration file, printing errors to stderr on failure."""
+    from openstack_forge.config import ConfigError, ConfigValidationError, load_config
+
     try:
         return load_config(path)
     except ConfigValidationError as exc:
@@ -174,6 +164,8 @@ def _load_validated_config(path: str) -> dict[str, Any] | None:
 
 def _config_validate(args: argparse.Namespace) -> int:
     """Validate a cluster configuration file; exit 0 if valid, 1 otherwise."""
+    from openstack_forge.config import find_release
+
     path = args.path
     config = _load_validated_config(path)
     if config is None:
@@ -196,6 +188,13 @@ def _config_validate(args: argparse.Namespace) -> int:
 
 def _doctor(args: argparse.Namespace, runner: CommandRunner | None = None) -> int:
     """Run read-only local host checks for a node in the cluster configuration."""
+    from openstack_forge.diagnostics import (
+        DoctorError,
+        format_report_json,
+        format_report_table,
+        run_doctor,
+    )
+
     config = _load_validated_config(args.config)
     if config is None:
         return 1
@@ -215,6 +214,14 @@ def _doctor(args: argparse.Namespace, runner: CommandRunner | None = None) -> in
 
 def _plan(args: argparse.Namespace) -> int:
     """Print the ordered, read-only deployment plan; runs no command on any host."""
+    from openstack_forge.orchestration import (
+        OrchestrationError,
+        build_plan,
+        format_plan_json,
+        format_plan_text,
+        load_catalog,
+    )
+
     config = _load_validated_config(args.config)
     if config is None:
         return 1
@@ -257,6 +264,7 @@ def _apply(
         resolve_apply_node,
         resolve_target,
     )
+    from openstack_forge.orchestration import OrchestrationError, build_plan, load_catalog
 
     active_backend = backend if backend is not None else executor_backend
 
@@ -489,6 +497,7 @@ def _verify(
         resolve_apply_node,
         resolve_target,
     )
+    from openstack_forge.orchestration import OrchestrationError, build_plan, load_catalog
 
     active_backend = backend if backend is not None else executor_backend
 
@@ -753,7 +762,10 @@ def build_parser(
     active_backend = backend if backend is not None else executor_backend
     parser = argparse.ArgumentParser(
         prog="openstack-forge",
-        description="OpenStack Forge CLI scaffold for future deployment automation.",
+        description=(
+            "OpenStack Forge CLI for validating, diagnosing, planning, applying, "
+            "and verifying multi-node OpenStack 2025.1 (Epoxy) deployments on Ubuntu 24.04."
+        ),
     )
     parser.add_argument(
         "--version",
@@ -784,6 +796,7 @@ def build_parser(
     init_parser.set_defaults(func=_init)
 
     config_parser = subparsers.add_parser("config", help="Configuration commands.")
+    config_parser.set_defaults(func=lambda _args: (config_parser.print_help(), 0)[1])
     config_subparsers = config_parser.add_subparsers(dest="config_command")
     config_validate = config_subparsers.add_parser(
         "validate",
@@ -932,6 +945,7 @@ def build_parser(
         "secrets",
         help="Manage the local 0600 OpenStack secrets store.",
     )
+    secrets_parser.set_defaults(func=lambda _args: (secrets_parser.print_help(), 0)[1])
     secrets_subparsers = secrets_parser.add_subparsers(dest="secrets_command")
 
     secrets_init = secrets_subparsers.add_parser(

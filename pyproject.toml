@@ -5,24 +5,27 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "openstack-forge"
 version = "0.1.0"
-description = "An early-stage toolkit for automating OpenStack private cloud preparation and validation on Ubuntu servers."
+description = "Deterministic, idempotent CLI and execution engine for multi-node OpenStack 2025.1 (Epoxy) private cloud deployments on Ubuntu 24.04."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 authors = [{ name = "OpenStack Forge contributors" }]
-keywords = ["openstack", "automation", "ansible", "devops", "cloud"]
+keywords = ["openstack", "epoxy", "ubuntu", "infrastructure", "automation", "devops", "cloud", "cli"]
 classifiers = [
-  "Development Status :: 2 - Pre-Alpha",
+  "Development Status :: 4 - Beta",
   "Environment :: Console",
   "Intended Audience :: System Administrators",
+  "Intended Audience :: Developers",
   "License :: OSI Approved :: Apache Software License",
   "Operating System :: POSIX :: Linux",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Topic :: System :: Installation/Setup",
   "Topic :: System :: Systems Administration",
+  "Typing :: Typed",
 ]
 
 dependencies = [
