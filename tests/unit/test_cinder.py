@@ -734,3 +734,7 @@ def test_check_cinder_lvm_root_safety_fstab_and_non_lvm_root(tmp_path: Path) -> 
     fstab.write_text("/dev/ubuntu-vg/ubuntu-lv / ext4 defaults 0 1\n", encoding="utf-8")
     with pytest.raises(PreconditionError, match="ubuntu-vg/ubuntu-lv"):
         check_cinder_lvm_root_safety(root, BLOCK_NODE, SAMPLE_CONFIG)
+
+    # Schema-valid node.tags list containing ALLOW_LVM_ROOT_FILTER_OVERRIDE_KEY permits it
+    tagged_node = {**BLOCK_NODE, "tags": [ALLOW_LVM_ROOT_FILTER_OVERRIDE_KEY]}
+    check_cinder_lvm_root_safety(root, tagged_node, SAMPLE_CONFIG)

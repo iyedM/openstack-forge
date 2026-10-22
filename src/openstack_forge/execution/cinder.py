@@ -184,6 +184,7 @@ Deviations from the guide and design decisions
 from __future__ import annotations
 
 import re
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from ipaddress import IPv4Address
@@ -235,6 +236,9 @@ from openstack_forge.execution.fsutil import (
 )
 from openstack_forge.execution.openstack_cli import (
     ADMIN_ROLE_NAME,
+    DEFAULT_READINESS_INITIAL_BACKOFF,
+    DEFAULT_READINESS_MAX_ATTEMPTS,
+    DEFAULT_READINESS_MAX_BACKOFF,
     ENDPOINT_INTERFACES,
     SERVICE_PROJECT_NAME,
     ensure_service_catalog,
@@ -243,6 +247,7 @@ from openstack_forge.execution.openstack_cli import (
     service_catalog_ready,
     service_user_problems,
     service_user_ready,
+    wait_for_keystone_ready,
 )
 from openstack_forge.execution.preview import PlannedCommand, StepPreview
 from openstack_forge.execution.redaction import MASK, redact_text
@@ -461,6 +466,11 @@ def _allow_lvm_root_filter_override(
         return True
     tags = local_node.get("tags")
     if isinstance(tags, Mapping) and tags.get(ALLOW_LVM_ROOT_FILTER_OVERRIDE_KEY) is True:
+        return True
+    if (
+        isinstance(tags, (list, tuple, set, frozenset))
+        and ALLOW_LVM_ROOT_FILTER_OVERRIDE_KEY in tags
+    ):
         return True
     return isinstance(config, Mapping) and config.get(ALLOW_LVM_ROOT_FILTER_OVERRIDE_KEY) is True
 
@@ -1088,6 +1098,10 @@ class CinderControllerStep:
     local_node: Mapping[str, Any]
     executor: CommandExecutor
     id: str = CINDER_CONTROLLER_STEP_ID
+    sleep: Callable[[float], None] = time.sleep
+    readiness_max_attempts: int = DEFAULT_READINESS_MAX_ATTEMPTS
+    readiness_initial_backoff: float = DEFAULT_READINESS_INITIAL_BACKOFF
+    readiness_max_backoff: float = DEFAULT_READINESS_MAX_BACKOFF
     declares_commands: bool = True
 
     def __post_init__(self) -> None:
@@ -1265,6 +1279,14 @@ class CinderControllerStep:
         )
 
         provision_service_database(self.executor, (CINDER_DB_NAME,), CINDER_DB_USER, db_password)
+        wait_for_keystone_ready(
+            self.executor,
+            admin_password,
+            max_attempts=self.readiness_max_attempts,
+            initial_backoff=self.readiness_initial_backoff,
+            max_backoff=self.readiness_max_backoff,
+            sleep=self.sleep,
+        )
         ensure_service_user(self.executor, admin_password, CINDER_SERVICE_USER, cinder_password)
         ensure_service_catalog(
             self.executor,
@@ -1287,6 +1309,14 @@ class CinderControllerStep:
         edit_nova_controller_cinder_conf(self.root, dry_run=False)
         for cmd in RESTART_CINDER_CONTROLLER_UNITS:
             self.executor.run(cmd.command_id, cmd.params)
+        wait_for_keystone_ready(
+            self.executor,
+            admin_password,
+            max_attempts=self.readiness_max_attempts,
+            initial_backoff=self.readiness_initial_backoff,
+            max_backoff=self.readiness_max_backoff,
+            sleep=self.sleep,
+        )
 
     def verify(self) -> VerifyResult:
         """Verify secrets, ``cinder.conf``, ``nova.conf``, packages, units, MariaDB, & Keystone."""
