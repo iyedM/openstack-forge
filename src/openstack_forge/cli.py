@@ -138,6 +138,10 @@ def _init(args: argparse.Namespace) -> int:
                 handle.write(STARTER_CLUSTER_YAML)
                 handle.flush()
                 os.fsync(handle.fileno())
+            if abs_output.is_symlink():
+                tmp_path.unlink(missing_ok=True)
+                print(f"Error: Refusing to write to symlink: {output_path}", file=sys.stderr)
+                return 1
             os.replace(tmp_path, abs_output)
         except BaseException:
             tmp_path.unlink(missing_ok=True)
@@ -249,6 +253,7 @@ def _apply(
         build_step,
         format_report,
         is_host_root,
+        redact_text,
         resolve_apply_node,
         resolve_target,
     )
@@ -308,7 +313,7 @@ def _apply(
         )
         local_node = resolve_apply_node(config, root=root_path, node_hostname=args.node)
     except ExecutionError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        print(f"Error: {redact_text(str(exc))}", file=sys.stderr)
         return 1
 
     if args.all:
@@ -337,7 +342,7 @@ def _apply(
             ]
             previews = [step.dry_run_preview() for step in steps]
         except ExecutionError as exc:
-            print(f"Error: {exc}", file=sys.stderr)
+            print(f"Error: {redact_text(str(exc))}", file=sys.stderr)
             return 1
 
         if args.yes and not host_root and active_backend is None:
@@ -386,7 +391,7 @@ def _apply(
                     audit_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
                 report = Engine(StateStore(state_path)).run(steps)
         except ExecutionError as exc:
-            print(f"Error: {exc}", file=sys.stderr)
+            print(f"Error: {redact_text(str(exc))}", file=sys.stderr)
             return 1
 
         applied_ids = {
@@ -397,7 +402,8 @@ def _apply(
                 if step.id in applied_ids and preview.files_changed:
                     for change in preview.file_changes:
                         if change.changed:
-                            print(change.diff, end="" if change.diff.endswith("\n") else "\n")
+                            diff_out = redact_text(change.diff)
+                            print(diff_out, end="" if diff_out.endswith("\n") else "\n")
         print(format_report(report))
         return 0 if report.ok else 1
 
@@ -412,7 +418,7 @@ def _apply(
         step = build_step(step_id, root_path, config, local_node, executor=executor)
         preview = step.dry_run_preview()
     except ExecutionError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        print(f"Error: {redact_text(str(exc))}", file=sys.stderr)
         return 1
 
     if args.yes and step.declares_commands and not host_root and active_backend is None:
@@ -452,13 +458,14 @@ def _apply(
                 audit_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             report = Engine(StateStore(state_path)).run([step])
     except ExecutionError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        print(f"Error: {redact_text(str(exc))}", file=sys.stderr)
         return 1
 
     if preview.files_changed and report.ok:
         for change in preview.file_changes:
             if change.changed:
-                print(change.diff, end="" if change.diff.endswith("\n") else "\n")
+                diff_out = redact_text(change.diff)
+                print(diff_out, end="" if diff_out.endswith("\n") else "\n")
     print(format_report(report))
     return 0 if report.ok else 1
 
@@ -526,9 +533,9 @@ def _verify(
         )
         local_node = resolve_apply_node(config, root=root_path, node_hostname=args.node)
         state_path, _ = resolve_target(root_path, DEFAULT_STATE_TARGET)
-        recorded_states = StateStore(state_path).load() if state_path.exists() else {}
+        recorded_states = StateStore(state_path).load()
     except ExecutionError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        print(f"Error: {redact_text(str(exc))}", file=sys.stderr)
         return 1
 
     if args.step is not None:
@@ -639,6 +646,7 @@ def _secrets_init(args: argparse.Namespace) -> int:
         ExecutionError,
         SecretStore,
         is_host_root,
+        redact_text,
     )
 
     root_path = Path(args.root) if args.root is not None else Path("/")
@@ -655,7 +663,7 @@ def _secrets_init(args: argparse.Namespace) -> int:
     try:
         result = SecretStore(root_path, target).ensure()
     except ExecutionError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        print(f"Error: {redact_text(str(exc))}", file=sys.stderr)
         return 1
 
     print(f"Secrets store: {result.path}")
@@ -670,14 +678,19 @@ def _secrets_init(args: argparse.Namespace) -> int:
 
 def _secrets_show(args: argparse.Namespace) -> int:
     """Print a single secret value to stdout and nothing else."""
-    from openstack_forge.execution import DEFAULT_SECRETS_TARGET, ExecutionError, SecretStore
+    from openstack_forge.execution import (
+        DEFAULT_SECRETS_TARGET,
+        ExecutionError,
+        SecretStore,
+        redact_text,
+    )
 
     root_path = Path(args.root) if args.root is not None else Path("/")
     target = args.file if args.file is not None else DEFAULT_SECRETS_TARGET
     try:
         value = SecretStore(root_path, target).get(args.name)
     except ExecutionError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        print(f"Error: {redact_text(str(exc))}", file=sys.stderr)
         return 1
 
     print(value)
@@ -686,7 +699,12 @@ def _secrets_show(args: argparse.Namespace) -> int:
 
 def _secrets_list(args: argparse.Namespace) -> int:
     """List known secret names, their present/missing status, and descriptions (never values)."""
-    from openstack_forge.execution import DEFAULT_SECRETS_TARGET, ExecutionError, SecretStore
+    from openstack_forge.execution import (
+        DEFAULT_SECRETS_TARGET,
+        ExecutionError,
+        SecretStore,
+        redact_text,
+    )
 
     root_path = Path(args.root) if args.root is not None else Path("/")
     target = args.file if args.file is not None else DEFAULT_SECRETS_TARGET
@@ -694,7 +712,7 @@ def _secrets_list(args: argparse.Namespace) -> int:
         store = SecretStore(root_path, target)
         present = store.present_names()
     except ExecutionError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        print(f"Error: {redact_text(str(exc))}", file=sys.stderr)
         return 1
 
     print(f"Secrets store: {store.display_path}")
@@ -706,14 +724,19 @@ def _secrets_list(args: argparse.Namespace) -> int:
 
 def _secrets_path(args: argparse.Namespace) -> int:
     """Print the resolved filesystem path of the secrets store."""
-    from openstack_forge.execution import DEFAULT_SECRETS_TARGET, ExecutionError, SecretStore
+    from openstack_forge.execution import (
+        DEFAULT_SECRETS_TARGET,
+        ExecutionError,
+        SecretStore,
+        redact_text,
+    )
 
     root_path = Path(args.root) if args.root is not None else Path("/")
     target = args.file if args.file is not None else DEFAULT_SECRETS_TARGET
     try:
         store = SecretStore(root_path, target)
     except ExecutionError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        print(f"Error: {redact_text(str(exc))}", file=sys.stderr)
         return 1
 
     print(store.path)

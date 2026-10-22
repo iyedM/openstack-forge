@@ -1614,6 +1614,15 @@ class CommandResult:
     stdout_truncated: bool = False
     stderr_truncated: bool = False
 
+    def __repr__(self) -> str:
+        return (
+            f"CommandResult(command_id={self.command_id!r}, argv={self.argv!r}, "
+            f"returncode={self.returncode!r}, stdout={redact_text(self.stdout)!r}, "
+            f"stderr={redact_text(self.stderr)!r}, duration={self.duration!r}, "
+            f"dry_run={self.dry_run!r}, stdout_truncated={self.stdout_truncated!r}, "
+            f"stderr_truncated={self.stderr_truncated!r})"
+        )
+
     @property
     def ok(self) -> bool:
         return self.returncode == 0

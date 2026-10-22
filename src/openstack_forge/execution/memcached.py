@@ -6,7 +6,7 @@ Ubuntu 18.04 and newer says:
 
 1. ``apt install memcached python3-memcache``;
 2. edit ``/etc/memcached.conf`` and "configure the service to use the management IP
-   address of the controller node": ``-l 10.0.0.11``, with the note "Change the existing
+   address of the controller node": ``-l <MANAGEMENT_IP>``, with the note "Change the existing
    line that had -l 127.0.0.1";
 3. ``service memcached restart``.
 

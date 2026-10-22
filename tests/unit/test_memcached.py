@@ -216,7 +216,8 @@ def test_no_listen_line_at_all(root: Path, config) -> None:
 
 
 @pytest.mark.parametrize(
-    "line", ["-l 0.0.0.0", "-l127.0.0.1", "--listen=10.9.9.9", "--listen 10.9.9.9", "  -l ::1"]
+    "line",
+    ["-l 0.0.0.0", "-l127.0.0.1", "--listen=198.51.100.9", "--listen 198.51.100.9", "  -l ::1"],
 )
 def test_already_changed_listen_lines_are_disabled(root: Path, config, line: str) -> None:
     path = _conf(root, f"-m 64\n{line}\n")
@@ -251,7 +252,7 @@ def test_verify_text_problems(config) -> None:
     assert verify_memcached_text(SAMPLE, node) == [
         "the managed block 'openstack-forge memcached' is missing"
     ]
-    wrong = f"-m 64\n{BEGIN}\n-l 10.0.0.11\n{END}\n"
+    wrong = f"-m 64\n{BEGIN}\n-l 198.51.100.11\n{END}\n"
     assert verify_memcached_text(wrong, node) == [
         "the managed block does not contain exactly '-l 192.0.2.11'"
     ]
@@ -370,7 +371,7 @@ def test_verify_success(root: Path, config, tmp_path) -> None:
     [
         (None, BOTH, {"memcached"}, "/etc/memcached.conf does not exist"),
         (
-            f"{BEGIN}\n-l 10.0.0.11\n{END}\n",
+            f"{BEGIN}\n-l 198.51.100.11\n{END}\n",
             BOTH,
             {"memcached"},
             "the managed block does not contain exactly '-l 192.0.2.11'",
@@ -419,7 +420,7 @@ def test_cli_dry_run_with_the_file(root: Path, capsys: pytest.CaptureFixture[str
     assert "--- a/etc/memcached.conf" in out
     assert f"+{DISABLED_LINE_PREFIX}-l 127.0.0.1" in out
     assert f"+{DISABLED_LINE_PREFIX}-l ::1" in out
-    assert "+-l 10.10.40.11" in out
+    assert "+-l 192.0.2.11" in out
     assert COMMANDS in out
     assert "systemd-memcached-wrapper" in out
     assert "the management network must be trusted" in out
@@ -432,7 +433,7 @@ def test_cli_dry_run_without_the_file(root: Path, capsys: pytest.CaptureFixture[
     assert "/etc/memcached.conf does not exist yet; it is created when memcached is installed" in (
         out
     )
-    assert f"{BEGIN}\n-l 10.10.40.11\n{END}\n" in out
+    assert f"{BEGIN}\n-l 192.0.2.11\n{END}\n" in out
     assert COMMANDS in out
     assert not (root / CONF).exists()
 

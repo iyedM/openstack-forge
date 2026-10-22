@@ -925,7 +925,7 @@ Deviations, trade-offs, and limits:
 **Unverified, and never run on a real host.** Source:
 <https://docs.openstack.org/install-guide/environment-memcached-ubuntu.html>, which for
 Ubuntu 18.04 and newer says `apt install memcached python3-memcache`, edit
-`/etc/memcached.conf` to use the controller's management IP with `-l 10.0.0.11` ("Change
+`/etc/memcached.conf` to use the controller's management IP with `-l <MANAGEMENT_IP>` ("Change
 the existing line that had -l 127.0.0.1"), then `service memcached restart`.
 
 | Phase | What happens |

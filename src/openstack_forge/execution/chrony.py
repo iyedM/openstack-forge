@@ -45,6 +45,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from ipaddress import IPv4Network
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -101,6 +102,12 @@ TIME_SYNC_NOT_CHECKED = (
 )
 
 
+_NTP_SERVER_RE = re.compile(
+    r"^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$"
+)
+
+
 def build_chrony_block(config: Mapping[str, Any]) -> str:
     """The managed block content: one ``server`` line per NTP server, then ``allow``."""
     networks = config["networks"]
@@ -109,9 +116,18 @@ def build_chrony_block(config: Mapping[str, Any]) -> str:
             "time-sync-controller needs networks.management: the guide's 'allow' line "
             "uses the management subnet"
         )
+    subnet_raw = networks["management"]["subnet"]
+    try:
+        subnet = str(IPv4Network(subnet_raw, strict=True))
+    except Exception as exc:
+        raise ExecutionError(f"Invalid management subnet {subnet_raw!r}: {exc}") from exc
     servers = config["cluster"].get("ntp_servers", ())
-    lines = [f"server {server} iburst" for server in servers]
-    lines.append(f"allow {networks['management']['subnet']}")
+    lines: list[str] = []
+    for server in servers:
+        if not isinstance(server, str) or not _NTP_SERVER_RE.fullmatch(server):
+            raise ExecutionError(f"Invalid NTP server {server!r}")
+        lines.append(f"server {server} iburst")
+    lines.append(f"allow {subnet}")
     return "\n".join(lines) + "\n"
 
 

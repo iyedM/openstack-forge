@@ -86,7 +86,7 @@ def test_identify_node_not_found(valid_config) -> None:
         identify_node(
             valid_config["nodes"],
             local_hostname="laptop",
-            local_ipv4s=["10.254.0.5"],
+            local_ipv4s=["203.0.113.5"],
         )
 
 

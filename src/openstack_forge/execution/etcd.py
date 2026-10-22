@@ -5,18 +5,18 @@ Follows the official page
 
 1. ``apt install etcd``, with the notes that since Ubuntu 18.04 the package needs the
    Universe repository and that "for Ubuntu 24.04" the package is ``etcd-server``;
-2. edit ``/etc/default/etcd`` and set (``10.0.0.11`` being the controller's management
+2. edit ``/etc/default/etcd`` and set (``192.0.2.11`` representing the controller's management
    IP address, ``controller`` its name)::
 
        ETCD_NAME="controller"
        ETCD_DATA_DIR="/var/lib/etcd"
        ETCD_INITIAL_CLUSTER_STATE="new"
        ETCD_INITIAL_CLUSTER_TOKEN="etcd-cluster-01"
-       ETCD_INITIAL_CLUSTER="controller=http://10.0.0.11:2380"
-       ETCD_INITIAL_ADVERTISE_PEER_URLS="http://10.0.0.11:2380"
-       ETCD_ADVERTISE_CLIENT_URLS="http://10.0.0.11:2379"
+       ETCD_INITIAL_CLUSTER="controller=http://192.0.2.11:2380"
+       ETCD_INITIAL_ADVERTISE_PEER_URLS="http://192.0.2.11:2380"
+       ETCD_ADVERTISE_CLIENT_URLS="http://192.0.2.11:2379"
        ETCD_LISTEN_PEER_URLS="http://0.0.0.0:2380"
-       ETCD_LISTEN_CLIENT_URLS="http://10.0.0.11:2379"
+       ETCD_LISTEN_CLIENT_URLS="http://192.0.2.11:2379"
 
 3. ``systemctl enable etcd`` and ``systemctl restart etcd``.
 

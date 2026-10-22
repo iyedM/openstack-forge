@@ -173,7 +173,7 @@ def test_values_come_from_the_configuration(config) -> None:
     block = etcd_block(other)
     assert 'ETCD_INITIAL_CLUSTER="controller=http://198.51.100.7:2380"' in block
     assert 'ETCD_LISTEN_CLIENT_URLS="http://198.51.100.7:2379"' in block
-    assert "192.0.2.11" not in block and "10.0.0.11" not in block
+    assert "192.0.2.11" not in block and "203.0.113.11" not in block
 
 
 def test_real_package_default_etcd_file_keeps_header_and_appends_block(root: Path, config) -> None:
@@ -422,7 +422,7 @@ def test_cli_dry_run_with_the_file(root: Path, capsys: pytest.CaptureFixture[str
     out = capsys.readouterr().out
     assert "WARNING: Step 'etcd' is marked UNVERIFIED" in out
     assert "--- a/etc/default/etcd" in out
-    assert '+ETCD_INITIAL_CLUSTER="controller=http://10.10.40.11:2380"' in out
+    assert '+ETCD_INITIAL_CLUSTER="controller=http://192.0.2.11:2380"' in out
     assert COMMANDS in out and READ_ONLY in out
     assert "EnvironmentFile=-/etc/default/%p" in out
     assert "peers listen on all interfaces (0.0.0.0:2380)" in out
@@ -433,7 +433,7 @@ def test_cli_dry_run_without_the_file(root: Path, capsys: pytest.CaptureFixture[
     assert main(_args(root)) == 0
     out = capsys.readouterr().out
     assert "/etc/default/etcd does not exist yet; it is installed by the etcd-server package" in out
-    assert 'ETCD_LISTEN_CLIENT_URLS="http://10.10.40.11:2379"\n# END openstack-forge etcd' in out
+    assert 'ETCD_LISTEN_CLIENT_URLS="http://192.0.2.11:2379"\n# END openstack-forge etcd' in out
     assert COMMANDS in out
     assert not (root / DEFAULTS).exists()
 

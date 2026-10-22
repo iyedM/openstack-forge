@@ -11,6 +11,7 @@ import re
 import socket
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from ipaddress import IPv4Address
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -67,6 +68,28 @@ def _extract_local_node(
     return local_node
 
 
+_HOSTNAME_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+_FQDN_RE = re.compile(
+    r"^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+"
+    r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$"
+)
+
+
+def _validate_node_host_fields(node: Mapping[str, Any]) -> tuple[str, str, str]:
+    mgmt_raw = node.get("management_ip")
+    hostname = node.get("hostname")
+    fqdn = node.get("fqdn")
+    try:
+        mgmt_ip = str(IPv4Address(mgmt_raw))
+    except Exception as exc:
+        raise ExecutionError(f"Invalid management_ip {mgmt_raw!r}") from exc
+    if not isinstance(hostname, str) or not _HOSTNAME_RE.fullmatch(hostname):
+        raise ExecutionError(f"Invalid hostname {hostname!r}")
+    if not isinstance(fqdn, str) or not _FQDN_RE.fullmatch(fqdn):
+        raise ExecutionError(f"Invalid fqdn {fqdn!r}")
+    return mgmt_ip, fqdn, hostname
+
+
 def build_hosts_block(nodes_or_config: NodesOrConfig) -> str:
     """Build the managed ``/etc/hosts`` block for every node in ``nodes_or_config``.
 
@@ -77,20 +100,19 @@ def build_hosts_block(nodes_or_config: NodesOrConfig) -> str:
     nodes = _extract_nodes(nodes_or_config)
     lines: list[str] = []
     for node in nodes:
-        raw_names = [node["fqdn"], node["hostname"]]
+        mgmt_ip, fqdn, hostname = _validate_node_host_fields(node)
+        raw_names = [fqdn, hostname]
         if node["role"] == "controller":
             raw_names.append(CONTROLLER_ALIAS)
         names = _deduplicate_case_insensitive(raw_names)
-        lines.append(f"{node['management_ip']} {' '.join(names)}")
+        lines.append(f"{mgmt_ip} {' '.join(names)}")
     return "\n".join(lines) + ("\n" if lines else "")
 
 
 def build_127_0_1_1_pattern(local_node: Mapping[str, Any]) -> re.Pattern[str]:
     """Regex matching active ``127.0.1.1`` lines that map to ``local_node``'s name or FQDN."""
-    names = "|".join(
-        re.escape(name)
-        for name in _deduplicate_case_insensitive((local_node["fqdn"], local_node["hostname"]))
-    )
+    _, fqdn, hostname = _validate_node_host_fields(local_node)
+    names = "|".join(re.escape(name) for name in _deduplicate_case_insensitive((fqdn, hostname)))
     return re.compile(
         rf"^\s*127\.0\.1\.1(?:\s+[^#\s]+)*\s+(?:{names})(?=\s|$|#)",
         re.IGNORECASE,

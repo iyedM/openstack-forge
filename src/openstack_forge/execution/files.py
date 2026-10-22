@@ -70,6 +70,8 @@ def _managed_block_editor(
     comment: str = "#",
 ) -> Callable[[list[str], str], list[str]]:
     _require_single_line("block name", name)
+    if "\x00" in content:
+        raise FileFormatError("Block content contains NUL bytes")
     begin, end = f"{comment} BEGIN {name}", f"{comment} END {name}"
     body = content.split("\n")
     if content.endswith("\n"):
@@ -555,5 +557,7 @@ def _compile_line_pattern(pattern: str | re.Pattern[str]) -> re.Pattern[str]:
 def _require_single_line(label: str, text: str, *, allow_empty: bool = False) -> None:
     if not allow_empty and not text.strip():
         raise ValueError(f"The {label} must not be empty")
+    if "\x00" in text:
+        raise ValueError(f"The {label} must not contain NUL bytes")
     if "\n" in text or "\r" in text:
         raise ValueError(f"The {label} must be a single line")

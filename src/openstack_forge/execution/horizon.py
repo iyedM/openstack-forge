@@ -128,6 +128,7 @@ Deviations from the guide and design decisions
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from ipaddress import IPv4Address
@@ -205,6 +206,13 @@ def _require_conf_exists(root: Path, target: str, package_hint: str) -> None:
         )
 
 
+_HOSTNAME_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+_FQDN_RE = re.compile(
+    r"^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+"
+    r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$"
+)
+
+
 def horizon_allowed_hosts(local_node: Mapping[str, Any]) -> tuple[str, ...]:
     """Build the deduplicated ``ALLOWED_HOSTS`` tuple for ``local_settings.py``."""
     hostname = local_node.get("hostname")
@@ -212,8 +220,12 @@ def horizon_allowed_hosts(local_node: Mapping[str, Any]) -> tuple[str, ...]:
     mgmt_ip_raw = local_node.get("management_ip")
     if not isinstance(hostname, str) or not hostname.strip():
         raise PreconditionError("Controller node is missing a non-empty 'hostname'")
+    if not _HOSTNAME_RE.fullmatch(hostname.strip()):
+        raise PreconditionError(f"Controller node has an invalid 'hostname': {hostname!r}")
     if not isinstance(fqdn, str) or not fqdn.strip():
         raise PreconditionError("Controller node is missing a non-empty 'fqdn'")
+    if not _FQDN_RE.fullmatch(fqdn.strip()):
+        raise PreconditionError(f"Controller node has an invalid 'fqdn': {fqdn!r}")
     try:
         mgmt_ip = str(IPv4Address(mgmt_ip_raw))
     except Exception as exc:

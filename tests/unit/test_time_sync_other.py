@@ -212,7 +212,7 @@ def test_a_source_line_added_later_is_commented_out_on_the_next_run(root: Path) 
 
 
 def test_a_wrong_block_is_replaced(root: Path) -> None:
-    path = _write_conf(root, SAMPLE_CONF + f"{BEGIN}\nserver 10.0.0.1 iburst\n{END}\n")
+    path = _write_conf(root, SAMPLE_CONF + f"{BEGIN}\nserver 198.51.100.1 iburst\n{END}\n")
     edit_chrony_conf_other(root, dry_run=False)
     assert path.read_text() == EDITED_CONF
 
@@ -251,7 +251,7 @@ def test_verify_chrony_other_text_reports_problems() -> None:
     assert verify_chrony_other_text(SAMPLE_CONF + f"{BEGIN}\n") == [
         f"the managed block '{CHRONY_BLOCK_NAME}' has broken markers"
     ]
-    wrong = EDITED_CONF.replace("server controller iburst", "server 10.0.0.1 iburst")
+    wrong = EDITED_CONF.replace("server controller iburst", "server 198.51.100.1 iburst")
     assert verify_chrony_other_text(wrong) == [
         "'server controller iburst' is missing from the managed block",
         "the managed block differs from the expected content",

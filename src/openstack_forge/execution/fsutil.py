@@ -44,9 +44,14 @@ def resolve_target(root: Path, target: str | PurePosixPath) -> tuple[Path, str]:
     return root_dir.joinpath(*parts), "/" + "/".join(parts)
 
 
+def _has_symlink_component(path: Path) -> bool:
+    """True if ``path`` or its immediate parent directory is a symbolic link."""
+    return os.path.islink(path) or os.path.islink(path.parent)
+
+
 def read_text_file(path: Path, display: str) -> str | None:
     """Read a UTF-8, LF-only text file; return None if it does not exist."""
-    if path.is_symlink():
+    if _has_symlink_component(path) or path != path.resolve(strict=False):
         raise UnsafePathError(f"Refusing to modify {display}: it is a symlink")
     if not path.exists():
         if not path.parent.is_dir():
@@ -58,6 +63,8 @@ def read_text_file(path: Path, display: str) -> str | None:
         text = path.read_bytes().decode("utf-8")
     except UnicodeDecodeError as exc:
         raise FileFormatError(f"{display} is not valid UTF-8 text") from exc
+    if "\x00" in text:
+        raise FileFormatError(f"{display} contains NUL bytes; binary files are not supported")
     if "\r" in text:
         raise FileFormatError(
             f"{display} contains carriage returns (CRLF); only LF line endings are supported"
@@ -72,7 +79,11 @@ def backup_once(path: Path) -> Path | None:
     either appears complete or not at all, and an existing ``.orig`` is never replaced.
     Returns the backup path if this call created it.
     """
+    if _has_symlink_component(path):
+        raise UnsafePathError(f"Refusing to back up {path}: it is a symlink")
     backup = path.with_name(path.name + BACKUP_SUFFIX)
+    if os.path.islink(backup):
+        raise UnsafePathError(f"Refusing to use backup {backup}: it is a symlink")
     if os.path.lexists(backup) or not path.exists():
         return None
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".orig-tmp", dir=path.parent)
@@ -95,6 +106,8 @@ def atomic_write_text(path: Path, text: str, *, mode: int) -> None:
     ``mode`` sets the permission bits; owner and group (uid/gid) of an existing file are
     preserved when the process is allowed to keep them, otherwise the write is refused.
     """
+    if _has_symlink_component(path):
+        raise UnsafePathError(f"Refusing to write {path}: it is a symlink")
     existing = path.stat() if path.exists() else None
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     try:

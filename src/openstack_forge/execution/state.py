@@ -10,6 +10,7 @@ import errno
 import fcntl
 import json
 import os
+import stat
 import time
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
@@ -64,10 +65,17 @@ class StateStore:
         self.path = Path(path)
         self._clock = clock
 
+    def _reject_symlinks(self) -> None:
+        if os.path.islink(self.path) or os.path.islink(self.path.parent):
+            raise UnsafePathError(f"Refusing to use state file {self.path}: it is a symlink")
+
     def load(self) -> dict[str, StepRecord]:
         """Return all records; an absent file means no step has started yet."""
+        self._reject_symlinks()
         if not self.path.exists():
             return {}
+        if not self.path.is_file():
+            raise UnsafePathError(f"Refusing to use state file {self.path}: not a regular file")
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -171,7 +179,7 @@ def apply_lock(
     """
     lock_path, display = resolve_target(root, target)
     raw_candidate = Path(root).joinpath(*Path(display).parts[1:])
-    if raw_candidate.is_symlink() or lock_path.is_symlink():
+    if raw_candidate.is_symlink() or lock_path.is_symlink() or lock_path.parent.is_symlink():
         raise UnsafePathError(f"Refusing to use lock file {display}: it is a symlink")
     try:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -182,6 +190,8 @@ def apply_lock(
 
     acquired = False
     try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise UnsafePathError(f"Refusing to use lock file {display}: it is not a regular file")
         try:
             os.fchmod(fd, LOCK_FILE_MODE)
         except OSError:

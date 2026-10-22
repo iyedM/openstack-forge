@@ -29,7 +29,7 @@ _KEY = r"[A-Za-z0-9_.-]*(?:password|passwd|secret|token)[A-Za-z0-9_.-]*"
 # key = value / key: value / "key": "value"; a quoted value is masked up to its closing
 # quote, an unquoted one up to the end of the line.
 _ASSIGNMENT_RE = re.compile(
-    rf"""(?P<key>["']?{_KEY}["']?\s*[:=][ \t]*)
+    rf"""(?<![/A-Za-z0-9_.-])(?P<key>["']?{_KEY}["']?\s*[:=][ \t]*)
          (?:(?P<quote>["'])(?P<quoted>(?:\\.|(?!(?P=quote)).)*)(?P=quote)
            |(?P<bare>[^\n]+))""",
     re.IGNORECASE | re.VERBOSE,

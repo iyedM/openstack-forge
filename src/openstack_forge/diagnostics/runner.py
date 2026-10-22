@@ -46,6 +46,8 @@ class SubprocessRunner:
         if not argv:
             raise CommandError("Command argv must not be empty")
         cmd = tuple(str(arg) for arg in argv)
+        if any("\x00" in arg or "\r" in arg or "\n" in arg for arg in cmd):
+            raise CommandError("Command argv must not contain NUL bytes or line breaks")
         effective_timeout = self.default_timeout if timeout is None else timeout
         if effective_timeout <= 0:
             raise ValueError("timeout must be positive")

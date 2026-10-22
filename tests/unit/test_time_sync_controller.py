@@ -243,10 +243,10 @@ def test_missing_chrony_conf_is_not_created(root: Path, config: dict) -> None:
 
 
 def test_broken_markers_are_refused(root: Path, config: dict) -> None:
-    path = _write_conf(root, SAMPLE_CONF + f"{BEGIN}\nallow 10.0.0.0/8\n")
+    path = _write_conf(root, SAMPLE_CONF + f"{BEGIN}\nallow 198.51.100.0/24\n")
     with pytest.raises(FileFormatError, match="broken"):
         edit_chrony_conf(root, config, dry_run=False)
-    assert path.read_text().endswith("allow 10.0.0.0/8\n")
+    assert path.read_text().endswith("allow 198.51.100.0/24\n")
 
 
 def test_step_requires_the_controller_and_a_management_network(
@@ -278,7 +278,7 @@ def test_verify_chrony_text_reports_problems(config: dict, servers_config: dict)
     assert verify_chrony_text(SAMPLE_CONF, config) == [
         f"the managed block '{CHRONY_BLOCK_NAME}' is missing"
     ]
-    wrong = SAMPLE_CONF + f"{BEGIN}\nallow 10.0.0.0/8\n{END}\n"
+    wrong = SAMPLE_CONF + f"{BEGIN}\nallow 198.51.100.0/24\n{END}\n"
     assert verify_chrony_text(wrong, config) == [
         "'allow 192.0.2.0/24' is missing from the managed block",
         "the managed block differs from the configuration",
@@ -495,7 +495,7 @@ def test_cli_dry_run_shows_diff_and_exact_argv(
     assert "WARNING: Step 'time-sync-controller' is marked UNVERIFIED" in out
     assert "no files modified and no commands run" in out
     assert "--- a/etc/chrony/chrony.conf" in out
-    assert "+allow 10.10.40.0/24" in out
+    assert "+allow 192.0.2.0/24" in out
     assert (
         "Commands apply() would run, in order, if check() finds the step not done:\n"
         "  /usr/bin/apt-get update\n"
@@ -522,7 +522,7 @@ def test_cli_dry_run_when_chrony_is_not_installed(
     assert (
         "/etc/chrony/chrony.conf does not exist yet; it is installed by the chrony package" in out
     )
-    assert f"{BEGIN}\nallow 10.10.40.0/24\n{END}\n" in out
+    assert f"{BEGIN}\nallow 192.0.2.0/24\n{END}\n" in out
     assert "/usr/bin/apt-get install --yes chrony" in out
     assert not (root / "etc/chrony/chrony.conf").exists()
 

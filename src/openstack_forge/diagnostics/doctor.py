@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -57,6 +58,9 @@ LSBLK_CMD: tuple[str, ...] = (
 )
 # The declared device path is appended as a separate argv element (no shell).
 READLINK_CMD: tuple[str, ...] = ("readlink", "--canonicalize-existing", "--")
+_DEVICE_PATH_RE = re.compile(
+    r"^(?!.*/\.{1,2}(?:/|$))/dev/(?:[A-Za-z0-9._:+@-]+/)*[A-Za-z0-9._:+@-]+$"
+)
 
 
 @dataclass(frozen=True)
@@ -275,6 +279,8 @@ def _load_block_devices(runner: CommandRunner) -> tuple[BlockDevice, ...]:
 
 def _resolve_device_path(runner: CommandRunner, declared_disk: str) -> str | None:
     """Resolve symlinks in ``declared_disk``; return None if the path does not exist."""
+    if not isinstance(declared_disk, str) or not _DEVICE_PATH_RE.fullmatch(declared_disk):
+        raise CommandError(f"Invalid block device path: {declared_disk!r}")
     result = runner.run((*READLINK_CMD, declared_disk))
     if result.returncode != 0:
         return None

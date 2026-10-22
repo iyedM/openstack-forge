@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,8 +34,13 @@ class AuditLog:
         self.path = Path(path)
         self._clock = clock
 
+    def _reject_symlinks(self) -> None:
+        if os.path.islink(self.path) or os.path.islink(self.path.parent):
+            raise AuditLogError(f"Cannot open audit log {self.path}: symlink refused")
+
     def record(self, entry: Mapping[str, Any]) -> None:
         """Append ``entry`` (redacted, with a UTC ``time``) as one JSON line."""
+        self._reject_symlinks()
         payload = {
             "time": self._clock().astimezone(timezone.utc).isoformat(timespec="milliseconds"),
             **redact_data(dict(entry)),
@@ -46,6 +52,8 @@ class AuditLog:
         except OSError as exc:
             raise AuditLogError(f"Cannot open audit log {self.path}: {exc.strerror}") from exc
         try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise AuditLogError(f"Cannot write audit log {self.path}: not a regular file")
             os.fchmod(fd, AUDIT_FILE_MODE)
             written = os.write(fd, line)
             if written != len(line):
@@ -58,6 +66,7 @@ class AuditLog:
 
     def read(self) -> list[dict[str, Any]]:
         """Return all records (for tests and inspection)."""
+        self._reject_symlinks()
         if not self.path.exists():
             return []
         return [json.loads(line) for line in self.path.read_text(encoding="utf-8").splitlines()]

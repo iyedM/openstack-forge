@@ -119,7 +119,7 @@ VALID = {
     "package_name": ["chrony", "python3-openstackclient", "libstdc++6", "mariadb-server"],
     "cloud_archive_pocket": ["cloud-archive:epoxy", "cloud-archive:epoxy-updates"],
     "hostname": ["ctl-01", "forge-compute-02", "a"],
-    "ipv4_address": ["192.0.2.11", "10.0.0.1", "255.255.255.255"],
+    "ipv4_address": ["192.0.2.11", "198.51.100.1", "255.255.255.255"],
     "absolute_path": ["/etc/hosts", "/etc/chrony/chrony.conf", "/var/lib/openstack-forge"],
     "secret": ["A" * 32, "aB3x9K" * 6, "9" * 64],
     "openstack_name": ["service", "admin", "glance", "placement", "nova", "cinderv3", "volumev3"],

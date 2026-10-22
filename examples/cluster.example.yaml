@@ -15,28 +15,28 @@ cluster:
 
 networks:
   management:
-    subnet: "10.10.40.0/24"
-    gateway: "10.10.40.1"
+    subnet: "192.0.2.0/24"
+    gateway: "192.0.2.1"
     dns:
-      - "10.10.40.10"
+      - "192.0.2.10"
     interface: "ens3"
   storage:
-    subnet: "10.10.50.0/24"
-    gateway: "10.10.50.1"
+    subnet: "198.51.100.0/24"
+    gateway: "198.51.100.1"
     interface: "ens4"
   # External network that instances reach through floating IPs.
   provider:
-    subnet: "10.10.60.0/24"
-    gateway: "10.10.60.1"
+    subnet: "203.0.113.0/24"
+    gateway: "203.0.113.1"
     interface: "ens5"
     floating_ip_range:
-      start: "10.10.60.100"
-      end: "10.10.60.199"
+      start: "203.0.113.100"
+      end: "203.0.113.199"
     # Optional: addresses handed out by a DHCP server on this network; must not
     # overlap the floating IP range.
     dhcp_range:
-      start: "10.10.60.200"
-      end: "10.10.60.250"
+      start: "203.0.113.200"
+      end: "203.0.113.250"
 
 # Roles: exactly one controller, at least one compute, at most one block and one object node.
 # vcpus and ram_gb declare the expected hardware so later checks can compare it with reality.
@@ -44,7 +44,7 @@ nodes:
   - role: controller
     hostname: "forge-controller-01"
     fqdn: "forge-controller-01.example.internal"
-    management_ip: "10.10.40.11"
+    management_ip: "192.0.2.11"
     vcpus: 8
     ram_gb: 32
     interfaces:
@@ -56,7 +56,7 @@ nodes:
   - role: compute
     hostname: "forge-compute-01"
     fqdn: "forge-compute-01.example.internal"
-    management_ip: "10.10.40.21"
+    management_ip: "192.0.2.21"
     vcpus: 16
     ram_gb: 64
     interfaces:
@@ -68,7 +68,7 @@ nodes:
   - role: compute
     hostname: "forge-compute-02"
     fqdn: "forge-compute-02.example.internal"
-    management_ip: "10.10.40.22"
+    management_ip: "192.0.2.22"
     vcpus: 16
     ram_gb: 64
     interfaces:
@@ -81,7 +81,7 @@ nodes:
   - role: block
     hostname: "forge-block-01"
     fqdn: "forge-block-01.example.internal"
-    management_ip: "10.10.40.31"
+    management_ip: "192.0.2.31"
     vcpus: 4
     ram_gb: 16
     disk: "/dev/sdb"
@@ -94,7 +94,7 @@ nodes:
   - role: object
     hostname: "forge-object-01"
     fqdn: "forge-object-01.example.internal"
-    management_ip: "10.10.40.32"
+    management_ip: "192.0.2.32"
     vcpus: 4
     ram_gb: 16
     disks:

@@ -190,7 +190,7 @@ def test_edit_is_idempotent(root: Path, config) -> None:
 
 def test_verify_text_reports_each_missing_or_wrong_key(config) -> None:
     text = (
-        "[client]\nbind-address = 10.0.0.1\n"  # another section does not count
+        "[client]\nbind-address = 198.51.100.1\n"  # another section does not count
         "[mysqld]\nbind-address = 127.0.0.1\nmax_connections = 4096\n"
         "max_connections = 151\ncharacter-set-server = utf8\n"
     )
@@ -409,7 +409,7 @@ def test_cli_dry_run_when_the_directory_does_not_exist_yet(
     assert (
         "/etc/mysql/mariadb.conf.d does not exist yet; it is created when mariadb-server is "
         "installed. After that, /etc/mysql/mariadb.conf.d/99-openstack.cnf is written with:\n"
-        "[mysqld]\nbind-address = 10.10.40.11\ndefault-storage-engine = innodb\n"
+        "[mysqld]\nbind-address = 192.0.2.11\ndefault-storage-engine = innodb\n"
         "innodb_file_per_table = on\nmax_connections = 4096\n"
         "collation-server = utf8_general_ci\ncharacter-set-server = utf8\n"
     ) in out
@@ -431,7 +431,7 @@ def test_cli_dry_run_when_the_directory_exists(
     out = capsys.readouterr().out
     assert rc == 0
     assert "--- a/etc/mysql/mariadb.conf.d/99-openstack.cnf" in out
-    assert "+bind-address = 10.10.40.11" in out
+    assert "+bind-address = 192.0.2.11" in out
     assert "+character-set-server = utf8" in out
     assert _commands_section() in out
     assert not (root / CONF).exists()

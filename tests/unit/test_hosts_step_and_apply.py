@@ -62,11 +62,11 @@ def test_build_hosts_block_includes_all_roles_and_controller_alias() -> None:
     config = load_config(EXAMPLE_CONFIG)
     block = build_hosts_block(config)
     assert block == (
-        f"10.10.40.11 forge-controller-01.example.internal forge-controller-01 {CONTROLLER_ALIAS}\n"
-        "10.10.40.21 forge-compute-01.example.internal forge-compute-01\n"
-        "10.10.40.22 forge-compute-02.example.internal forge-compute-02\n"
-        "10.10.40.31 forge-block-01.example.internal forge-block-01\n"
-        "10.10.40.32 forge-object-01.example.internal forge-object-01\n"
+        f"192.0.2.11 forge-controller-01.example.internal forge-controller-01 {CONTROLLER_ALIAS}\n"
+        "192.0.2.21 forge-compute-01.example.internal forge-compute-01\n"
+        "192.0.2.22 forge-compute-02.example.internal forge-compute-02\n"
+        "192.0.2.31 forge-block-01.example.internal forge-block-01\n"
+        "192.0.2.32 forge-object-01.example.internal forge-object-01\n"
     )
 
 
@@ -123,7 +123,7 @@ def test_127_0_1_1_for_this_node_is_commented_out_and_other_lines_preserved(
     # Managed block is present
     assert f"# BEGIN {HOSTS_BLOCK_NAME}\n" in updated
     assert (
-        f"10.10.40.11 forge-controller-01.example.internal forge-controller-01 {CONTROLLER_ALIAS}\n"
+        f"192.0.2.11 forge-controller-01.example.internal forge-controller-01 {CONTROLLER_ALIAS}\n"
         in updated
     )
 
@@ -195,21 +195,21 @@ def test_parse_hosts_and_first_match_wins() -> None:
         "# comment\n"
         "127.0.0.1 localhost\n"
         "127.0.1.1 forge-controller-01.example.internal forge-controller-01 # inline comment\n"
-        "10.10.40.11 forge-controller-01.example.internal forge-controller-01 controller\n"
+        "192.0.2.11 forge-controller-01.example.internal forge-controller-01 controller\n"
     )
     entries = parse_hosts(text)
     assert entries == [
         ("127.0.0.1", ("localhost",)),
         ("127.0.1.1", ("forge-controller-01.example.internal", "forge-controller-01")),
         (
-            "10.10.40.11",
+            "192.0.2.11",
             ("forge-controller-01.example.internal", "forge-controller-01", "controller"),
         ),
     ]
     # First matching line wins, just like the system resolver:
     assert resolve_in_hosts(entries, "forge-controller-01") == "127.0.1.1"
     assert resolve_in_hosts(entries, "FORGE-CONTROLLER-01.EXAMPLE.INTERNAL") == "127.0.1.1"
-    assert resolve_in_hosts(entries, "controller") == "10.10.40.11"
+    assert resolve_in_hosts(entries, "controller") == "192.0.2.11"
     assert resolve_in_hosts(entries, "unknown") is None
 
 
@@ -247,21 +247,21 @@ def test_verify_fails_when_127_0_1_1_still_shadows_local_node() -> None:
 
 def test_verify_fails_when_earlier_line_overrides_node_ip() -> None:
     config = load_config(EXAMPLE_CONFIG)
-    text = "10.10.40.99 forge-compute-01\n" + build_hosts_block(config)
+    text = "192.0.2.99 forge-compute-01\n" + build_hosts_block(config)
     result = verify_hosts_text(text, config, "forge-controller-01")
     assert not result.ok
     assert "forge-compute-01" in result.details
-    assert "10.10.40.99" in result.details
+    assert "192.0.2.99" in result.details
 
 
 def test_verify_fails_when_controller_alias_is_missing() -> None:
     config = load_config(EXAMPLE_CONFIG)
     text = (
-        "10.10.40.11 forge-controller-01.example.internal forge-controller-01\n"
-        "10.10.40.21 forge-compute-01.example.internal forge-compute-01\n"
-        "10.10.40.22 forge-compute-02.example.internal forge-compute-02\n"
-        "10.10.40.31 forge-block-01.example.internal forge-block-01\n"
-        "10.10.40.32 forge-object-01.example.internal forge-object-01\n"
+        "192.0.2.11 forge-controller-01.example.internal forge-controller-01\n"
+        "192.0.2.21 forge-compute-01.example.internal forge-compute-01\n"
+        "192.0.2.22 forge-compute-02.example.internal forge-compute-02\n"
+        "192.0.2.31 forge-block-01.example.internal forge-block-01\n"
+        "192.0.2.32 forge-object-01.example.internal forge-object-01\n"
     )
     result = verify_hosts_text(text, config, "forge-controller-01")
     assert not result.ok
@@ -324,7 +324,7 @@ def test_cli_apply_dry_run_is_default_prints_diff_and_writes_nothing(
     assert "--- a/etc/hosts" in out.out
     assert f"+{DISABLED_LINE_PREFIX}127.0.1.1 forge-controller-01" in out.out
     assert (
-        f"+10.10.40.11 forge-controller-01.example.internal forge-controller-01 {CONTROLLER_ALIAS}"
+        f"+192.0.2.11 forge-controller-01.example.internal forge-controller-01 {CONTROLLER_ALIAS}"
         in out.out
     )
     assert "no files modified" in out.out
@@ -474,7 +474,7 @@ def test_cli_apply_identifies_local_node_by_hostname_when_node_flag_omitted(
     )
     out = capsys.readouterr().out
     assert rc == 0
-    assert "+10.10.40.21 forge-compute-01.example.internal forge-compute-01" in out
+    assert "+192.0.2.21 forge-compute-01.example.internal forge-compute-01" in out
 
 
 def test_cli_apply_fails_when_node_cannot_be_identified(

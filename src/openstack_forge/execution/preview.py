@@ -58,6 +58,11 @@ class StepPreview:
     read_only_commands: tuple[PlannedCommand, ...] = ()
     notes: tuple[str, ...] = ()
 
+    def __post_init__(self) -> None:
+        from openstack_forge.execution.redaction import redact_text
+
+        object.__setattr__(self, "notes", tuple(redact_text(note) for note in self.notes))
+
     @property
     def files_changed(self) -> bool:
         return any(change.changed for change in self.file_changes)

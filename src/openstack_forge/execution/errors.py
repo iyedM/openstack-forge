@@ -84,10 +84,13 @@ class UnexpectedExitError(CommandError):
     """The command exited with a code its specification does not allow."""
 
     def __init__(self, command_id: str, returncode: int, stderr: str) -> None:
+        from openstack_forge.execution.redaction import redact_text
+
+        redacted_stderr = redact_text(stderr)
         self.command_id = command_id
         self.returncode = returncode
-        self.stderr = stderr
-        detail = f": {stderr.strip()}" if stderr.strip() else ""
+        self.stderr = redacted_stderr
+        detail = f": {redacted_stderr.strip()}" if redacted_stderr.strip() else ""
         super().__init__(f"Command {command_id!r} exited with status {returncode}{detail}")
 
 
