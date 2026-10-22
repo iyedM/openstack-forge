@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
+from pathlib import Path
+
+import yaml
 
 import openstack_forge
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SUBPROCESS_ENV = {**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")}
 
 
 def test_package_imports() -> None:
@@ -18,6 +25,7 @@ def test_cli_help() -> None:
         capture_output=True,
         text=True,
         check=False,
+        env=SUBPROCESS_ENV,
     )
     assert result.returncode == 0
     assert "OpenStack Forge CLI" in result.stdout
@@ -29,6 +37,7 @@ def test_cli_version() -> None:
         capture_output=True,
         text=True,
         check=False,
+        env=SUBPROCESS_ENV,
     )
     assert result.returncode == 0
     assert "openstack-forge" in result.stdout
@@ -49,6 +58,7 @@ def test_cli_help_does_not_import_subpackages() -> None:
         capture_output=True,
         text=True,
         check=False,
+        env=SUBPROCESS_ENV,
     )
     assert result.returncode == 0, result.stderr
 
@@ -65,3 +75,13 @@ def test_cli_config_and_secrets_without_subcommand_print_subparser_help(capsys) 
     out_secrets = capsys.readouterr().out
     assert rc_secrets == 0
     assert "usage: openstack-forge secrets" in out_secrets
+
+
+def test_github_workflow_yaml_files_are_valid() -> None:
+    workflows_dir = REPO_ROOT / ".github" / "workflows"
+    workflow_files = sorted(workflows_dir.glob("*.yml"))
+    assert workflow_files
+    for wf in workflow_files:
+        parsed = yaml.safe_load(wf.read_text(encoding="utf-8"))
+        assert isinstance(parsed, dict), wf
+        assert "jobs" in parsed, wf

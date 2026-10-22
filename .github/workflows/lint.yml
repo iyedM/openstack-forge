@@ -23,6 +23,8 @@ jobs:
           python -m pip install -e ".[dev]"
 
       - name: Run Ruff
-        run: python -m ruff check .
+        run: |
+          python -m ruff check .
+          python -m ruff format --check .
 
 # Note: GitHub Actions should be SHA-pinned after verifying the relevant commit hashes for each action.

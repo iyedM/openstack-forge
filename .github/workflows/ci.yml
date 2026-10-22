@@ -57,6 +57,7 @@ jobs:
           chown -R tester "$GITHUB_WORKSPACE"
           runuser -u tester -- python3 -m venv --system-site-packages /home/tester/venv
           runuser -u tester -- /home/tester/venv/bin/python -m pip install --quiet "pytest>=8.0"
+          runuser -u tester -- /home/tester/venv/bin/python -m pip install --quiet --no-deps --no-build-isolation -e .
 
       - name: Show and check the dependency versions under test
         run: |

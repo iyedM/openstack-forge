@@ -80,12 +80,17 @@ def test_validation_errors_are_listed_with_a_count(
 
 
 def test_installed_command_exit_codes(fixture_path) -> None:
+    import os
+
+    env = {**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")}
+
     def run(path: Path) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, "-m", "openstack_forge.cli", "config", "validate", str(path)],
             capture_output=True,
             text=True,
             check=False,
+            env=env,
         )
 
     valid = run(REPO_ROOT / "examples/cluster.example.yaml")
