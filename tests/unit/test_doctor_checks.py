@@ -7,6 +7,7 @@ import pytest
 from openstack_forge.diagnostics import (
     BYTES_PER_GIB,
     CheckStatus,
+    NetworkInterface,
     NodeIdentificationError,
     check_cpu_virtualization,
     check_disk,
@@ -14,6 +15,7 @@ from openstack_forge.diagnostics import (
     check_object_disks,
     check_os,
     check_provider_interface,
+    check_provider_interface_link,
     check_ram,
     check_vcpus,
     check_virt_environment,
@@ -347,3 +349,41 @@ def test_check_provider_interface_pass_and_warn(valid_config) -> None:
     assert warned.status is CheckStatus.WARN
     assert "management=eth0, provider=eth0" in warned.observed
     assert "bridge migration" in warned.message
+
+
+def test_check_provider_interface_link_state_and_management_ip_warnings(valid_config) -> None:
+    node = valid_config["nodes"][0]
+    networks = valid_config["networks"]
+
+    # 1. Provider interface link UP and unnumbered -> PASS
+    ifaces_up = [
+        NetworkInterface(name="eth0", operstate="UP", ipv4_addresses=("192.0.2.11",)),
+        NetworkInterface(name="eth1", operstate="UP", ipv4_addresses=("198.51.100.11",)),
+        NetworkInterface(name="eth2", operstate="UP", ipv4_addresses=()),
+    ]
+    res_up = check_provider_interface(node, networks, host_interfaces=ifaces_up)
+    assert res_up.status is CheckStatus.PASS
+    assert "operstate=UP" in res_up.observed
+
+    # 2. Provider interface link DOWN -> WARN with operator instruction
+    ifaces_down = [
+        NetworkInterface(name="eth0", operstate="UP", ipv4_addresses=("192.0.2.11",)),
+        NetworkInterface(name="eth1", operstate="UP", ipv4_addresses=("198.51.100.11",)),
+        NetworkInterface(name="eth2", operstate="DOWN", ipv4_addresses=()),
+    ]
+    res_down = check_provider_interface(node, networks, host_interfaces=ifaces_down)
+    assert res_down.status is CheckStatus.WARN
+    assert "operstate=DOWN" in res_down.observed
+    assert "operator must bring the link up" in res_down.message
+    assert "does not run netplan or ip link" in res_down.message
+    link_down = check_provider_interface_link(node, networks, ifaces_down)
+    assert link_down is not None and link_down.status is CheckStatus.WARN
+
+    # 3. Provider interface carries management_ip -> WARN
+    ifaces_mgmt_ip = [
+        NetworkInterface(name="eth0", operstate="UP", ipv4_addresses=("192.0.2.11",)),
+        NetworkInterface(name="eth2", operstate="UP", ipv4_addresses=("192.0.2.11",)),
+    ]
+    res_mgmt_ip = check_provider_interface(node, networks, host_interfaces=ifaces_mgmt_ip)
+    assert res_mgmt_ip.status is CheckStatus.WARN
+    assert "carries management_ip 192.0.2.11" in res_mgmt_ip.message

@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 from openstack_forge.execution import (
+    ALLOW_LVM_ROOT_FILTER_OVERRIDE_KEY,
     AUDIT_FILE_MODE,
     CINDER_CONF_TARGET,
     CINDER_CONTROLLER_PACKAGES,
@@ -23,6 +24,8 @@ from openstack_forge.execution import (
     CINDER_MANAGE_FAILURE_HINT,
     CINDER_SERVICE_NAME,
     CINDER_SERVICE_TYPE,
+    CINDER_STORAGE_INSTALL_DOC_URL,
+    CINDER_STORAGE_LVM_FILTER_WARNING,
     CINDER_STORAGE_PACKAGES,
     CINDER_STORAGE_STEP_ID,
     CINDER_STORAGE_UNITS,
@@ -55,6 +58,7 @@ from openstack_forge.execution import (
     SecretStore,
     StateStore,
     build_step,
+    check_cinder_lvm_root_safety,
     cinder_controller_conf_settings,
     cinder_db_connection,
     cinder_storage_conf_settings,
@@ -675,3 +679,58 @@ def test_cinder_steps_fail_when_secrets_missing(tmp_path: Path) -> None:
     assert stor_step.check() is False
     with pytest.raises(PreconditionError, match=DEFAULT_SECRETS_TARGET):
         stor_step.apply()
+
+
+def test_cinder_storage_refuses_when_root_filesystem_on_lvm(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    _seed_storage_secrets_only(root)
+    proc_mounts = root / "proc/mounts"
+    proc_mounts.parent.mkdir(parents=True, exist_ok=True)
+    proc_mounts.write_text(
+        "/dev/mapper/ubuntu--vg-ubuntu--lv / ext4 rw,relatime 0 0\n"
+        "proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n",
+        encoding="utf-8",
+    )
+
+    host = ServiceHost(root, creates=_storage_package_creates())
+    executor = _make_executor(root, host)
+    step = make_cinder_storage_step(root, SAMPLE_CONFIG, BLOCK_NODE, executor=executor)
+
+    with pytest.raises(PreconditionError) as exc_info:
+        step.apply()
+    msg = str(exc_info.value)
+    assert "/dev/mapper/ubuntu--vg-ubuntu--lv" in msg
+    assert CINDER_STORAGE_INSTALL_DOC_URL in msg
+    assert CINDER_STORAGE_LVM_FILTER_WARNING in msg
+    assert ALLOW_LVM_ROOT_FILTER_OVERRIDE_KEY in msg
+    assert host.calls == []
+
+    assert step.check() is False
+    v_res = step.verify()
+    assert v_res.ok is False
+    assert ALLOW_LVM_ROOT_FILTER_OVERRIDE_KEY in v_res.details
+
+    preview = step.dry_run_preview()
+    assert any(ALLOW_LVM_ROOT_FILTER_OVERRIDE_KEY in note for note in preview.notes)
+
+    # Explicit opt-in override permits apply(), check(), and verify()
+    override_node = {**BLOCK_NODE, ALLOW_LVM_ROOT_FILTER_OVERRIDE_KEY: True}
+    override_step = make_cinder_storage_step(root, SAMPLE_CONFIG, override_node, executor=executor)
+    override_step.apply()
+    assert override_step.check() is True
+    assert override_step.verify().ok is True
+
+
+def test_check_cinder_lvm_root_safety_fstab_and_non_lvm_root(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    fstab = root / "etc/fstab"
+    fstab.parent.mkdir(parents=True, exist_ok=True)
+
+    # Standard partition (/dev/sda1) is allowed
+    fstab.write_text("/dev/sda1 / ext4 defaults 0 1\n", encoding="utf-8")
+    check_cinder_lvm_root_safety(root, BLOCK_NODE, SAMPLE_CONFIG)
+
+    # LVM logical volume (/dev/ubuntu-vg/ubuntu-lv) in /etc/fstab is refused
+    fstab.write_text("/dev/ubuntu-vg/ubuntu-lv / ext4 defaults 0 1\n", encoding="utf-8")
+    with pytest.raises(PreconditionError, match="ubuntu-vg/ubuntu-lv"):
+        check_cinder_lvm_root_safety(root, BLOCK_NODE, SAMPLE_CONFIG)

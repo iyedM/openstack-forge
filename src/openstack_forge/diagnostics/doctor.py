@@ -148,8 +148,11 @@ def run_doctor(
     elif role == "object":
         results.extend(_run_object_disks_checks(active_runner, node["disks"]))
 
-    results.append(_run_interfaces_check(active_runner, node, networks, cached_interfaces))
-    results.append(check_provider_interface(node, networks))
+    ifaces_check, resolved_interfaces = _run_interfaces_check(
+        active_runner, node, networks, cached_interfaces
+    )
+    results.append(ifaces_check)
+    results.append(check_provider_interface(node, networks, host_interfaces=resolved_interfaces))
 
     return DoctorReport(
         cluster_name=config["cluster"]["name"],
@@ -323,7 +326,7 @@ def _run_interfaces_check(
     node: Mapping[str, Any],
     networks: Mapping[str, Any],
     cached_interfaces: tuple[NetworkInterface, ...] | None,
-) -> CheckResult:
+) -> tuple[CheckResult, tuple[NetworkInterface, ...] | None]:
     unique_declared = list(dict.fromkeys(node["interfaces"].values()))
     declared_desc = f"{', '.join(unique_declared)} (management_ip={node['management_ip']})"
     try:
@@ -333,8 +336,8 @@ def _run_interfaces_check(
             result = _run_checked(runner, IP_ADDR_CMD)
             interfaces = parse_ip_addr(result.stdout)
     except (CommandError, ParseError) as exc:
-        return _error_result("interfaces", declared_desc, exc)
-    return check_interfaces(node, networks, interfaces)
+        return _error_result("interfaces", declared_desc, exc), None
+    return check_interfaces(node, networks, interfaces), interfaces
 
 
 def format_report_table(report: DoctorReport) -> str:

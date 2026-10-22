@@ -188,9 +188,11 @@ reads no secrets) in
 `memcached` and `etcd` listen unauthenticated on the management IP and `rabbitmq` listens
 for AMQP without TLS, so the management network must be trusted (see the security section of
 [`docs/engine`](../engine/README.md)). `openstack-packages` takes its Ubuntu Cloud Archive
-pocket from the supported release table, not from the catalog title. `plan` only orders the
-steps; `apply` runs one step on one node and does not check that the steps it waits for were
-applied.
+pocket from the supported release table, not from the catalog title. `plan` orders the
+steps across the cluster; `apply --step STEP_ID` runs one step on one node without checking
+whether earlier steps were applied, and `apply --all` runs all planned steps for the local
+node in `build_plan()` topological order (while cross-node dependencies, such as running
+controller steps before compute or block steps, remain the operator's responsibility).
 
 ### Open decision: network configuration
 

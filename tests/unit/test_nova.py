@@ -648,7 +648,10 @@ def test_nova_controller_check_and_verify_failure_branches(
 
     step.apply()
     assert step.check() is True
-    assert step.verify().ok is True
+    ver_ok = step.verify()
+    assert ver_ok.ok is True
+    assert "Warning: MariaDB schema completeness" in ver_ok.details
+    assert "not that 'nova-manage db sync' completed every migration" in ver_ok.details
 
     # 1. Config drift in /etc/nova/nova.conf -> check() is False with zero external commands
     conf_path = root / NOVA_CONF_REL

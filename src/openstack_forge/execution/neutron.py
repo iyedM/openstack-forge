@@ -14,10 +14,6 @@ Read directly from the official OpenStack 2025.1 (Epoxy) Neutron installation gu
    - https://docs.openstack.org/neutron/2025.1/install/controller-install-option2-ubuntu.html
      (raw source: ``doc/source/install/controller-install-option2-ubuntu.rst`` on
      ``stable/2025.1`` in ``openstack/neutron``).
-   - https://docs.openstack.org/neutron/2025.1/install/controller-install-option1-ubuntu.html
-     (raw source: ``doc/source/install/controller-install-option1-ubuntu.rst`` on
-     ``stable/2025.1`` in ``openstack/neutron``, referenced for the Open vSwitch ``br-provider``
-     bridge setup).
 2. **Compute node**:
    - https://docs.openstack.org/neutron/2025.1/install/compute-install-ubuntu.html
      (raw source: ``doc/source/install/compute-install-ubuntu.rst`` on ``stable/2025.1`` in
@@ -25,9 +21,6 @@ Read directly from the official OpenStack 2025.1 (Epoxy) Neutron installation gu
    - https://docs.openstack.org/neutron/2025.1/install/compute-install-option2-ubuntu.html
      (raw source: ``doc/source/install/compute-install-option2-ubuntu.rst`` on ``stable/2025.1``
      in ``openstack/neutron``).
-   - https://docs.openstack.org/neutron/2025.1/install/compute-install-option1-ubuntu.html
-     (raw source: ``doc/source/install/compute-install-option1-ubuntu.rst`` on ``stable/2025.1``
-     in ``openstack/neutron``, referenced for the Open vSwitch ``br-provider`` bridge setup).
 
 What the official controller pages prescribe
 --------------------------------------------
@@ -227,16 +220,18 @@ Ubuntu 24.04 + Epoxy Cloud Archive package facts (established read-only on the d
 
 Deviations, trade-offs, and scope boundary
 ------------------------------------------
-1. **Open vSwitch (``openvswitch``) instead of Linux bridge (``linuxbridge``)**:
-   The 2025.1 Ubuntu Option 2 guides still contain legacy ``neutron-linuxbridge-agent`` /
-   ``linuxbridge_agent.ini`` snippets alongside an explicit warning banner (``"Having the
-   Experimental status in the Yoga cycle, the Linuxbridge driver was officially marked as
-   Unsupported in the 2024.1 (Caracal) cycle."``) and an instruction to consult the Open vSwitch
-   section. Ubuntu 24.04 + Epoxy Cloud Archive ships ``neutron-openvswitch-agent``
+1. **Open vSwitch (``openvswitch``) in 2025.1 Option 2 (and residual "Linux bridge" prose)**:
+   In the live 2025.1 Ubuntu Option 2 pages (``controller-install-option2-ubuntu.html`` and
+   ``compute-install-option2-ubuntu.html``), all command and configuration ``<pre>`` blocks
+   already use Open vSwitch (``apt install ... neutron-openvswitch-agent``,
+   ``mechanism_drivers = openvswitch,l2population``, ``openvswitch_agent.ini``,
+   ``firewall_driver = openvswitch``, ``interface_driver = openvswitch``, and
+   ``ovs-vsctl add-br br-provider`` / ``ovs-vsctl add-port br-provider PROVIDER_INTERFACE_NAME``),
+   although several surrounding prose paragraphs on both pages still refer to "Linux bridge" /
+   "Linux bridge agent". Ubuntu 24.04 + Epoxy Cloud Archive ships ``neutron-openvswitch-agent``
    (``2:26.0.0-0ubuntu1~cloud1``) and ``openvswitch-switch`` (``3.5.1-0ubuntu0.1~cloud0``).
-   Therefore OpenStack Forge implements Option 2 with Open vSwitch
-   (``mechanism_drivers = openvswitch,l2population``, ``openvswitch_agent.ini``,
-   ``firewall_driver = openvswitch``, ``interface_driver = openvswitch``, and ``br-provider``).
+   OpenStack Forge follows the Open vSwitch commands and configuration blocks from the 2025.1
+   Option 2 pages.
 2. **Idempotent ``ovs-vsctl --may-exist add-br`` and ``ovs-vsctl --may-exist add-port``**:
    ``ovs-vsctl(8)`` specifies that ``add-br`` and ``add-port`` fail on re-runs unless
    ``--may-exist`` is supplied. OpenStack Forge passes ``--may-exist`` to both commands and
@@ -270,11 +265,13 @@ Deviations, trade-offs, and scope boundary
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from ipaddress import IPv4Address
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 from openstack_forge.execution.commands import (
     APT_GET_INSTALL,
@@ -350,8 +347,7 @@ NEUTRON_CONTROLLER_PACKAGES: tuple[str, ...] = (
     "neutron-dhcp-agent",
     "neutron-metadata-agent",
 )
-# Official guide finalize restart order (controller-install-ubuntu.rst lines 318-323, with
-# neutron-openvswitch-agent in place of neutron-linuxbridge-agent):
+# Official guide finalize restart order (controller-install-ubuntu.rst):
 NEUTRON_CONTROLLER_UNITS: tuple[str, ...] = (
     "nova-api",
     "neutron-server",
@@ -370,6 +366,8 @@ NEUTRON_COMPUTE_UNITS: tuple[str, ...] = (
 
 OVS_SWITCH_UNIT = "openvswitch-switch"
 OVS_PROVIDER_BRIDGE = "br-provider"
+ALLOW_SHARED_PROVIDER_INTERFACE_KEY = "allow_shared_provider_interface"
+NETPLAN_DIR_TARGET = "/etc/netplan"
 
 NEUTRON_DB_NAME = "neutron"
 NEUTRON_DB_USER = "neutron"
@@ -542,6 +540,224 @@ def resolve_provider_interface(
         raise PreconditionError(
             f"Invalid provider_interface {candidate!r} (network.provider_interface): {exc}"
         ) from exc
+
+
+def resolve_management_interface(
+    local_node: Mapping[str, Any],
+    config: Mapping[str, Any] | None = None,
+) -> str | None:
+    """Resolve the node's management interface name if configured, else ``None``.
+
+    Precedence:
+    1. ``local_node["management_interface"]``
+    2. ``local_node["interfaces"]["management"]``
+    3. ``config["network"]["management_interface"]``
+    4. ``config["networks"]["management"]["interface"]``
+    """
+    if "management_interface" in local_node and isinstance(local_node["management_interface"], str):
+        val = local_node["management_interface"].strip()
+        if val:
+            return val
+    node_interfaces = local_node.get("interfaces")
+    if isinstance(node_interfaces, Mapping):
+        mgmt = node_interfaces.get("management")
+        if isinstance(mgmt, str) and mgmt.strip():
+            return mgmt.strip()
+    if config is not None:
+        network_cfg = config.get("network")
+        if isinstance(network_cfg, Mapping):
+            mgmt = network_cfg.get("management_interface")
+            if isinstance(mgmt, str) and mgmt.strip():
+                return mgmt.strip()
+        networks_cfg = config.get("networks")
+        if isinstance(networks_cfg, Mapping):
+            mgmt_cfg = networks_cfg.get("management")
+            if isinstance(mgmt_cfg, Mapping):
+                mgmt = mgmt_cfg.get("interface")
+                if isinstance(mgmt, str) and mgmt.strip():
+                    return mgmt.strip()
+    return None
+
+
+def _shared_provider_interface_allowed(
+    local_node: Mapping[str, Any],
+    config: Mapping[str, Any] | None = None,
+) -> bool:
+    """True only when the operator explicitly opted into a shared provider interface."""
+    if local_node.get(ALLOW_SHARED_PROVIDER_INTERFACE_KEY) is True:
+        return True
+    tags = local_node.get("tags")
+    if isinstance(tags, (list, tuple, set, frozenset)) and (
+        ALLOW_SHARED_PROVIDER_INTERFACE_KEY in tags
+    ):
+        return True
+    if config is not None:
+        if config.get(ALLOW_SHARED_PROVIDER_INTERFACE_KEY) is True:
+            return True
+        network_cfg = config.get("network")
+        if (
+            isinstance(network_cfg, Mapping)
+            and network_cfg.get(ALLOW_SHARED_PROVIDER_INTERFACE_KEY) is True
+        ):
+            return True
+        networks_cfg = config.get("networks")
+        if isinstance(networks_cfg, Mapping):
+            provider_cfg = networks_cfg.get("provider")
+            if (
+                isinstance(provider_cfg, Mapping)
+                and provider_cfg.get(ALLOW_SHARED_PROVIDER_INTERFACE_KEY) is True
+            ):
+                return True
+    return False
+
+
+def _strip_cidr(addr: str) -> str:
+    return addr.split("/", 1)[0].strip()
+
+
+def _extract_interface_ips_from_entry(entry: Any) -> list[str]:
+    ips: list[str] = []
+    if isinstance(entry, str):
+        ips.append(_strip_cidr(entry))
+    elif isinstance(entry, Sequence):
+        for item in entry:
+            if isinstance(item, str):
+                ips.append(_strip_cidr(item))
+            elif isinstance(item, Mapping):
+                local = item.get("local") or item.get("address")
+                if isinstance(local, str):
+                    ips.append(_strip_cidr(local))
+    return ips
+
+
+def _provider_interface_carries_management_ip(
+    provider_iface: str,
+    mgmt_ip: str,
+    local_node: Mapping[str, Any],
+    *,
+    root: Path | None = None,
+    host_interfaces: Sequence[Any] | None = None,
+) -> bool:
+    """Return True if ``provider_iface`` is known to carry ``mgmt_ip``."""
+    # 1. Explicit interface address mappings on local_node
+    for key in ("interface_ips", "interface_addresses"):
+        mapping = local_node.get(key)
+        if isinstance(mapping, Mapping) and provider_iface in mapping:
+            if mgmt_ip in _extract_interface_ips_from_entry(mapping[provider_iface]):
+                return True
+
+    # 2. Sequence of NetworkInterface objects or `ip -j addr` dicts
+    iface_lists: list[Sequence[Any]] = []
+    if host_interfaces is not None:
+        iface_lists.append(host_interfaces)
+    node_host_ifaces = local_node.get("host_interfaces")
+    if isinstance(node_host_ifaces, Sequence) and not isinstance(node_host_ifaces, (str, bytes)):
+        iface_lists.append(node_host_ifaces)
+    for iface_list in iface_lists:
+        for item in iface_list:
+            if isinstance(item, Mapping):
+                name = item.get("ifname") or item.get("name")
+                if name != provider_iface:
+                    continue
+                addrs = _extract_interface_ips_from_entry(
+                    item.get("addresses") or item.get("addr_info") or ()
+                )
+                if mgmt_ip in addrs:
+                    return True
+            else:
+                name = getattr(item, "name", None)
+                if name != provider_iface:
+                    continue
+                addrs = _extract_interface_ips_from_entry(getattr(item, "addresses", ()))
+                if mgmt_ip in addrs:
+                    return True
+
+    # 3. Netplan YAML files under <root>/etc/netplan/*.yaml|*.yml
+    if root is not None:
+        try:
+            netplan_dir, _ = resolve_target(root, NETPLAN_DIR_TARGET)
+        except UnsafePathError:
+            netplan_dir = None
+        if netplan_dir is not None and not netplan_dir.is_symlink() and netplan_dir.is_dir():
+            for candidate in sorted(netplan_dir.iterdir()):
+                if candidate.suffix not in {".yaml", ".yml"}:
+                    continue
+                if candidate.is_symlink() or not candidate.is_file():
+                    continue
+                try:
+                    raw = yaml.safe_load(candidate.read_text(encoding="utf-8"))
+                except (OSError, UnicodeDecodeError, yaml.YAMLError):
+                    continue
+                if not isinstance(raw, Mapping):
+                    continue
+                net = raw.get("network")
+                if not isinstance(net, Mapping):
+                    continue
+                ethernets = net.get("ethernets")
+                if not isinstance(ethernets, Mapping):
+                    continue
+                iface_cfg = ethernets.get(provider_iface)
+                if not isinstance(iface_cfg, Mapping):
+                    continue
+                addrs = _extract_interface_ips_from_entry(iface_cfg.get("addresses", ()))
+                if mgmt_ip in addrs:
+                    return True
+
+    return False
+
+
+def check_provider_interface_safety(
+    local_node: Mapping[str, Any],
+    config: Mapping[str, Any] | None = None,
+    *,
+    root: Path | None = None,
+    host_interfaces: Sequence[Any] | None = None,
+) -> str:
+    """Resolve ``provider_interface`` and refuse if it shares the management interface or IP.
+
+    Attaching the management interface (or an interface carrying ``management_ip``) to OVS
+    bridge ``br-provider`` via ``ovs-vsctl add-port br-provider <iface>`` moves layer-2
+    frames into the OVS datapath without moving the host IP onto ``br-provider``, which
+    immediately cuts management connectivity to the node.
+
+    Operators who have pre-configured OVS bridge IP migration out-of-band can explicitly opt
+    in by setting ``allow_shared_provider_interface: true`` on the node (or in ``tags``).
+    """
+    provider_iface = resolve_provider_interface(local_node, config)
+    if _shared_provider_interface_allowed(local_node, config):
+        return provider_iface
+
+    hostname = str(local_node.get("hostname", local_node.get("role", "node")))
+    mgmt_iface = resolve_management_interface(local_node, config)
+    if mgmt_iface is not None and provider_iface == mgmt_iface:
+        raise PreconditionError(
+            f"Refusing to attach provider_interface {provider_iface!r} to OVS bridge "
+            f"{OVS_PROVIDER_BRIDGE!r} on node {hostname!r}: {provider_iface!r} is also the "
+            f"management interface, so running 'ovs-vsctl add-port {OVS_PROVIDER_BRIDGE} "
+            f"{provider_iface}' would cut management connectivity. Configure a dedicated "
+            f"provider interface, or set '{ALLOW_SHARED_PROVIDER_INTERFACE_KEY}: true' on the "
+            f"node to override this safety check."
+        )
+
+    mgmt_ip = _management_ip(local_node)
+    if _provider_interface_carries_management_ip(
+        provider_iface,
+        mgmt_ip,
+        local_node,
+        root=root,
+        host_interfaces=host_interfaces,
+    ):
+        raise PreconditionError(
+            f"Refusing to attach provider_interface {provider_iface!r} to OVS bridge "
+            f"{OVS_PROVIDER_BRIDGE!r} on node {hostname!r}: {provider_iface!r} carries the "
+            f"node's management_ip ({mgmt_ip}), so running 'ovs-vsctl add-port "
+            f"{OVS_PROVIDER_BRIDGE} {provider_iface}' would cut management connectivity. "
+            f"Move the management IP off {provider_iface!r} and use a dedicated unnumbered "
+            f"provider interface, or set '{ALLOW_SHARED_PROVIDER_INTERFACE_KEY}: true' on the "
+            f"node to override this safety check."
+        )
+
+    return provider_iface
 
 
 def neutron_db_connection(db_password: str) -> str:
@@ -1202,6 +1418,10 @@ class NeutronControllerStep:
             notes.append(f"Precondition (checked by apply()): {exc}")
 
         provider_iface = self.provider_interface
+        try:
+            check_provider_interface_safety(self.local_node, self.config, root=self.root)
+        except PreconditionError as exc:
+            notes.append(f"Precondition (checked by apply()): {exc}")
         secrets_to_mask = (
             admin_password,
             rabbit_password,
@@ -1372,6 +1592,7 @@ class NeutronControllerStep:
     def check(self) -> bool:
         """True if secrets, 7 configs, packages, units, MariaDB, Keystone, and OVS are ready."""
         try:
+            check_provider_interface_safety(self.local_node, self.config, root=self.root)
             (
                 admin_password,
                 rabbit_password,
@@ -1433,6 +1654,9 @@ class NeutronControllerStep:
     def apply(self) -> None:
         """Provision MariaDB & Keystone, install Neutron controller packages, edit 7 config files,
         configure OVS ``br-provider``, run ``neutron-db-manage upgrade head``, and restart units."""
+        provider_iface = check_provider_interface_safety(
+            self.local_node, self.config, root=self.root
+        )
         (
             admin_password,
             rabbit_password,
@@ -1441,7 +1665,6 @@ class NeutronControllerStep:
             nova_password,
             metadata_secret,
         ) = _load_neutron_controller_secrets(self.root)
-        provider_iface = self.provider_interface
         # Ensure /etc/nova/nova.conf already exists (from nova-controller) before mutating:
         _require_conf_exists(
             self.root, NOVA_CONF_TARGET, "nova-api (apply 'nova-controller' first)"
@@ -1499,6 +1722,10 @@ class NeutronControllerStep:
         neutron_password: str | None = None
         nova_password: str | None = None
         metadata_secret: str | None = None
+        try:
+            check_provider_interface_safety(self.local_node, self.config, root=self.root)
+        except PreconditionError as exc:
+            problems.append(str(exc))
         try:
             (
                 admin_password,
@@ -1656,6 +1883,10 @@ class NeutronComputeStep:
             notes.append(f"Precondition (checked by apply()): {exc}")
 
         provider_iface = self.provider_interface
+        try:
+            check_provider_interface_safety(self.local_node, self.config, root=self.root)
+        except PreconditionError as exc:
+            notes.append(f"Precondition (checked by apply()): {exc}")
         secrets_to_mask = (rabbit_password, neutron_password)
         file_changes: list[FileChange] = []
 
@@ -1725,6 +1956,7 @@ class NeutronComputeStep:
     def check(self) -> bool:
         """True if secrets, 3 config files, package, units, and OVS bridge/port are ready."""
         try:
+            check_provider_interface_safety(self.local_node, self.config, root=self.root)
             rabbit_password, neutron_password = _load_neutron_compute_secrets(self.root)
         except PreconditionError:
             return False
@@ -1749,8 +1981,10 @@ class NeutronComputeStep:
     def apply(self) -> None:
         """Install ``neutron-openvswitch-agent``, edit 3 config files, configure OVS
         ``br-provider``, and restart ``nova-compute`` and ``neutron-openvswitch-agent``."""
+        provider_iface = check_provider_interface_safety(
+            self.local_node, self.config, root=self.root
+        )
         rabbit_password, neutron_password = _load_neutron_compute_secrets(self.root)
-        provider_iface = self.provider_interface
         # Ensure /etc/nova/nova.conf already exists (from nova-compute) before mutating:
         _require_conf_exists(
             self.root, NOVA_CONF_TARGET, "nova-compute (apply 'nova-compute' first)"
@@ -1779,6 +2013,10 @@ class NeutronComputeStep:
         problems: list[str] = []
         rabbit_password: str | None = None
         neutron_password: str | None = None
+        try:
+            check_provider_interface_safety(self.local_node, self.config, root=self.root)
+        except PreconditionError as exc:
+            problems.append(str(exc))
         try:
             rabbit_password, neutron_password = _load_neutron_compute_secrets(self.root)
         except PreconditionError as exc:

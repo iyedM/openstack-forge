@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from openstack_forge.execution import (
+    DEFAULT_READINESS_MAX_ATTEMPTS,
     DEFAULT_REGISTRY,
     MASK,
     OPENSTACK_ADMIN_AUTH_ARGS,
@@ -613,3 +614,103 @@ def test_openstack_cli_validates_parameters_before_running(tmp_path: Path) -> No
     with pytest.raises(ParameterError):
         ensure_service_catalog(executor, ADMIN_PASS, "glance", "image", "http://controller:9292;id")
     assert host.calls == []
+
+
+def test_wait_for_keystone_ready_bounded_retry_backoff_and_no_mutating_retries(
+    tmp_path: Path,
+) -> None:
+    project_list_argv = (
+        *OPENSTACK_ADMIN_AUTH_ARGS,
+        "project",
+        "list",
+        "--domain",
+        "default",
+        "-f",
+        "json",
+    )
+    project_create_argv = (
+        *OPENSTACK_ADMIN_AUTH_ARGS,
+        "project",
+        "create",
+        "--domain",
+        "default",
+        "--description",
+        "Service Project",
+        "service",
+        "-f",
+        "json",
+    )
+
+    # 1. Transient failure on attempts 1 and 2, ready on attempt 3
+    host = ServiceHost(tmp_path)
+    executor, _audit = _host_executor(tmp_path, host)
+    attempts = 0
+    orig_run = host.run
+
+    def flaky_run(argv, *, env, timeout, stdin=None):
+        nonlocal attempts
+        if tuple(argv) == project_list_argv:
+            attempts += 1
+            if attempts < 3:
+                host.calls.append(tuple(argv))
+                return ProcessOutput(1, "", "503 Service Unavailable (Keystone starting)\n")
+        return orig_run(argv, env=env, timeout=timeout, stdin=stdin)
+
+    host.run = flaky_run  # type: ignore[method-assign]
+    sleeps: list[float] = []
+    created = ensure_service_project(
+        executor,
+        ADMIN_PASS,
+        max_attempts=5,
+        initial_backoff=1.0,
+        max_backoff=8.0,
+        sleep=sleeps.append,
+    )
+    assert created is True
+    assert attempts == 3
+    assert sleeps == [1.0, 2.0]
+    assert host.calls.count(project_list_argv) == 3
+    assert host.calls.count(project_create_argv) == 1
+
+    # 2. Never becomes ready -> bounded to max_attempts, sleeps max_attempts-1 times,
+    #    raises PreconditionError with actionable message, and never runs project create
+    host_dead = ServiceHost(tmp_path)
+    host_dead.failures[project_list_argv] = ProcessOutput(
+        1, "", "Unable to establish connection to http://controller:5000/v3\n"
+    )
+    exec_dead, _ = _host_executor(tmp_path, host_dead)
+    sleeps_dead: list[float] = []
+    with pytest.raises(
+        PreconditionError,
+        match=(
+            r"Keystone API at http://controller:5000/v3 did not become ready after "
+            r"5 attempt\(s\).*systemctl status apache2"
+        ),
+    ):
+        ensure_service_project(
+            exec_dead,
+            ADMIN_PASS,
+            max_attempts=DEFAULT_READINESS_MAX_ATTEMPTS,
+            initial_backoff=1.0,
+            max_backoff=8.0,
+            sleep=sleeps_dead.append,
+        )
+    assert sleeps_dead == [1.0, 2.0, 4.0, 8.0]
+    assert host_dead.calls == [project_list_argv] * 5
+    assert project_create_argv not in host_dead.calls
+
+    # 3. Mutating project-create failure is NEVER retried
+    host_create_fail = ServiceHost(tmp_path)
+    host_create_fail.failures[project_create_argv] = ProcessOutput(1, "", "Conflict (HTTP 409)\n")
+    exec_create_fail, _ = _host_executor(tmp_path, host_create_fail)
+    sleeps_create: list[float] = []
+    with pytest.raises(UnexpectedExitError):
+        ensure_service_project(
+            exec_create_fail,
+            ADMIN_PASS,
+            max_attempts=5,
+            sleep=sleeps_create.append,
+        )
+    assert sleeps_create == []
+    assert host_create_fail.calls.count(project_list_argv) == 1
+    assert host_create_fail.calls.count(project_create_argv) == 1

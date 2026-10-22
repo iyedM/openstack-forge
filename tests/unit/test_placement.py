@@ -19,6 +19,7 @@ from openstack_forge.execution import (
     MARIADB_EXECUTE_SQL,
     MARIADB_QUERY_SQL,
     MASK,
+    OPENSTACK_ADMIN_AUTH_ARGS,
     OPENSTACK_ENDPOINT_CREATE,
     OPENSTACK_ENDPOINT_LIST,
     OPENSTACK_ROLE_ADD_USER_PROJECT,
@@ -501,6 +502,77 @@ def test_placement_db_sync_failure_attaches_placement_manage_hint(
     assert report.ok is False
     text = format_report(report)
     assert PLACEMENT_MANAGE_FAILURE_HINT in text
+
+
+def test_placement_readiness_wait_after_apache2_restart_and_no_mutating_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    _seed_placement_secrets(root)
+    host = _make_host(root)
+    executor = _make_executor(tmp_path, host, monkeypatch)
+
+    project_list_argv = (
+        *OPENSTACK_ADMIN_AUTH_ARGS,
+        "project",
+        "list",
+        "--domain",
+        "default",
+        "-f",
+        "json",
+    )
+
+    # 1. Transient failure after apache2 restart recovers on attempt 3
+    attempts = 0
+    orig_run = host.run
+
+    def flaky_run(argv, *, env, timeout, stdin=None):
+        nonlocal attempts
+        if tuple(argv) == project_list_argv:
+            attempts += 1
+            if attempts < 3:
+                host.calls.append(tuple(argv))
+                return ProcessOutput(1, "", "503 Service Unavailable\n")
+        return orig_run(argv, env=env, timeout=timeout, stdin=stdin)
+
+    host.run = flaky_run  # type: ignore[method-assign]
+    sleeps: list[float] = []
+    step = PlacementStep(
+        root=root,
+        config={},
+        local_node=CONTROLLER,
+        executor=executor,
+        sleep=sleeps.append,
+    )
+    step.apply()
+    assert attempts == 3
+    assert sleeps == [1.0, 2.0]
+    assert host.calls.count(("/usr/bin/systemctl", "restart", "apache2")) == 1
+    assert host.calls.count(("/usr/bin/placement-manage", "db", "sync")) == 1
+
+    # 2. Never becomes ready -> bounded to max_attempts, fails with actionable message
+    host.run = orig_run  # type: ignore[method-assign]
+    host.failures[project_list_argv] = ProcessOutput(1, "", "Connection refused\n")
+    sleeps_fail: list[float] = []
+    step_fail = PlacementStep(
+        root=root,
+        config={},
+        local_node=CONTROLLER,
+        executor=executor,
+        sleep=sleeps_fail.append,
+        readiness_max_attempts=4,
+    )
+    calls_before = len(host.calls)
+    with pytest.raises(
+        PreconditionError,
+        match=r"Keystone API at http://controller:5000/v3 did not become ready after 4 attempt",
+    ):
+        step_fail.apply()
+    assert sleeps_fail == [1.0, 2.0, 4.0]
+    new_calls = host.calls[calls_before:]
+    assert new_calls.count(project_list_argv) == 4
+    assert new_calls.count(("/usr/bin/systemctl", "restart", "apache2")) == 1
 
 
 # --- Dry-run preview and CLI apply --------------------------------------------------

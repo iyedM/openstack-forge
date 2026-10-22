@@ -112,7 +112,8 @@ Deviations, trade-offs, and scope boundary
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -143,6 +144,9 @@ from openstack_forge.execution.files import FileChange, ini_set_many
 from openstack_forge.execution.fsutil import read_text_file, resolve_target
 from openstack_forge.execution.openstack_cli import (
     ADMIN_ROLE_NAME,
+    DEFAULT_READINESS_INITIAL_BACKOFF,
+    DEFAULT_READINESS_MAX_ATTEMPTS,
+    DEFAULT_READINESS_MAX_BACKOFF,
     ENDPOINT_INTERFACES,
     SERVICE_PROJECT_NAME,
     ensure_service_catalog,
@@ -151,6 +155,7 @@ from openstack_forge.execution.openstack_cli import (
     service_catalog_ready,
     service_user_problems,
     service_user_ready,
+    wait_for_keystone_ready,
 )
 from openstack_forge.execution.preview import PlannedCommand, StepPreview
 from openstack_forge.execution.redaction import MASK, redact_text
@@ -364,6 +369,10 @@ class PlacementStep:
     local_node: Mapping[str, Any]
     executor: CommandExecutor
     id: str = PLACEMENT_STEP_ID
+    sleep: Callable[[float], None] = time.sleep
+    readiness_max_attempts: int = DEFAULT_READINESS_MAX_ATTEMPTS
+    readiness_initial_backoff: float = DEFAULT_READINESS_INITIAL_BACKOFF
+    readiness_max_backoff: float = DEFAULT_READINESS_MAX_BACKOFF
     declares_commands: bool = True
 
     def __post_init__(self) -> None:
@@ -518,6 +527,14 @@ class PlacementStep:
         edit_placement_conf(self.root, db_password, placement_password, dry_run=False)
         self.executor.run(RUN_PLACEMENT_DB_SYNC.command_id, RUN_PLACEMENT_DB_SYNC.params)
         self.executor.run(RESTART_APACHE2.command_id, RESTART_APACHE2.params)
+        wait_for_keystone_ready(
+            self.executor,
+            admin_password,
+            max_attempts=self.readiness_max_attempts,
+            initial_backoff=self.readiness_initial_backoff,
+            max_backoff=self.readiness_max_backoff,
+            sleep=self.sleep,
+        )
 
     def verify(self) -> VerifyResult:
         """Verify secrets, placement.conf, package, apache2 unit, MariaDB, and Keystone."""
@@ -567,6 +584,13 @@ def make_placement_step(
     local_node: Mapping[str, Any],
     *,
     executor: CommandExecutor,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> PlacementStep:
     """Factory registered in :data:`openstack_forge.execution.steps.IMPLEMENTED_STEPS`."""
-    return PlacementStep(root=root, config=config, local_node=local_node, executor=executor)
+    return PlacementStep(
+        root=root,
+        config=config,
+        local_node=local_node,
+        executor=executor,
+        sleep=sleep,
+    )

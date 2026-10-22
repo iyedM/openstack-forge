@@ -72,6 +72,6 @@ jobs:
       - name: Run tests as a non-root user
         run: >-
           runuser -u tester --
-          env PYTHONPATH=src /home/tester/venv/bin/python -m pytest -p no:cacheprovider
+          /home/tester/venv/bin/pytest -p no:cacheprovider
 
 # Note: GitHub Actions should be SHA-pinned after verifying the relevant commit hashes for each action.

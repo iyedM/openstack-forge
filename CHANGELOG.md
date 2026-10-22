@@ -478,6 +478,32 @@ All notable changes to this project will be documented in this file.
 - End-to-end 3-node (`controller` + `compute` + `block`) cluster convergence, second-run
   idempotence, `verify --json`, and secret-hygiene integration test suite
   (`tests/integration/test_full_cluster_convergence.py`).
+- `openstack-forge secrets list [--root PATH] [--file PATH]` (`SecretStore.present_names()`)
+  and `openstack-forge secrets path [--root PATH] [--file PATH]` CLI subcommands.
+- Provider interface safety guard (`check_provider_interface_safety`) in `neutron-controller`
+  and `neutron-compute`: refuses `apply` with `PreconditionError` (and fails `check()` /
+  `verify()`) when the node's provider interface equals its management interface or carries
+  `node.management_ip`, unless the explicit opt-in override
+  `allow_shared_provider_interface: true` is set on the node.
+- `provider_interface_link` diagnostic check in `openstack-forge doctor`
+  (`openstack_forge.diagnostics.checks.check_provider_interface_link`), reporting `WARN` when
+  the provider interface link is operationally down (`LOWER_UP` absent and `operstate` not
+  `UP` / `UNKNOWN`) and instructing the operator to bring the link up on the host (OpenStack
+  Forge never runs `netplan` or `ip link` commands).
+- Bounded Keystone HTTP `/v3` readiness wait (`wait_for_keystone_ready`) after restarting
+  `apache2` in `KeystoneStep.apply()` and `PlacementStep.apply()` (and in
+  `ensure_service_project()`), retrying the read-only `openstack.project-list` spec up to 5
+  times with exponential backoff and an injectable `sleep` without ever retrying mutating
+  commands.
+- Root-on-LVM safety guard (`check_cinder_lvm_root_safety`) in `cinder-storage`: inspects
+  `<root>/proc/mounts` and `<root>/etc/fstab` (plus optional `root_on_lvm` / `root_device`
+  node properties) and refuses `apply` with `PreconditionError` when `/` is on LVM and would
+  be hidden by the single-disk `filter = [ "a/<rel_disk>/", "r/.*/"]` in `/etc/lvm/lvm.conf`,
+  citing the official Cinder 2025.1 storage node installation guide warning, unless the
+  explicit opt-in override `allow_lvm_root_filter_override: true` is set on the node.
+- Exclusive advisory lock (`apply_lock`, `<root>/var/lib/openstack-forge/apply.lock`, mode
+  `0600`) around `openstack-forge apply --yes`, failing immediately with `StateError` naming
+  the holder PID when another `apply` process holds the lock, tested across two processes.
 
 ### Changed
 
@@ -551,8 +577,19 @@ All notable changes to this project will be documented in this file.
   {password}` in `argv` (confirmed in `/usr/lib/python3/dist-packages/keystone/cmd/cli.py`),
   so neither `KEYSTONE_DBPASS` (`stdin_param`) nor `ADMIN_PASS` (`env_params`) ever appears
   in `argv` or `/proc/<pid>/cmdline` (`ps`) during the `keystone` step.
+- `NovaControllerStep.verify()` details (`CONTROLLER_NOT_CHECKED`) now include an explicit
+  warning that SQL schema sync completeness (`nova-manage api_db sync` / `db sync`) cannot be
+  established from read-only SQL queries alone because the official 2025.1 Nova installation
+  guide defines no canonical table list or Alembic revision identifier.
+- Updated `README.md`, `docs/*`, `src/openstack_forge/execution/README.md`, and the
+  `neutron.py` module docstring to remove stale early-scaffold statements and accurately
+  describe the live 2025.1 Option 2 Ubuntu Neutron pages (which use Open vSwitch in all
+  `<pre>` blocks while retaining a few `"Linux bridge"` prose references), while preserving
+  every `"unverified, never run on a real host"` statement.
 
 ### Fixed
 
 - Validation now works from a regular (non-editable) install; previously the schema
   was only found in a source checkout.
+- Configured `pythonpath = ["src", "."]` in `pyproject.toml` so both bare `pytest -q` and
+  `python -m pytest -q` resolve `src/openstack_forge` and `tests` imports cleanly.

@@ -361,6 +361,16 @@ class SecretStore:
             )
         return loaded[name]
 
+    def present_names(self) -> frozenset[str]:
+        """Return the set of secret names currently present in the store (never values)."""
+        self._reject_symlinks()
+        if not self.path.exists():
+            if self.path.parent.exists():
+                self._check_directory()
+            return frozenset()
+        loaded = self.load(require_complete=False)
+        return frozenset(loaded)
+
     def _reject_symlinks(self) -> None:
         root_dir = self.root.resolve(strict=True)
         rel_parts = self.path.relative_to(root_dir).parts

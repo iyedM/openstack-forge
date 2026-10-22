@@ -5,18 +5,25 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
+from openstack_forge import cli
 from openstack_forge.execution import (
+    DEFAULT_LOCK_TARGET,
+    LOCK_FILE_MODE,
     MASK,
     STATE_FILE_MODE,
     StateError,
     StateStore,
     StepRecord,
     StepStatus,
+    UnsafePathError,
+    apply_lock,
     fsutil,
     redact_data,
     redact_text,
@@ -269,3 +276,110 @@ def test_redact_data() -> None:
         "user": "nova",
         "count": 3,
     }
+
+
+# --- apply lock (two-process concurrency) -------------------------------------------------
+
+
+def test_apply_lock_two_processes_and_cli_refusal(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "root"
+    etc = root / "etc"
+    etc.mkdir(parents=True, exist_ok=True)
+    (etc / "hosts").write_text("127.0.0.1 localhost\n", encoding="utf-8")
+
+    config_path = tmp_path / "cluster.yaml"
+    assert cli.main(["init", "--output", str(config_path)]) == 0
+    capsys.readouterr()
+
+    child_code = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "from openstack_forge.execution import apply_lock\n"
+        "with apply_lock(Path(sys.argv[1])):\n"
+        "    sys.stdout.write('LOCKED\\n')\n"
+        "    sys.stdout.flush()\n"
+        "    sys.stdin.read()\n"
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", child_code, str(root)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert proc.stdout is not None
+        ready_line = proc.stdout.readline().strip()
+        assert ready_line == "LOCKED"
+
+        lock_file = root / DEFAULT_LOCK_TARGET.lstrip("/")
+        assert lock_file.exists()
+        assert stat.S_IMODE(lock_file.stat().st_mode) == LOCK_FILE_MODE
+
+        # Immediate failure when another process holds the lock
+        with pytest.raises(StateError) as exc_info:
+            with apply_lock(root):
+                pass
+        assert f"pid {proc.pid}" in str(exc_info.value)
+        assert DEFAULT_LOCK_TARGET in str(exc_info.value)
+
+        # Bounded wait also fails with StateError while child holds the lock
+        with pytest.raises(StateError, match=DEFAULT_LOCK_TARGET):
+            with apply_lock(root, timeout=0.05, poll_interval=0.01):
+                pass
+
+        # CLI `apply --yes` fails cleanly with exit code 1 while lock is held
+        rc = cli.main(
+            [
+                "apply",
+                "--step",
+                "hosts-file",
+                "--config",
+                str(config_path),
+                "--root",
+                str(root),
+                "--node",
+                "controller",
+                "--yes",
+            ]
+        )
+        captured = capsys.readouterr()
+        assert rc == 1
+        assert "Another 'openstack-forge apply' process" in captured.err
+    finally:
+        if proc.stdin is not None:
+            proc.stdin.close()
+        proc.wait(timeout=5)
+    assert proc.returncode == 0
+
+    # Once the first process releases the lock, apply --yes succeeds
+    rc_after = cli.main(
+        [
+            "apply",
+            "--step",
+            "hosts-file",
+            "--config",
+            str(config_path),
+            "--root",
+            str(root),
+            "--node",
+            "controller",
+            "--yes",
+        ]
+    )
+    assert rc_after == 0
+
+
+def test_apply_lock_rejects_symlink(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    lock_file = root / DEFAULT_LOCK_TARGET.lstrip("/")
+    lock_file.parent.mkdir(parents=True, exist_ok=True)
+    inside = root / "var/lib/openstack-forge/other.lock"
+    inside.write_text("", encoding="utf-8")
+    lock_file.symlink_to(inside)
+
+    with pytest.raises(UnsafePathError, match="symlink"):
+        with apply_lock(root):
+            pass

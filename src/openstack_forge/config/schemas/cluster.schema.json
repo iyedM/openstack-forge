@@ -162,6 +162,12 @@
           "minProperties": 1,
           "additionalProperties": { "$ref": "#/$defs/interface_name" }
         },
+        "allow_shared_provider_interface": {
+          "type": "boolean"
+        },
+        "allow_lvm_root_filter_override": {
+          "type": "boolean"
+        },
         "tags": {
           "type": "array",
           "items": {

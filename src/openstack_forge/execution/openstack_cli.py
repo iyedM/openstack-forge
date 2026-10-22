@@ -70,10 +70,12 @@ Ubuntu 24.04 development machine facts (read-only inspection of
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Mapping
+import time
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 
 from openstack_forge.execution.commands import (
+    OPENSTACK_CLI_FAILURE_HINT,
     OPENSTACK_ENDPOINT_CREATE,
     OPENSTACK_ENDPOINT_LIST,
     OPENSTACK_PROJECT_CREATE_SERVICE,
@@ -103,6 +105,10 @@ SERVICE_PROJECT_DESCRIPTION = "Service Project"
 ADMIN_ROLE_NAME = "admin"
 DEFAULT_REGION = "RegionOne"
 ENDPOINT_INTERFACES: tuple[str, ...] = ("public", "internal", "admin")
+
+DEFAULT_READINESS_MAX_ATTEMPTS = 5
+DEFAULT_READINESS_INITIAL_BACKOFF = 1.0
+DEFAULT_READINESS_MAX_BACKOFF = 8.0
 
 
 @dataclass(frozen=True)
@@ -495,16 +501,87 @@ def service_project_problems(executor: CommandExecutor, admin_password: str) -> 
     return verify_project_present(projects, SERVICE_PROJECT_NAME)
 
 
-def ensure_service_project(executor: CommandExecutor, admin_password: str) -> bool:
+def wait_for_keystone_ready(
+    executor: CommandExecutor,
+    admin_password: str,
+    *,
+    max_attempts: int = DEFAULT_READINESS_MAX_ATTEMPTS,
+    initial_backoff: float = DEFAULT_READINESS_INITIAL_BACKOFF,
+    max_backoff: float = DEFAULT_READINESS_MAX_BACKOFF,
+    sleep: Callable[[float], None] = time.sleep,
+) -> tuple[ProjectRecord, ...]:
+    """Poll the read-only ``openstack.project-list`` spec with bounded exponential backoff.
+
+    Used after ``systemctl restart apache2`` (in ``keystone`` and ``placement``) and before
+    the first ``/usr/bin/openstack`` CLI call so transient WSGI startup delays do not abort
+    deployment. Only the read-only ``openstack.project-list`` command is retried; mutating
+    commands are never retried.
+
+    Raises :class:`PreconditionError` with an actionable message if Keystone does not respond
+    with a valid JSON project list within ``max_attempts`` attempts.
+    """
+    validate_parameter("secret", "admin_password", admin_password)
+    if max_attempts < 1:
+        raise ValueError(f"max_attempts must be >= 1, got {max_attempts}")
+    if initial_backoff < 0 or max_backoff < 0:
+        raise ValueError("backoff values must be >= 0")
+
+    last_error: str = "unknown error"
+    for attempt in range(1, max_attempts + 1):
+        try:
+            result = executor.run(OPENSTACK_PROJECT_LIST, {"admin_password": admin_password})
+            return parse_project_list(result.stdout)
+        except UnexpectedExitError as exc:
+            detail = exc.stderr.strip() or f"exit status {exc.returncode}"
+            last_error = redact_text(detail)
+        except (CommandError, ExecutionError) as exc:
+            last_error = redact_text(str(exc))
+
+        if attempt < max_attempts:
+            delay = min(initial_backoff * (2 ** (attempt - 1)), max_backoff)
+            sleep(delay)
+
+    raise PreconditionError(
+        f"Keystone API at http://controller:5000/v3 did not become ready after "
+        f"{max_attempts} attempt(s) of read-only '{OPENSTACK_PROJECT_LIST}' "
+        f"(last error: {last_error}). Check 'systemctl status apache2' and "
+        f"'/var/log/apache2/keystone.log' on the controller. {OPENSTACK_CLI_FAILURE_HINT}"
+    )
+
+
+def ensure_service_project(
+    executor: CommandExecutor,
+    admin_password: str,
+    *,
+    max_attempts: int = 1,
+    initial_backoff: float = DEFAULT_READINESS_INITIAL_BACKOFF,
+    max_backoff: float = DEFAULT_READINESS_MAX_BACKOFF,
+    sleep: Callable[[float], None] = time.sleep,
+) -> bool:
     """Idempotently ensure the ``service`` project exists in domain ``default``.
+
+    When ``max_attempts > 1`` (as used by :class:`KeystoneStep` after restarting ``apache2``),
+    waits for Keystone readiness via :func:`wait_for_keystone_ready` (bounded retry on the
+    read-only ``openstack.project-list`` command) before deciding whether to run the mutating
+    ``openstack.project-create-service`` command. The mutating create command is never retried.
 
     Returns ``True`` if ``openstack.project-create-service`` was executed, or ``False`` if
     the ``service`` project already existed. Raises :class:`PreconditionError` if duplicate
     ``service`` projects exist.
     """
     validate_parameter("secret", "admin_password", admin_password)
-    result = executor.run(OPENSTACK_PROJECT_LIST, {"admin_password": admin_password})
-    projects = parse_project_list(result.stdout)
+    if max_attempts == 1:
+        result = executor.run(OPENSTACK_PROJECT_LIST, {"admin_password": admin_password})
+        projects = parse_project_list(result.stdout)
+    else:
+        projects = wait_for_keystone_ready(
+            executor,
+            admin_password,
+            max_attempts=max_attempts,
+            initial_backoff=initial_backoff,
+            max_backoff=max_backoff,
+            sleep=sleep,
+        )
     matches = [proj for proj in projects if proj.name == SERVICE_PROJECT_NAME]
     if len(matches) > 1:
         raise PreconditionError(

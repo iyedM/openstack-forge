@@ -184,6 +184,7 @@ from __future__ import annotations
 import os
 import re
 import stat
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -222,6 +223,9 @@ from openstack_forge.execution.fsutil import (
     unified_diff,
 )
 from openstack_forge.execution.openstack_cli import (
+    DEFAULT_READINESS_INITIAL_BACKOFF,
+    DEFAULT_READINESS_MAX_ATTEMPTS,
+    DEFAULT_READINESS_MAX_BACKOFF,
     SERVICE_PROJECT_NAME,
     ensure_service_project,
     plan_create_service_project,
@@ -685,6 +689,10 @@ class KeystoneStep:
     local_node: Mapping[str, Any]
     executor: CommandExecutor
     id: str = KEYSTONE_STEP_ID
+    sleep: Callable[[float], None] = time.sleep
+    readiness_max_attempts: int = DEFAULT_READINESS_MAX_ATTEMPTS
+    readiness_initial_backoff: float = DEFAULT_READINESS_INITIAL_BACKOFF
+    readiness_max_backoff: float = DEFAULT_READINESS_MAX_BACKOFF
     declares_commands: ClassVar[bool] = True
 
     def __post_init__(self) -> None:
@@ -818,7 +826,14 @@ class KeystoneStep:
         self.executor.run(RUN_CREDENTIAL_SETUP.command_id, RUN_CREDENTIAL_SETUP.params)
         self.executor.run(KEYSTONE_MANAGE_BOOTSTRAP, {"password": admin_password})
         self.executor.run(RESTART_APACHE2.command_id, RESTART_APACHE2.params)
-        ensure_service_project(self.executor, admin_password)
+        ensure_service_project(
+            self.executor,
+            admin_password,
+            max_attempts=self.readiness_max_attempts,
+            initial_backoff=self.readiness_initial_backoff,
+            max_backoff=self.readiness_max_backoff,
+            sleep=self.sleep,
+        )
         write_admin_openrc(self.root, admin_password, dry_run=False)
 
     def verify(self) -> VerifyResult:
@@ -889,5 +904,12 @@ def make_keystone_step(
     local_node: Mapping[str, Any],
     *,
     executor: CommandExecutor,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> KeystoneStep:
-    return KeystoneStep(root=Path(root), config=config, local_node=local_node, executor=executor)
+    return KeystoneStep(
+        root=Path(root),
+        config=config,
+        local_node=local_node,
+        executor=executor,
+        sleep=sleep,
+    )

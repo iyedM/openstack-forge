@@ -885,6 +885,48 @@ def test_cli_secrets_custom_file_and_error_handling(
     assert "requires root privileges" in capsys.readouterr().err
 
 
+def test_cli_secrets_list_and_path(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # 1. `secrets path` prints the resolved path under --root
+    rc_path = main(["secrets", "path", "--root", str(tmp_path)])
+    captured_path = capsys.readouterr()
+    assert rc_path == 0
+    assert captured_path.err == ""
+    assert captured_path.out.strip() == str(tmp_path / "etc/openstack-forge/secrets.json")
+
+    # 2. `secrets list` before init shows all 16 secrets as missing
+    rc_list_before = main(["secrets", "list", "--root", str(tmp_path)])
+    captured_before = capsys.readouterr()
+    assert rc_list_before == 0
+    assert captured_before.err == ""
+    assert "Secrets store: /etc/openstack-forge/secrets.json" in captured_before.out
+    for name in SECRET_NAMES:
+        assert name in captured_before.out
+        assert SECRET_DESCRIPTIONS[name] in captured_before.out
+    assert "present" not in captured_before.out
+    assert "missing" in captured_before.out
+
+    # 3. `secrets list` after init shows all 16 secrets as present and never leaks values
+    assert main(["secrets", "init", "--root", str(tmp_path)]) == 0
+    capsys.readouterr()
+    loaded = SecretStore(tmp_path).load()
+
+    rc_list_after = main(["secrets", "list", "--root", str(tmp_path)])
+    captured_after = capsys.readouterr()
+    assert rc_list_after == 0
+    assert captured_after.err == ""
+    for name, value in loaded.items():
+        assert name in captured_after.out
+        assert value not in captured_after.out
+    assert "missing" not in captured_after.out
+    assert "present" in captured_after.out
+
+    # 4. `secrets list` and `secrets path` reject root escape (--file ../escape.json)
+    assert main(["secrets", "path", "--root", str(tmp_path), "--file", "../escape.json"]) == 1
+    assert "Error:" in capsys.readouterr().err
+    assert main(["secrets", "list", "--root", str(tmp_path), "--file", "../escape.json"]) == 1
+    assert "Error:" in capsys.readouterr().err
+
+
 # --- Canary end-to-end non-leakage test (including RabbitMQStep) ----------------------
 
 

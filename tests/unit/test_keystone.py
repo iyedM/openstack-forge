@@ -866,16 +866,31 @@ def test_mariadb_keystone_manage_and_openstack_cli_failure_hints_attached_on_err
     assert not report_km.ok
     assert KEYSTONE_MANAGE_FAILURE_HINT in format_report(report_km)
 
-    # 3. /usr/bin/openstack failure during apply()
+    # 3. /usr/bin/openstack failure during apply() (retries read-only project list with backoff)
     host_os = _make_host(tmp_path)
-    host_os.failures[
-        (*OPENSTACK_ADMIN_AUTH_ARGS, "project", "list", "--domain", "default", "-f", "json")
-    ] = ProcessOutput(1, "", "Unable to establish connection to http://controller:5000/v3\n")
+    project_list_argv = (
+        *OPENSTACK_ADMIN_AUTH_ARGS,
+        "project",
+        "list",
+        "--domain",
+        "default",
+        "-f",
+        "json",
+    )
+    host_os.failures[project_list_argv] = ProcessOutput(
+        1, "", "Unable to establish connection to http://controller:5000/v3\n"
+    )
     exec_os, _ = _make_executor(tmp_path, host_os)
-    step_os = KeystoneStep(tmp_path, {}, CONTROLLER, exec_os)
+    sleeps: list[float] = []
+    step_os = KeystoneStep(tmp_path, {}, CONTROLLER, exec_os, sleep=sleeps.append)
     report_os = Engine(StateStore(tmp_path / "state-os.json")).run([step_os])
     assert not report_os.ok
     assert OPENSTACK_CLI_FAILURE_HINT in format_report(report_os)
+    assert sleeps == [1.0, 2.0, 4.0, 8.0]
+    assert host_os.calls.count(project_list_argv) == 5
+    # No mutating command was retried
+    assert host_os.calls.count(("/usr/bin/systemctl", "restart", "apache2")) == 1
+    assert host_os.calls.count(("/usr/bin/keystone-manage", "db_sync")) == 1
 
 
 # --- dry-run preview & CLI integration ------------------------------------------------

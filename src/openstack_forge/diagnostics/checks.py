@@ -383,15 +383,16 @@ def check_interfaces(
 def check_provider_interface(
     node: Mapping[str, Any],
     networks: Mapping[str, Any],
+    host_interfaces: Sequence[NetworkInterface] | None = None,
 ) -> CheckResult:
-    """Warn when the provider and management interfaces are the same (bridge migration risk)."""
+    """Warn when the provider interface is shared, carries management_ip, or is down."""
     declared_ifaces: Mapping[str, str] = node["interfaces"]
     mgmt_iface = _resolve_management_interface(declared_ifaces, networks)
     provider_iface = declared_ifaces.get("provider") or networks.get("provider", {}).get(
         "interface"
     )
 
-    declared = "distinct management and provider interfaces"
+    declared = "distinct management and provider interfaces (provider link UP)"
     observed = f"management={mgmt_iface or 'none'}, provider={provider_iface or 'none'}"
 
     if mgmt_iface and provider_iface and mgmt_iface == provider_iface:
@@ -405,6 +406,64 @@ def check_provider_interface(
                 "bridge migration risks disrupting management connectivity."
             ),
         )
+
+    uses_provider = "provider" in declared_ifaces or node.get("role") in {"controller", "compute"}
+    if host_interfaces is not None and uses_provider and provider_iface:
+        by_name = {iface.name: iface for iface in host_interfaces}
+        host_provider = by_name.get(provider_iface)
+        if host_provider is None:
+            return CheckResult(
+                name="provider_interface",
+                status=CheckStatus.WARN,
+                declared=declared,
+                observed=f"{observed} (missing)",
+                message=(
+                    f"Provider interface '{provider_iface}' is missing on host; the operator "
+                    "must configure and bring the link up (OpenStack Forge does not run netplan "
+                    "or ip link)."
+                ),
+            )
+        operstate = (host_provider.operstate or "UNKNOWN").upper()
+        observed_with_state = f"{observed} (operstate={operstate})"
+        mgmt_ip_raw = node.get("management_ip")
+        if isinstance(mgmt_ip_raw, str):
+            mgmt_ip = IPv4Address(mgmt_ip_raw)
+            provider_ips = {IPv4Address(ip) for ip in host_provider.ipv4_addresses}
+            if mgmt_ip in provider_ips:
+                return CheckResult(
+                    name="provider_interface",
+                    status=CheckStatus.WARN,
+                    declared=declared,
+                    observed=observed_with_state,
+                    message=(
+                        f"Provider interface '{provider_iface}' carries management_ip "
+                        f"{mgmt_ip}; attaching it to OVS bridge 'br-provider' would cut "
+                        "management connectivity."
+                    ),
+                )
+        if operstate not in {"UP", "UNKNOWN"}:
+            return CheckResult(
+                name="provider_interface",
+                status=CheckStatus.WARN,
+                declared=declared,
+                observed=observed_with_state,
+                message=(
+                    f"Provider interface '{provider_iface}' link state is {operstate} "
+                    "(expected UP); the operator must bring the link up before Neutron can "
+                    "forward provider traffic (OpenStack Forge does not run netplan or ip link)."
+                ),
+            )
+        return CheckResult(
+            name="provider_interface",
+            status=CheckStatus.PASS,
+            declared=declared,
+            observed=observed_with_state,
+            message=(
+                f"Management ({mgmt_iface}) and provider ({provider_iface}, link {operstate}) "
+                "interfaces are separate and provider link is up."
+            ),
+        )
+
     return CheckResult(
         name="provider_interface",
         status=CheckStatus.PASS,
@@ -414,6 +473,15 @@ def check_provider_interface(
             f"Management ({mgmt_iface}) and provider ({provider_iface}) interfaces are separate."
         ),
     )
+
+
+def check_provider_interface_link(
+    node: Mapping[str, Any],
+    networks: Mapping[str, Any],
+    host_interfaces: Sequence[NetworkInterface],
+) -> CheckResult:
+    """Check provider interface separation and host link ``operstate`` from ``ip -j addr``."""
+    return check_provider_interface(node, networks, host_interfaces=host_interfaces)
 
 
 def _resolve_management_interface(

@@ -44,11 +44,11 @@ and `plan` use no network.
 ## Why a separate package
 
 `openstack_forge.orchestration` (the step catalog and `plan`), `openstack_forge.diagnostics`
-(`doctor`), and `openstack_forge.config` (`config validate`) are documented and tested as
-read-only. Putting writing code in `openstack_forge.execution` and importing it **lazily**
-only inside the `apply` CLI handler keeps that promise checkable: a test asserts that
-importing the CLI or running `config validate`, `plan`, or `doctor` never imports
-`openstack_forge.execution`.
+(`doctor`), and `openstack_forge.config` (`config validate` and `init`) are documented and
+tested as read-only. Putting writing code in `openstack_forge.execution` and importing it
+**lazily** only inside the `apply`, `verify`, and `secrets` CLI handlers keeps that promise
+checkable: a test asserts that importing the CLI or running `init`, `config validate`,
+`plan`, or `doctor` never imports `openstack_forge.execution`.
 
 ## Root directory
 
@@ -236,16 +236,17 @@ validated `ClusterConfig`, the target node's hostname, and a target `root` direc
 ## CLI: `openstack-forge apply`
 
 ```sh
-openstack-forge apply --config cluster.yaml --step STEP_ID [--node HOSTNAME] [--root PATH] [--yes]
+openstack-forge apply --config cluster.yaml (--step STEP_ID | --all) [--node HOSTNAME] [--root PATH] [--yes]
 ```
 
 | Option | Meaning |
 | ------ | ------- |
 | `--config PATH` | Cluster configuration (default: `cluster.yaml`), validated before use. |
-| `--step STEP_ID` | Catalog step ID to apply (required). Only steps registered in `IMPLEMENTED_STEPS` (`hosts-file`, `time-sync-controller`, `time-sync-other`, `openstack-packages`, `mariadb`, `rabbitmq`, `memcached`, `etcd`, `keystone`, `glance`, `placement`, `nova-controller`, `nova-compute`, `neutron-controller`, `neutron-compute`, `horizon`, `cinder-controller`, `cinder-storage`) can run; any other catalog step exits with code 1 and `"not implemented"`. A step whose catalog `roles` do not include the node's role (for example `time-sync-other` on the controller) exits with code 1. |
+| `--step STEP_ID` | Single catalog step ID to apply (mutually exclusive with `--all`). Only steps registered in `IMPLEMENTED_STEPS` (`hosts-file`, `time-sync-controller`, `time-sync-other`, `openstack-packages`, `mariadb`, `rabbitmq`, `memcached`, `etcd`, `keystone`, `glance`, `placement`, `nova-controller`, `nova-compute`, `neutron-controller`, `neutron-compute`, `horizon`, `cinder-controller`, `cinder-storage`) can run; any other catalog step exits with code 1 and `"not implemented"`. A step whose catalog `roles` do not include the node's role (for example `time-sync-other` on the controller) exits with code 1. |
+| `--all` | Apply (or preview in dry-run mode) all planned catalog steps for the target node in topological order (`build_plan()`). |
 | `--node HOSTNAME` | Target node hostname. If omitted, matched against the local machine's hostname (`socket.gethostname()`). |
 | `--root PATH` | Target filesystem root (default: `/`). Used by tests to confine all writes to a temporary directory. |
-| `--yes` | Write changes, run the step's commands and update the state file. The commands of every step except `hosts-file` use the network through apt. Without `--yes`, `apply` runs in **dry-run** mode: it prints the redacted unified diff and the exact argv of every command the step would run, writes nothing, runs nothing, and exits 0. |
+| `--yes` | Acquire `<root>/var/lib/openstack-forge/apply.lock`, write changes, run the step's commands, and update the state file. The commands of every step except `hosts-file` use the network through apt. Without `--yes`, `apply` runs in **dry-run** mode: it prints the redacted unified diff and the exact argv of every command the step would run, writes nothing, runs nothing, and exits 0. |
 
 - **Catalog status warning:** `apply` prints a visible `WARNING` line when a step is marked
   `unverified` in `steps.json`, which all implemented steps are.
@@ -262,6 +263,11 @@ openstack-forge apply --config cluster.yaml --step STEP_ID [--node HOSTNAME] [--
   requires effective UID 0 (`os.geteuid() == 0`); otherwise `apply` fails with a clear
   message and exits 1. Passing `--root PATH` (where `PATH` does not resolve to `/`)
   bypasses the UID check for non-root tests while still confining every write under `PATH`.
+- **Apply lock (`apply_lock`):** when `--yes` is given, `apply` acquires an exclusive
+  `fcntl.flock` lock on `<root>/var/lib/openstack-forge/apply.lock` (mode `0600`, symlinks
+  refused) and writes the holder PID. If another `openstack-forge apply` process already
+  holds the lock, `apply` fails immediately with `StateError` (exit code 1) naming the
+  holder PID and lock path.
 - **State file location:** `<root>/var/lib/openstack-forge/state.json` (so `/var/lib/openstack-forge/state.json`
   on `/`, or `<tmp>/var/lib/openstack-forge/state.json` under `--root <tmp>`), written
   atomically with mode `0600` only when `--yes` is given.
@@ -321,6 +327,12 @@ OpenStack passwords (`SECRET_SPECS` / `SECRET_NAMES`):
 - **CLI (`openstack-forge secrets`):**
   - `openstack-forge secrets init [--root PATH] [--file PATH]` creates missing secrets and
     prints **secret names only**, never values. Writing to `/` requires effective UID 0.
+  - `openstack-forge secrets list [--root PATH] [--file PATH]` prints the secret names
+    currently present in `<root>/etc/openstack-forge/secrets.json` (one per line in
+    canonical `SECRET_SPECS` order, never values; exits 1 if the file does not exist).
+  - `openstack-forge secrets path [--root PATH] [--file PATH]` prints the resolved
+    filesystem path to `<root>/etc/openstack-forge/secrets.json` without reading or
+    creating the file.
   - `openstack-forge secrets show NAME [--root PATH] [--file PATH]` prints the single named
     secret value to `stdout` and nothing else. It is the only command that outputs a secret.
 - **Passing secrets to commands (`stdin_param`, `env_params`, `argv`) and the `ps` limitation:**
@@ -425,8 +437,11 @@ Re-running after a successful run changes nothing: every `check()` is true, the 
 already says `done`, so no file and not even the state file is written.
 
 Limits: steps run one at a time on the local process; there is no parallelism, no
-rollback (the `.orig` backups and `uncomment_lines()` exist for a person to use), no
-locking against two engines sharing a state file, and no timeout around a step's methods.
+rollback (the `.orig` backups and `uncomment_lines()` exist for a person to use), and no
+timeout around a step's methods. At the CLI layer, `openstack-forge apply --yes` serializes
+runs with `apply_lock()` (`<root>/var/lib/openstack-forge/apply.lock`), whereas direct
+programmatic callers of `Engine(store)` must wrap concurrent runs in `with apply_lock(root):`
+themselves.
 
 ## Command execution layer
 
@@ -1212,6 +1227,12 @@ Deviations, trade-offs, and scope boundary:
   `/etc/openstack-forge/admin-openrc` (mode `0600`, no `.orig` backup) are created; the guide's
   illustrative `mydomain`, `myproject`, `myuser`, `myrole`, and `demo-openrc` examples are
   omitted.
+- **Bounded readiness wait after `systemctl restart apache2` (`wait_for_keystone_ready`):**
+  before the first `/usr/bin/openstack` CLI call after restarting `apache2`, `KeystoneStep`
+  probes `http://controller:5000/v3` using the read-only `openstack.project-list` spec with
+  bounded retries (`max_attempts=5`, exponential backoff `1.0 s -> 2.0 s -> 4.0 s -> 8.0 s`,
+  injectable `sleep`) and raises an actionable `PreconditionError` if Keystone never becomes
+  ready. No mutating command is ever retried.
 - **What `verify()` checks and does not check:** `verify()` runs `openstack.project-list`
   against `http://controller:5000/v3` as `admin`, which exercises live HTTP `/v3` token
   issuance and confirms the `service` project exists in the `default` domain; the SQL schema
@@ -1370,6 +1391,12 @@ Deviations, trade-offs, and limits:
   (`stdin_param="sql"`) and `ADMIN_PASS` is passed to `/usr/bin/openstack` via `OS_PASSWORD`
   (`env_params`), so neither ever appears in `argv` (`ps`). `PLACEMENT_PASS` is passed to
   `openstack user create` / `openstack user set` via `--password {user_password}`.
+- **Bounded readiness wait after `systemctl restart apache2` (`wait_for_keystone_ready`):**
+  after restarting `apache2` (which hosts both Keystone and Placement under `mod_wsgi`),
+  `PlacementStep.apply()` runs `wait_for_keystone_ready()` using the read-only
+  `openstack.project-list` spec (`max_attempts=5`, injectable `sleep`) so `apache2` is
+  confirmably serving HTTP `/v3` again before `apply()` returns. No mutating command is
+  retried.
 - **What `verify()` does not check:** no live HTTP request to `http://controller:8778`, no
   `placement-status upgrade check`, and no `osc-placement` resource-class/trait query
   (`verify-ubuntu.html`) are performed.
@@ -1508,9 +1535,15 @@ Deviations, trade-offs, and limits (`nova-controller` and `nova-compute`):
   `map_cell0`, `create_cell`, and `db sync` connect to MariaDB rather than SQLite; if
   `log_file` or `log_dir` is enabled in `nova.conf`, running `nova-manage` as `root` can create
   a root-owned log file in `/var/log/nova`.
-- **What `verify()` does not check:** no live HTTP request to `http://controller:8774/v2.1`, no
-  `openstack compute service list`, and no `nova-status upgrade check` (`verify.html`) are
-  performed.
+- **What `verify()` does not check (including schema sync completeness):** no live HTTP
+  request to `http://controller:8774/v2.1`, no `openstack compute service list`, and no
+  `nova-status upgrade check` (`verify.html`) are performed. Furthermore, the official Nova
+  2025.1 installation guide does not specify a canonical SQL table list or Alembic revision
+  identifier for `nova_api` or `nova`, and `mariadb.query-sql` queries only
+  `information_schema.SCHEMATA` and `mysql.db` (plus `nova-manage cell_v2 list_cells` for
+  `cell0`/`cell1`), so `check()` and `verify()` cannot distinguish a partially synced Nova
+  schema from a fully synced schema using read-only SQL queries alone; `NovaControllerStep.verify()`
+  includes an explicit warning in `details` (`CONTROLLER_NOT_CHECKED`).
 
 ## Step: `neutron-controller` (`openstack_forge.execution.neutron`)
 
@@ -1653,13 +1686,26 @@ It runs only on `compute` nodes (constructing it for another role raises `Execut
 
 Deviations, trade-offs, and limits (`neutron-controller` and `neutron-compute`):
 
-- **Open vSwitch (`openvswitch`) instead of `linuxbridge`:** because `neutron-linuxbridge-agent`
-  is removed from the 2025.1 (Epoxy) Ubuntu Cloud Archive and marked unsupported in the 2025.1
-  Neutron installation guide, OpenStack Forge implements Option 2 (Self-service networks) with
-  Open vSwitch (`neutron-openvswitch-agent`, `mechanism_drivers = openvswitch,l2population`,
-  `openvswitch_agent.ini`, `firewall_driver = openvswitch`, `interface_driver = openvswitch`,
-  and `br-provider`), cross-checked against `admin/deploy-ovs-selfservice.html` and
-  `ovn/openvswitch_to_ovn_migration.html`.
+- **Open vSwitch (`openvswitch`) in the 2025.1 Option 2 Ubuntu pages (and remaining prose):**
+  in the live 2025.1 Ubuntu Option 2 pages (`controller-install-option2-ubuntu.html` and
+  `compute-install-option2-ubuntu.html`), all `<pre>` command and configuration snippets use
+  Open vSwitch (`neutron-openvswitch-agent`, `/etc/neutron/plugins/ml2/openvswitch_agent.ini`,
+  `mechanism_drivers = openvswitch,l2population`, `interface_driver = openvswitch`, and
+  `firewall_driver = openvswitch`), while a few surrounding prose sentences still say "Linux
+  bridge" from earlier releases and both pages open with a warning box that the Linuxbridge
+  driver is experimental (`[experimental] linuxbridge = false`). OpenStack Forge follows the
+  Open vSwitch configuration and `admin/deploy-ovs-selfservice.html` (`br-provider`).
+- **Provider interface safety guard (`check_provider_interface_safety`) and link state:**
+  attaching the node's management interface (or any interface carrying `node.management_ip`)
+  to `br-provider` via `ovs-vsctl add-port` moves Layer-2 frame handling off the interface and
+  can cut management connectivity. Both `NeutronControllerStep` and `NeutronComputeStep`
+  inspect the declared management/provider interfaces and optional `<root>/sys/class/net/` and
+  refuse `apply()` (`PreconditionError`), `check()` (`False`), and `verify()` (`ok=False`)
+  when the provider interface equals the management interface or carries `management_ip`,
+  unless `allow_shared_provider_interface: true` is set on the node. In addition,
+  `openstack-forge doctor` checks the provider interface link state (`provider_interface_link`);
+  **OpenStack Forge never runs `netplan` or `ip link` commands, so the operator must bring the
+  provider interface link up (`UP` / `LOWER_UP`) on the host before deployment.**
 - **Idempotent `ovs-vsctl --may-exist add-br` and `ovs-vsctl --may-exist add-port`:**
   `ovs-vsctl(8)` specifies that `add-br` and `add-port` fail on re-runs unless `--may-exist` is
   supplied; `check()` and `verify()` inspect `ovs-vsctl br-exists br-provider` and
@@ -1790,9 +1836,21 @@ It runs only on `block` storage nodes (constructing it for another role raises
 
 | Phase | What happens |
 | ----- | ------------ |
-| `check()` | Pure first: `RABBIT_PASS`, `CINDER_DBPASS`, and `CINDER_PASS` must exist in `SecretStore(root)` (`ADMIN_PASS` is never required on block storage nodes), `local_node["disk"]` must be a valid `/dev/...` device path, and `/etc/lvm/lvm.conf`, `/etc/cinder/cinder.conf`, and `/etc/tgt/conf.d/cinder.conf` must exist and need no edit. Otherwise `True` only if `lvm2`, `thin-provisioning-tools`, `cinder-volume`, and `tgt` are installed, `tgt` and `cinder-volume` are active, and `pvs` + `vgs` confirm the physical volume `<disk>` and volume group `cinder-volumes` exist. |
-| `apply()` | Precondition: loads `RABBIT_PASS`, `CINDER_DBPASS`, and `CINDER_PASS` from `SecretStore(root)` and validates `local_node["disk"]`. Installs `lvm2`, `thin-provisioning-tools`, `cinder-volume`, and `tgt`, edits `/etc/lvm/lvm.conf`, idempotently runs `pvcreate <disk>` (only if absent from `pvs`) and `vgcreate cinder-volumes <disk>` (only if absent from `vgs`), edits `/etc/cinder/cinder.conf` and `/etc/tgt/conf.d/cinder.conf`, and restarts `tgt` and `cinder-volume`. |
-| `verify()` | Checks the 3 secrets in `SecretStore(root)`, `/etc/lvm/lvm.conf`, `/etc/cinder/cinder.conf`, and `/etc/tgt/conf.d/cinder.conf`, all 4 packages installed, `tgt` and `cinder-volume` active, and the LVM physical volume `<disk>` and volume group `cinder-volumes` present in `pvs` and `vgs`. |
+| `check()` | Pure first: `RABBIT_PASS`, `CINDER_DBPASS`, and `CINDER_PASS` must exist in `SecretStore(root)` (`ADMIN_PASS` is never required on block storage nodes), `local_node["disk"]` must be a valid `/dev/...` device path, `check_cinder_lvm_root_safety()` must confirm `/` is not on LVM (unless `allow_lvm_root_filter_override: true` is set), and `/etc/lvm/lvm.conf`, `/etc/cinder/cinder.conf`, and `/etc/tgt/conf.d/cinder.conf` must exist and need no edit. Otherwise `True` only if `lvm2`, `thin-provisioning-tools`, `cinder-volume`, and `tgt` are installed, `tgt` and `cinder-volume` are active, and `pvs` + `vgs` confirm the physical volume `<disk>` and volume group `cinder-volumes` exist. |
+| `apply()` | Precondition: loads `RABBIT_PASS`, `CINDER_DBPASS`, and `CINDER_PASS` from `SecretStore(root)`, validates `local_node["disk"]`, and runs `check_cinder_lvm_root_safety()`. Installs `lvm2`, `thin-provisioning-tools`, `cinder-volume`, and `tgt`, idempotently runs `pvcreate <disk>` (only if absent from `pvs`) and `vgcreate cinder-volumes <disk>` (only if absent from `vgs`), edits `/etc/lvm/lvm.conf`, `/etc/cinder/cinder.conf`, and `/etc/tgt/conf.d/cinder.conf`, and restarts `tgt` and `cinder-volume`. |
+| `verify()` | Checks the 3 secrets in `SecretStore(root)`, `check_cinder_lvm_root_safety()`, `/etc/lvm/lvm.conf`, `/etc/cinder/cinder.conf`, and `/etc/tgt/conf.d/cinder.conf`, all 4 packages installed, `tgt` and `cinder-volume` active, and the LVM physical volume `<disk>` and volume group `cinder-volumes` present in `pvs` and `vgs`. |
+
+**Root-on-LVM safety check (`check_cinder_lvm_root_safety`):** the official Cinder 2025.1
+Ubuntu storage node installation guide
+(<https://docs.openstack.org/cinder/2025.1/install/cinder-storage-install-ubuntu.html>) warns:
+*"Warning: If your storage nodes use LVM on the operating system disk, you must also add the
+associated device to the filter. For example, if the `/dev/sda` device contains the operating
+system: `filter = [ "a/sda/", "a/sdb/", "r/.*/"]`"*. Because `CinderStorageStep` writes a
+single-disk filter `filter = [ "a/<rel_disk>/", "r/.*/"]`, `check_cinder_lvm_root_safety()`
+inspects `<root>/proc/mounts` and `<root>/etc/fstab` (plus optional `root_on_lvm` /
+`root_device` node properties) and raises `PreconditionError` if `/` is backed by an LVM
+logical volume (`/dev/mapper/...`, `/dev/dm-*`, `/dev/<vg>/<lv>`), unless
+`allow_lvm_root_filter_override: true` is set on the node.
 
 ## Full-Node Execution (`apply --all`), Read-Only Verification (`verify`), and `init`
 

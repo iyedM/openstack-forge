@@ -84,9 +84,14 @@ A non-empty list. Every node has:
 | `ram_gb` | Integer >= 1: the memory the node is expected to have, in GB. |
 | `interfaces` | Mapping of network name to interface name, at least one entry. |
 | `tags` | Optional list of strings. |
+| `allow_shared_provider_interface` | Optional boolean (`default: false`). Explicit opt-in override allowing `neutron-controller` and `neutron-compute` to attach the provider interface to `br-provider` even when it equals the management interface or carries `management_ip`. |
+| `allow_lvm_root_filter_override` | Optional boolean (`default: false`). Explicit opt-in override allowing `cinder-storage` to write the single-disk LVM filter to `/etc/lvm/lvm.conf` even when the block node's root filesystem `/` is detected on LVM. |
 
 `vcpus` and `ram_gb` are declarations of expected host capacity; `openstack-forge doctor`
 compares them against the local machine (see [`docs/doctor/README.md`](../doctor/README.md)).
+The operator must bring each node's provider network interface link `UP` (`LOWER_UP`) on the
+host (for example via netplan) before deployment; OpenStack Forge never runs `netplan` or
+`ip link` commands.
 
 Disks depend on the role:
 

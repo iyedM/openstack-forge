@@ -6,9 +6,9 @@ CLI provisioning brick, and the implemented `hosts-file`, `time-sync-controller`
 `time-sync-other`, `openstack-packages`, `mariadb`, `rabbitmq`, `memcached`, `etcd`,
 `keystone`, `glance`, `placement`, `nova-controller`, `nova-compute`, `neutron-controller`,
 `neutron-compute`, `horizon`, `cinder-controller`, and `cinder-storage` steps used by
-`openstack-forge apply`.
-Imported lazily by the `apply` and `secrets` CLI handlers so that `config validate`,
-`doctor`, and `plan` never import it.
+`openstack-forge apply` and `openstack-forge verify`.
+Imported lazily by the `apply`, `verify`, and `secrets` CLI handlers so that `init`,
+`config validate`, `doctor`, and `plan` never import it.
 
 ## Modules
 
@@ -17,25 +17,26 @@ Imported lazily by the `apply` and `secrets` CLI handlers so that `config valida
 - `files.py` - `managed_block()`, `ini_set()`, `ini_set_many()` (including `comment_out`),
   `ini_comment_out_keys()`, `comment_out_lines()` and `uncomment_lines()`.
 - `hosts.py` - the `hosts-file` step (`HostsFileStep`, `build_hosts_block()`,
-  `parse_hosts()`, `verify_hosts_file()`) and `IMPLEMENTED_STEPS`.
+  `parse_hosts()`, `verify_hosts_file()`).
 - `redaction.py` - `redact_text()`, `redact_data()`, and exact-value secret registration
   (`register_secret()`, `register_secrets()`).
 - `secrets.py` - `SecretStore`, `SecretSpec` (`SECRET_SPECS` / `EXTRA_SECRET_SPECS`), and
   `generate_secret()` for the `0600` `/etc/openstack-forge/secrets.json` store.
-- `state.py` - `StateStore`, the 0600 JSON step-status file.
+- `state.py` - `StateStore` (the `0600` JSON step-status file) and `apply_lock()` (exclusive
+  advisory lock at `<root>/var/lib/openstack-forge/apply.lock`).
 - `engine.py` - `Engine.run()` / `Engine.resume()` over check/apply/verify steps.
 - `commands.py` - allowlisted `CommandSpec`s (including `sensitive_params`, `stdin_param`,
   `env_params`, and `sql_stdin`), typed parameter validation, `CommandRegistry`
   (`DEFAULT_REGISTRY` holds the forty-nine reviewed system commands), and `CommandExecutor`
-  with an injectable backend, sanitized environment, SIGTERM-then-SIGKILL timeouts,
-  redacted and truncated output.
+  (including `read_only=True` enforcement mode) with an injectable backend, sanitized
+  environment, SIGTERM-then-SIGKILL timeouts, redacted and truncated output.
 - `sql.py` - reusable MariaDB database and user-grant provisioning brick via `stdin`
   (`build_service_database_sql()`, `provision_service_database()`, `service_database_ready()`,
   `service_database_problems()`).
 - `openstack_cli.py` - reusable `/usr/bin/openstack` CLI provisioning brick
-  (`ensure_service_project()`, `ensure_service_user()`, `ensure_service_catalog()`,
-  `service_project_ready()`, `service_user_ready()`, `service_catalog_ready()`, and JSON
-  output parsers).
+  (`wait_for_keystone_ready()`, `ensure_service_project()`, `ensure_service_user()`,
+  `ensure_service_catalog()`, `service_project_ready()`, `service_user_ready()`,
+  `service_catalog_ready()`, and JSON output parsers).
 - `chrony.py` - the `time-sync-controller` and `time-sync-other` steps (unverified, never
   run on a real host).
 - `openstack_packages.py` - the `openstack-packages` step (unverified, never run on a real

@@ -245,6 +245,7 @@ def _apply(
         ExecutionError,
         StateStore,
         UnsafePathError,
+        apply_lock,
         build_step,
         format_report,
         is_host_root,
@@ -374,15 +375,16 @@ def _apply(
             return 0
 
         try:
-            state_path, _ = resolve_target(root_path, DEFAULT_STATE_TARGET)
-            if state_path.is_symlink():
-                raise UnsafePathError(
-                    f"Refusing to use state file {DEFAULT_STATE_TARGET}: it is a symlink"
-                )
-            state_path.parent.mkdir(parents=True, exist_ok=True)
-            if any(step.declares_commands for step in steps):
-                audit_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            report = Engine(StateStore(state_path)).run(steps)
+            with apply_lock(root_path):
+                state_path, _ = resolve_target(root_path, DEFAULT_STATE_TARGET)
+                if state_path.is_symlink():
+                    raise UnsafePathError(
+                        f"Refusing to use state file {DEFAULT_STATE_TARGET}: it is a symlink"
+                    )
+                state_path.parent.mkdir(parents=True, exist_ok=True)
+                if any(step.declares_commands for step in steps):
+                    audit_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                report = Engine(StateStore(state_path)).run(steps)
         except ExecutionError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 1
@@ -439,15 +441,16 @@ def _apply(
         return 0
 
     try:
-        state_path, _ = resolve_target(root_path, DEFAULT_STATE_TARGET)
-        if state_path.is_symlink():
-            raise UnsafePathError(
-                f"Refusing to use state file {DEFAULT_STATE_TARGET}: it is a symlink"
-            )
-        state_path.parent.mkdir(parents=True, exist_ok=True)
-        if step.declares_commands:
-            audit_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        report = Engine(StateStore(state_path)).run([step])
+        with apply_lock(root_path):
+            state_path, _ = resolve_target(root_path, DEFAULT_STATE_TARGET)
+            if state_path.is_symlink():
+                raise UnsafePathError(
+                    f"Refusing to use state file {DEFAULT_STATE_TARGET}: it is a symlink"
+                )
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            if step.declares_commands:
+                audit_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            report = Engine(StateStore(state_path)).run([step])
     except ExecutionError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
@@ -678,6 +681,42 @@ def _secrets_show(args: argparse.Namespace) -> int:
         return 1
 
     print(value)
+    return 0
+
+
+def _secrets_list(args: argparse.Namespace) -> int:
+    """List known secret names, their present/missing status, and descriptions (never values)."""
+    from openstack_forge.execution import DEFAULT_SECRETS_TARGET, ExecutionError, SecretStore
+
+    root_path = Path(args.root) if args.root is not None else Path("/")
+    target = args.file if args.file is not None else DEFAULT_SECRETS_TARGET
+    try:
+        store = SecretStore(root_path, target)
+        present = store.present_names()
+    except ExecutionError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"Secrets store: {store.display_path}")
+    for name, spec in store.specs.items():
+        status = "present" if name in present else "missing"
+        print(f"  {name:<18}  {status:<7}  {spec.description}")
+    return 0
+
+
+def _secrets_path(args: argparse.Namespace) -> int:
+    """Print the resolved filesystem path of the secrets store."""
+    from openstack_forge.execution import DEFAULT_SECRETS_TARGET, ExecutionError, SecretStore
+
+    root_path = Path(args.root) if args.root is not None else Path("/")
+    target = args.file if args.file is not None else DEFAULT_SECRETS_TARGET
+    try:
+        store = SecretStore(root_path, target)
+    except ExecutionError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    print(store.path)
     return 0
 
 
@@ -912,6 +951,42 @@ def build_parser(
         help="Target path of the secrets file (default: /etc/openstack-forge/secrets.json).",
     )
     secrets_show.set_defaults(func=_secrets_show)
+
+    secrets_list = secrets_subparsers.add_parser(
+        "list",
+        help="List secret names, present/missing status, and descriptions (never values).",
+    )
+    secrets_list.add_argument(
+        "--root",
+        default=None,
+        metavar="PATH",
+        help="Root directory under which the secrets file is stored (default: /).",
+    )
+    secrets_list.add_argument(
+        "--file",
+        default=None,
+        metavar="PATH",
+        help="Target path of the secrets file (default: /etc/openstack-forge/secrets.json).",
+    )
+    secrets_list.set_defaults(func=_secrets_list)
+
+    secrets_path = secrets_subparsers.add_parser(
+        "path",
+        help="Print the resolved filesystem path of the secrets store.",
+    )
+    secrets_path.add_argument(
+        "--root",
+        default=None,
+        metavar="PATH",
+        help="Root directory under which the secrets file is stored (default: /).",
+    )
+    secrets_path.add_argument(
+        "--file",
+        default=None,
+        metavar="PATH",
+        help="Target path of the secrets file (default: /etc/openstack-forge/secrets.json).",
+    )
+    secrets_path.set_defaults(func=_secrets_path)
 
     return parser
 

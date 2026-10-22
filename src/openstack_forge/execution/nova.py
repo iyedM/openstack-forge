@@ -196,6 +196,17 @@ Deviations, trade-offs, and scope boundary
    ``CommandSpec`` forbids ``su`` and ``sudo``. Editing ``/etc/nova/nova.conf`` before running
    ``nova-manage`` ensures ``api_db sync``, ``map_cell0``, ``create_cell``, and ``db sync``
    connect to MariaDB rather than SQLite.
+8. **Why ``check()`` and ``verify()`` cannot establish full ``nova`` / ``nova_cell0`` schema
+   completeness from official documentation**:
+   The official 2025.1 Nova installation guide (``controller-install-ubuntu.html``) does not
+   document target table counts, table names, or Alembic head revision hashes for ``nova_api``,
+   ``nova``, or ``nova_cell0`` (and a ``COUNT(*) > 0`` query against
+   ``information_schema.TABLES`` would still pass on a partially migrated schema if
+   ``nova-manage db sync`` failed mid-way). Therefore ``check()`` and ``verify()`` keep the
+   read-only ``MARIADB_QUERY_SQL`` database/grant check plus ``nova-manage cell_v2 list_cells``
+   (which proves ``nova_api.cell_mappings`` exists and contains ``cell0`` and ``cell1``), and
+   ``verify()`` emits an explicit warning in :attr:`VerifyResult.details` stating that full
+   ``nova-manage db sync`` migration completeness is not verified.
 """
 
 from __future__ import annotations
@@ -368,8 +379,12 @@ CELL_V2_NOTE = (
     "automatically."
 )
 CONTROLLER_NOT_CHECKED = (
-    "Not checked: no live HTTP request to http://controller:8774/v2.1 or AMQP connection to "
-    "controller:5672 is performed."
+    "Warning: MariaDB schema completeness for 'nova_api', 'nova', and 'nova_cell0' cannot be "
+    "verified from official OpenStack 2025.1 documentation (which does not specify target "
+    "table counts or Alembic head revisions); check() and verify() confirm database/grant "
+    "existence and 'nova-manage cell_v2 list_cells' ('cell0' and 'cell1'), not that "
+    "'nova-manage db sync' completed every migration. Also not checked: no live HTTP request "
+    "to http://controller:8774/v2.1 or AMQP connection to controller:5672 is performed."
 )
 COMPUTE_LEAST_PRIVILEGE_NOTE = (
     "Least-privilege secrets: nova-compute loads only RABBIT_PASS, NOVA_PASS, and "

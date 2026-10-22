@@ -946,3 +946,101 @@ def test_neutron_steps_dry_run_masks_secrets_and_works_without_secrets(
         TEST_METADATA_SECRET,
     ):
         assert secret not in combined_diff
+
+
+def test_neutron_steps_refuse_shared_management_provider_interface_unless_overridden(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "root"
+    _seed_controller_secrets(root)
+    _seed_nova_conf(root)
+    host = ServiceHost(root, creates=_compute_package_creates())
+    executor = _make_executor(root, host)
+
+    shared_ctrl_node = {
+        "role": "controller",
+        "hostname": "controller",
+        "management_ip": DEV_MACHINE_SANITIZED_IP,
+        "interfaces": {"management": "eth0", "provider": "eth0"},
+    }
+    shared_comp_node = {
+        "role": "compute",
+        "hostname": "compute1",
+        "management_ip": "192.0.2.21",
+        "interfaces": {"management": "eth0", "provider": "eth0"},
+    }
+
+    ctrl_step = make_neutron_controller_step(root, {}, shared_ctrl_node, executor=executor)
+    comp_step = make_neutron_compute_step(root, {}, shared_comp_node, executor=executor)
+
+    assert ctrl_step.check() is False
+    assert comp_step.check() is False
+    with pytest.raises(
+        PreconditionError,
+        match="is also the management interface.*allow_shared_provider_interface",
+    ):
+        ctrl_step.apply()
+    with pytest.raises(
+        PreconditionError,
+        match="is also the management interface.*allow_shared_provider_interface",
+    ):
+        comp_step.apply()
+    assert host.calls == []
+    assert "allow_shared_provider_interface" in ctrl_step.verify().details
+    assert "allow_shared_provider_interface" in comp_step.verify().details
+    assert any("allow_shared_provider_interface" in n for n in ctrl_step.dry_run_preview().notes)
+
+    # Explicit opt-in override allows apply() to proceed
+    override_comp_node = {
+        **shared_comp_node,
+        "allow_shared_provider_interface": True,
+    }
+    override_comp_step = make_neutron_compute_step(root, {}, override_comp_node, executor=executor)
+    override_comp_step.apply()
+    assert override_comp_step.check() is True
+
+
+def test_neutron_steps_refuse_provider_interface_carrying_management_ip(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "root"
+    _seed_controller_secrets(root)
+    _seed_nova_conf(root)
+    host = ServiceHost(root, creates=_compute_package_creates())
+    executor = _make_executor(root, host)
+
+    # 1. Detected via /etc/netplan/*.yaml under root
+    netplan_dir = root / "etc" / "netplan"
+    netplan_dir.mkdir(parents=True, exist_ok=True)
+    (netplan_dir / "01-netcfg.yaml").write_text(
+        "network:\n"
+        "  version: 2\n"
+        "  ethernets:\n"
+        f"    eno2:\n"
+        f"      addresses:\n"
+        f"        - {DEV_MACHINE_SANITIZED_IP}/24\n",
+        encoding="utf-8",
+    )
+    ctrl_step = make_neutron_controller_step(
+        root, SAMPLE_CONFIG, CONTROLLER_NODE, executor=executor
+    )
+    assert ctrl_step.check() is False
+    with pytest.raises(
+        PreconditionError,
+        match="carries the node's management_ip.*allow_shared_provider_interface",
+    ):
+        ctrl_step.apply()
+    assert host.calls == []
+
+    # 2. Detected via host_interfaces / interface_ips on compute node
+    comp_node_with_ip = {
+        **COMPUTE_NODE,
+        "interface_ips": {"enp3s0": ["192.0.2.21/24"]},
+    }
+    comp_step = make_neutron_compute_step(root, SAMPLE_CONFIG, comp_node_with_ip, executor=executor)
+    with pytest.raises(
+        PreconditionError,
+        match="carries the node's management_ip.*allow_shared_provider_interface",
+    ):
+        comp_step.apply()
+    assert host.calls == []

@@ -1,16 +1,14 @@
 """Execution building blocks and implemented steps.
 
-This package is imported lazily by ``openstack-forge apply`` so that read-only CLI
-commands (``config validate``, ``doctor``, ``plan``) and ``openstack_forge.orchestration``
-never import it. The file edits and the ``hosts-file`` step run no external command and
-use no network; they write only below an explicitly given root directory.
-
-External commands can only run through :class:`CommandExecutor` and an allowlist
-:class:`CommandRegistry`; :data:`DEFAULT_REGISTRY` holds the seven reviewed system
-commands used by the (unverified) ``time-sync-controller``, ``time-sync-other`` and
-``openstack-packages`` steps. The Python code never opens a network connection itself,
-but some of those commands do: ``apt-get update``, ``apt-get install`` and
-``add-apt-repository`` download from the configured apt sources.
+This package is imported lazily by ``openstack-forge apply``, ``openstack-forge verify``,
+and ``openstack-forge secrets`` so that read-only CLI commands (``config validate``,
+``doctor``, ``plan``, ``init``) and ``openstack_forge.orchestration`` never import it.
+All 18 steps remain **unverified and never run on a real host**: file edits write only
+below an explicitly given root directory, and external commands can only run through
+:class:`CommandExecutor` and the 49-entry allowlist :data:`DEFAULT_REGISTRY`. The Python
+code never opens a network connection itself, though commands such as ``apt-get update``,
+``apt-get install``, ``add-apt-repository``, and ``openstack`` talk to configured apt
+sources or local endpoints when invoked against a real host.
 """
 
 from openstack_forge.execution.apt_output import (
@@ -45,6 +43,7 @@ from openstack_forge.execution.chrony import (
     verify_chrony_text,
 )
 from openstack_forge.execution.cinder import (
+    ALLOW_LVM_ROOT_FILTER_OVERRIDE_KEY,
     CINDER_ADMIN_SECRET_NAME,
     CINDER_CONF_TARGET,
     CINDER_CONTROLLER_PACKAGES,
@@ -62,6 +61,8 @@ from openstack_forge.execution.cinder import (
     CINDER_SERVICE_SECRET_NAME,
     CINDER_SERVICE_TYPE,
     CINDER_SERVICE_USER,
+    CINDER_STORAGE_INSTALL_DOC_URL,
+    CINDER_STORAGE_LVM_FILTER_WARNING,
     CINDER_STORAGE_PACKAGES,
     CINDER_STORAGE_STEP_ID,
     CINDER_STORAGE_UNITS,
@@ -75,6 +76,7 @@ from openstack_forge.execution.cinder import (
     LVM_CONF_TARGET,
     CinderControllerStep,
     CinderStorageStep,
+    check_cinder_lvm_root_safety,
     cinder_controller_conf_settings,
     cinder_db_connection,
     cinder_storage_conf_settings,
@@ -359,6 +361,7 @@ from openstack_forge.execution.memcached import (
     verify_memcached_text,
 )
 from openstack_forge.execution.neutron import (
+    ALLOW_SHARED_PROVIDER_INTERFACE_KEY,
     NEUTRON_ADMIN_SECRET_NAME,
     NEUTRON_COMPUTE_COMMENTED_OUT_KEYS,
     NEUTRON_COMPUTE_PACKAGE,
@@ -399,6 +402,7 @@ from openstack_forge.execution.neutron import (
     build_neutron_ovs_agent_ini_entries,
     build_nova_compute_neutron_ini_entries,
     build_nova_controller_neutron_ini_entries,
+    check_provider_interface_safety,
     edit_neutron_compute_conf,
     edit_neutron_controller_conf,
     edit_neutron_dhcp_agent_conf,
@@ -424,6 +428,7 @@ from openstack_forge.execution.neutron import (
     ovs_bridge_and_port_problems,
     ovs_bridge_and_port_ready,
     parse_ovs_ports,
+    resolve_management_interface,
     resolve_provider_interface,
     verify_neutron_compute_conf_text,
     verify_neutron_controller_conf_text,
@@ -488,6 +493,9 @@ from openstack_forge.execution.nova import (
 from openstack_forge.execution.openstack_cli import (
     ADMIN_ROLE_NAME,
     DEFAULT_DOMAIN,
+    DEFAULT_READINESS_INITIAL_BACKOFF,
+    DEFAULT_READINESS_MAX_ATTEMPTS,
+    DEFAULT_READINESS_MAX_BACKOFF,
     DEFAULT_REGION,
     ENDPOINT_INTERFACES,
     SERVICE_PROJECT_DESCRIPTION,
@@ -516,6 +524,7 @@ from openstack_forge.execution.openstack_cli import (
     verify_project_present,
     verify_service_and_endpoints,
     verify_service_user_and_role,
+    wait_for_keystone_ready,
 )
 from openstack_forge.execution.openstack_packages import (
     OPENSTACK_CLIENT_PACKAGE,
@@ -613,10 +622,13 @@ from openstack_forge.execution.sql import (
     verify_service_database_state,
 )
 from openstack_forge.execution.state import (
+    DEFAULT_LOCK_TARGET,
+    LOCK_FILE_MODE,
     STATE_FILE_MODE,
     StateStore,
     StepRecord,
     StepStatus,
+    apply_lock,
 )
 from openstack_forge.execution.steps import IMPLEMENTED_STEPS, build_step
 
@@ -625,6 +637,8 @@ __all__ = [
     "ADMIN_OPENRC_MODE",
     "ADMIN_OPENRC_TARGET",
     "ADMIN_ROLE_NAME",
+    "ALLOW_LVM_ROOT_FILTER_OVERRIDE_KEY",
+    "ALLOW_SHARED_PROVIDER_INTERFACE_KEY",
     "APACHE2_BLOCK_NAME",
     "APACHE2_CONF_TARGET",
     "APACHE2_PACKAGE",
@@ -649,6 +663,8 @@ __all__ = [
     "CINDER_SERVICE_SECRET_NAME",
     "CINDER_SERVICE_TYPE",
     "CINDER_SERVICE_USER",
+    "CINDER_STORAGE_INSTALL_DOC_URL",
+    "CINDER_STORAGE_LVM_FILTER_WARNING",
     "CINDER_STORAGE_PACKAGES",
     "CINDER_STORAGE_STEP_ID",
     "CINDER_STORAGE_UNITS",
@@ -663,6 +679,10 @@ __all__ = [
     "CinderControllerStep",
     "CinderStorageStep",
     "DEFAULT_DOMAIN",
+    "DEFAULT_LOCK_TARGET",
+    "DEFAULT_READINESS_INITIAL_BACKOFF",
+    "DEFAULT_READINESS_MAX_ATTEMPTS",
+    "DEFAULT_READINESS_MAX_BACKOFF",
     "DEFAULT_REGION",
     "ENDPOINT_INTERFACES",
     "EndpointRecord",
@@ -714,6 +734,7 @@ __all__ = [
     "KEYSTONE_PACKAGE",
     "KEYSTONE_STEP_ID",
     "KeystoneStep",
+    "LOCK_FILE_MODE",
     "LVM_CONF_TARGET",
     "LVM_FAILURE_HINT",
     "LVM_PVCREATE",
@@ -834,6 +855,7 @@ __all__ = [
     "ServiceRecord",
     "UserRecord",
     "apache2_block_content",
+    "apply_lock",
     "build_horizon_local_settings_block",
     "build_neutron_compute_ini_entries",
     "build_neutron_controller_ini_entries",
@@ -848,6 +870,8 @@ __all__ = [
     "build_nova_controller_neutron_ini_entries",
     "build_service_database_sql",
     "cell_exists_in_list_output",
+    "check_cinder_lvm_root_safety",
+    "check_provider_interface_safety",
     "cinder_controller_conf_settings",
     "cinder_db_connection",
     "cinder_storage_conf_settings",
@@ -939,6 +963,7 @@ __all__ = [
     "provision_service_database",
     "render_admin_openrc",
     "resolve_block_disk",
+    "resolve_management_interface",
     "resolve_provider_interface",
     "service_catalog_problems",
     "service_catalog_ready",
@@ -979,6 +1004,7 @@ __all__ = [
     "verify_service_and_endpoints",
     "verify_service_database_state",
     "verify_service_user_and_role",
+    "wait_for_keystone_ready",
     "write_admin_openrc",
     "DEFAULT_SECRETS_TARGET",
     "DEFAULT_SECRET_LENGTH",

@@ -89,6 +89,17 @@ Exact steps prescribed by the official pages
 
    - In the ``devices { ... }`` section:
      ``filter = [ "a/<rel_disk>/", "r/.*/"]`` (for example ``filter = [ "a/sdb/", "r/.*/"]``)
+   - The official Cinder 2025.1 Ubuntu storage node installation guide
+     (``https://docs.openstack.org/cinder/2025.1/install/cinder-storage-install-ubuntu.html``)
+     explicitly warns:
+     *"Warning: If your storage nodes use LVM on the operating system disk, you must also add
+     the associated device to the filter. For example, if the ``/dev/sda`` device contains the
+     operating system: ``filter = [ "a/sda/", "a/sdb/", "r/.*/"]``"*
+   - :func:`check_cinder_lvm_root_safety` inspects ``<root>/proc/mounts`` and
+     ``<root>/etc/fstab`` (plus optional ``local_node["root_device"]`` /
+     ``local_node["root_on_lvm"]``) and refuses with :class:`PreconditionError` when the root
+     filesystem ``/`` is backed by LVM and would be hidden by the single-device LVM filter,
+     unless ``allow_lvm_root_filter_override: true`` is set.
 
 4. **Edit ``/etc/cinder/cinder.conf``**:
 
@@ -286,6 +297,17 @@ LVM_CONF_TARGET = "/etc/lvm/lvm.conf"
 CINDER_TGT_CONF_TARGET = "/etc/tgt/conf.d/cinder.conf"
 CINDER_TGT_BLOCK_MARKER = "cinder-tgt"
 CINDER_TGT_INCLUDE_LINE = "include /var/lib/cinder/volumes/*"
+PROC_MOUNTS_TARGET = "/proc/mounts"
+FSTAB_TARGET = "/etc/fstab"
+ALLOW_LVM_ROOT_FILTER_OVERRIDE_KEY = "allow_lvm_root_filter_override"
+CINDER_STORAGE_INSTALL_DOC_URL = (
+    "https://docs.openstack.org/cinder/2025.1/install/cinder-storage-install-ubuntu.html"
+)
+CINDER_STORAGE_LVM_FILTER_WARNING = (
+    "If your storage nodes use LVM on the operating system disk, you must also add the "
+    "associated device to the filter. For example, if the /dev/sda device contains the "
+    'operating system: filter = [ "a/sda/", "a/sdb/", "r/.*/"]'
+)
 
 CINDER_DB_NAME = "cinder"
 CINDER_DB_USER = "cinder"
@@ -399,6 +421,153 @@ def lvm_filter_for_disk(disk: str) -> str:
     validated = validate_parameter("device_path", "disk", disk)
     rel_disk = validated.removeprefix("/dev/")
     return f'[ "a/{rel_disk}/", "r/.*/"]'
+
+
+_NON_VG_DEV_SUBDIRS = frozenset(
+    {
+        "block",
+        "bsg",
+        "bus",
+        "char",
+        "cpu",
+        "disk",
+        "dri",
+        "fd",
+        "hugepages",
+        "input",
+        "lightnvm",
+        "loop",
+        "mapper",
+        "md",
+        "mqueue",
+        "net",
+        "pts",
+        "raw",
+        "shm",
+        "snd",
+        "usb",
+        "vfio",
+        "vhost-net",
+        "vhost-vsock",
+    }
+)
+
+
+def _allow_lvm_root_filter_override(
+    local_node: Mapping[str, Any],
+    config: Mapping[str, Any] | None = None,
+) -> bool:
+    if local_node.get(ALLOW_LVM_ROOT_FILTER_OVERRIDE_KEY) is True:
+        return True
+    tags = local_node.get("tags")
+    if isinstance(tags, Mapping) and tags.get(ALLOW_LVM_ROOT_FILTER_OVERRIDE_KEY) is True:
+        return True
+    return isinstance(config, Mapping) and config.get(ALLOW_LVM_ROOT_FILTER_OVERRIDE_KEY) is True
+
+
+def _is_lvm_root_device(device: str) -> bool:
+    dev = device.strip()
+    if not dev:
+        return False
+    if dev.startswith("/dev/mapper/") and dev != "/dev/mapper/control":
+        return True
+    if re.match(r"^/dev/dm-[0-9]+$", dev):
+        return True
+    if dev.startswith("/dev/disk/by-id/dm-"):
+        return True
+    if dev.startswith("/dev/"):
+        parts = [part for part in dev.removeprefix("/dev/").split("/") if part]
+        if len(parts) == 2 and parts[0] not in _NON_VG_DEV_SUBDIRS:
+            return True
+    return False
+
+
+def _parse_mount_table_for_root(text: str) -> list[str]:
+    devices: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        fields = line.split()
+        if len(fields) >= 2 and fields[1] == "/":
+            devices.append(fields[0])
+    return devices
+
+
+def _detect_lvm_root_sources(root: Path, local_node: Mapping[str, Any]) -> list[str]:
+    found: list[str] = []
+    if local_node.get("root_on_lvm") is True:
+        raw_root_dev = local_node.get("root_device")
+        label = (
+            raw_root_dev.strip()
+            if isinstance(raw_root_dev, str) and raw_root_dev.strip()
+            else "/dev/mapper/root"
+        )
+        found.append(f"{label} (local_node.root_on_lvm=true)")
+
+    raw_root_dev = local_node.get("root_device")
+    if isinstance(raw_root_dev, str) and _is_lvm_root_device(raw_root_dev):
+        entry = f"{raw_root_dev.strip()} (local_node.root_device)"
+        if entry not in found:
+            found.append(entry)
+
+    for target in (PROC_MOUNTS_TARGET, FSTAB_TARGET):
+        try:
+            path, display = resolve_target(root, target)
+            text = _read_existing_conf(path, display)
+        except (UnsafePathError, FileFormatError):
+            continue
+        if text is None:
+            continue
+        for dev in _parse_mount_table_for_root(text):
+            if _is_lvm_root_device(dev):
+                entry = f"{dev} ({target})"
+                if entry not in found:
+                    found.append(entry)
+    return found
+
+
+def check_cinder_lvm_root_safety(
+    root: Path,
+    local_node: Mapping[str, Any],
+    config: Mapping[str, Any] | None = None,
+    *,
+    disk: str | None = None,
+) -> None:
+    """Refuse when the root filesystem ``/`` is on LVM and would be hidden by ``lvm.conf``.
+
+    The official Cinder 2025.1 Ubuntu storage node installation guide
+    (:data:`CINDER_STORAGE_INSTALL_DOC_URL`) instructs operators to set
+    ``filter = [ "a/sdb/", "r/.*/"]`` in ``/etc/lvm/lvm.conf`` and warns:
+
+        *"Warning: If your storage nodes use LVM on the operating system disk, you must also
+        add the associated device to the filter. For example, if the /dev/sda device contains
+        the operating system: filter = [ \\"a/sda/\\", \\"a/sdb/\\", \\"r/.*/\\"]"*
+
+    Because ``cinder-storage`` writes a single-device filter for ``local_node["disk"]``,
+    applying that filter on a host whose root filesystem ``/`` resides on an LVM logical
+    volume on another physical volume would hide the root volume group on reboot. Operators
+    who manage ``/etc/lvm/lvm.conf`` externally or intentionally override this check may set
+    ``allow_lvm_root_filter_override: true`` on the node (or in ``node.tags`` / top-level
+    config).
+    """
+    resolved_disk = disk if disk is not None else resolve_block_disk(local_node)
+    if _allow_lvm_root_filter_override(local_node, config):
+        return
+    lvm_root_sources = _detect_lvm_root_sources(root, local_node)
+    if not lvm_root_sources:
+        return
+    proposed_filter = lvm_filter_for_disk(resolved_disk)
+    joined_sources = ", ".join(lvm_root_sources)
+    raise PreconditionError(
+        f"Refusing to write single-disk LVM filter {proposed_filter} to {LVM_CONF_TARGET} "
+        f"for Cinder disk {resolved_disk!r}: root filesystem '/' is backed by LVM "
+        f"({joined_sources}) and would be hidden by 'r/.*/' on reboot. "
+        f"Per {CINDER_STORAGE_INSTALL_DOC_URL}: "
+        f"{CINDER_STORAGE_LVM_FILTER_WARNING!r}. "
+        f"Use a block node whose root filesystem is not on LVM, or set "
+        f"{ALLOW_LVM_ROOT_FILTER_OVERRIDE_KEY}: true on the node to override this safety check."
+    )
 
 
 def parse_lvm_names(output: str) -> frozenset[str]:
@@ -1222,6 +1391,10 @@ class CinderStorageStep:
             notes.append(f"Precondition (checked by apply()): {exc}")
 
         disk = self.disk
+        try:
+            check_cinder_lvm_root_safety(self.root, self.local_node, self.config, disk=disk)
+        except PreconditionError as exc:
+            notes.append(f"Precondition (checked by apply()): {exc}")
         secrets_to_mask = (rabbit_password, db_password, cinder_password)
         file_changes: list[FileChange] = []
 
@@ -1291,6 +1464,7 @@ class CinderStorageStep:
             return False
         disk = self.disk
         try:
+            check_cinder_lvm_root_safety(self.root, self.local_node, self.config, disk=disk)
             if edit_lvm_conf(self.root, disk, dry_run=True).changed:
                 return False
             if edit_cinder_storage_conf(
@@ -1320,6 +1494,7 @@ class CinderStorageStep:
         restart units."""
         rabbit_password, db_password, cinder_password = _load_cinder_storage_secrets(self.root)
         disk = self.disk
+        check_cinder_lvm_root_safety(self.root, self.local_node, self.config, disk=disk)
 
         for cmd in INSTALL_CINDER_STORAGE_PACKAGES:
             self.executor.run(cmd.command_id, cmd.params)
@@ -1350,6 +1525,10 @@ class CinderStorageStep:
             problems.append(str(exc))
 
         disk = self.disk
+        try:
+            check_cinder_lvm_root_safety(self.root, self.local_node, self.config, disk=disk)
+        except PreconditionError as exc:
+            problems.append(str(exc))
 
         lvm_path, lvm_display = resolve_target(self.root, LVM_CONF_TARGET)
         try:

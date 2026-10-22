@@ -6,20 +6,27 @@ passes through :func:`redact_text`, and error summaries are truncated.
 
 from __future__ import annotations
 
+import errno
+import fcntl
 import json
-from collections.abc import Callable, Mapping
+import os
+import time
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from openstack_forge.execution.errors import StateError
-from openstack_forge.execution.fsutil import atomic_write_text
+from openstack_forge.execution.errors import StateError, UnsafePathError
+from openstack_forge.execution.fsutil import atomic_write_text, resolve_target
 from openstack_forge.execution.redaction import redact_text
 
 STATE_VERSION = 1
 STATE_FILE_MODE = 0o600
+LOCK_FILE_MODE = 0o600
+DEFAULT_LOCK_TARGET = "/var/lib/openstack-forge/apply.lock"
 MAX_ERROR_LENGTH = 2000
 
 
@@ -136,3 +143,83 @@ def _parse_records(payload: Any, path: Path) -> dict[str, StepRecord]:
         except (KeyError, TypeError, ValueError) as exc:
             raise StateError(f"State file {path} has an invalid record for {step_id!r}") from exc
     return records
+
+
+def _read_lock_holder(fd: int) -> str:
+    try:
+        os.lseek(fd, 0, os.SEEK_SET)
+        raw = os.read(fd, 64).decode("utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+    if raw.isdigit():
+        return f" (pid {raw})"
+    return ""
+
+
+@contextmanager
+def apply_lock(
+    root: Path,
+    target: str = DEFAULT_LOCK_TARGET,
+    *,
+    timeout: float = 0.0,
+    poll_interval: float = 0.05,
+) -> Iterator[Path]:
+    """Acquire an exclusive advisory lock under the state directory around ``apply``.
+
+    Raises :class:`StateError` immediately (or after ``timeout`` seconds when ``timeout > 0``)
+    if another ``openstack-forge apply`` process holds the lock.
+    """
+    lock_path, display = resolve_target(root, target)
+    raw_candidate = Path(root).joinpath(*Path(display).parts[1:])
+    if raw_candidate.is_symlink() or lock_path.is_symlink():
+        raise UnsafePathError(f"Refusing to use lock file {display}: it is a symlink")
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(lock_path, flags, LOCK_FILE_MODE)
+    except OSError as exc:
+        raise StateError(f"Cannot open apply lock file {lock_path}: {exc}") from exc
+
+    acquired = False
+    try:
+        try:
+            os.fchmod(fd, LOCK_FILE_MODE)
+        except OSError:
+            pass
+
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except OSError as exc:
+                if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                    raise StateError(f"Cannot lock {lock_path}: {exc}") from exc
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    holder = _read_lock_holder(fd)
+                    raise StateError(
+                        f"Another 'openstack-forge apply' process{holder} holds the lock on "
+                        f"{display} ({lock_path}); wait for it to finish and retry."
+                    ) from exc
+                time.sleep(min(max(0.001, poll_interval), remaining))
+
+        try:
+            os.ftruncate(fd, 0)
+            os.lseek(fd, 0, os.SEEK_SET)
+            os.write(fd, f"{os.getpid()}\n".encode("ascii"))
+        except OSError:
+            pass
+
+        yield lock_path
+    finally:
+        if acquired:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+        try:
+            os.close(fd)
+        except OSError:
+            pass
