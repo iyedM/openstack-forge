@@ -629,6 +629,119 @@ def _verify(
     return 0 if all_ok else 1
 
 
+def _status(args: argparse.Namespace) -> int:
+    """Show recorded execution state and secret store status for a node (read-only)."""
+    from openstack_forge.execution import (
+        DEFAULT_SECRETS_TARGET,
+        DEFAULT_STATE_TARGET,
+        ExecutionError,
+        SecretStore,
+        StateStore,
+        redact_text,
+        resolve_apply_node,
+        resolve_target,
+    )
+    from openstack_forge.orchestration import OrchestrationError, build_plan, load_catalog
+
+    config = _load_validated_config(args.config)
+    if config is None:
+        return 1
+
+    try:
+        catalog = load_catalog()
+    except OrchestrationError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    root_path = Path(args.root) if args.root is not None else Path("/")
+    try:
+        local_node = resolve_apply_node(config, root=root_path, node_hostname=args.node)
+        state_path, state_display = resolve_target(root_path, DEFAULT_STATE_TARGET)
+        recorded_states = StateStore(state_path).load()
+        secret_store = SecretStore(root_path, DEFAULT_SECRETS_TARGET)
+        present_secrets = secret_store.present_names()
+    except ExecutionError as exc:
+        print(f"Error: {redact_text(str(exc))}", file=sys.stderr)
+        return 1
+
+    try:
+        node_plan = build_plan(config, catalog, node=local_node["hostname"])
+    except OrchestrationError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    step_entries: list[dict[str, Any]] = []
+    for index, item in enumerate(node_plan.items, start=1):
+        step_id = item.step.id
+        record = recorded_states.get(step_id)
+        status_val = record.status.value if record is not None else "not_recorded"
+        started_at = record.started_at if record is not None else None
+        finished_at = record.finished_at if record is not None else None
+        error_msg = redact_text(record.error) if (record is not None and record.error) else None
+        step_entries.append(
+            {
+                "order": index,
+                "id": step_id,
+                "title": item.step.title,
+                "status": status_val,
+                "started_at": started_at,
+                "finished_at": finished_at,
+                "error": error_msg,
+            }
+        )
+
+    done_count = sum(1 for entry in step_entries if entry["status"] == "done")
+    failed_count = sum(1 for entry in step_entries if entry["status"] == "failed")
+    running_count = sum(1 for entry in step_entries if entry["status"] == "running")
+    not_recorded_count = sum(1 for entry in step_entries if entry["status"] == "not_recorded")
+    total_secrets = len(secret_store.specs)
+    present_secrets_count = len(present_secrets)
+
+    if args.json_output:
+        payload = {
+            "node": local_node["hostname"],
+            "role": local_node["role"],
+            "state_file": state_display,
+            "secrets": {
+                "path": secret_store.display_path,
+                "present": present_secrets_count,
+                "total": total_secrets,
+            },
+            "summary": {
+                "total": len(step_entries),
+                "done": done_count,
+                "failed": failed_count,
+                "running": running_count,
+                "not_recorded": not_recorded_count,
+            },
+            "steps": step_entries,
+        }
+        print(json.dumps(payload, indent=2))
+    else:
+        print(f"Status for node '{local_node['hostname']}' (role: {local_node['role']})")
+        print(f"State file:   {state_display}")
+        print(
+            f"Secrets:      {present_secrets_count}/{total_secrets} present "
+            f"({secret_store.display_path})"
+        )
+        print()
+        print(f"  {'#':>3}  {'STEP':<22}  {'STATUS':<14}  FINISHED AT")
+        for entry in step_entries:
+            finished_str = entry["finished_at"] or "-"
+            print(
+                f"  {entry['order']:>2}.  {entry['id']:<22}  {entry['status']:<14}  {finished_str}"
+            )
+            if entry["error"]:
+                print(f"       error: {entry['error']}")
+        print()
+        print(
+            f"Summary: {len(step_entries)} planned step(s) on '{local_node['hostname']}': "
+            f"{done_count} done, {failed_count} failed, {not_recorded_count} not_recorded."
+        )
+
+    return 0 if failed_count == 0 else 1
+
+
 def _print_preview(preview: Any, registry: Any) -> None:
     """Print a step's dry-run preview: file diffs, notes and the exact command argv."""
     changed = [change for change in preview.file_changes if change.changed]
@@ -940,6 +1053,36 @@ def build_parser(
         help="Output the verification report as JSON.",
     )
     verify_parser.set_defaults(func=lambda args: _verify(args, backend=active_backend))
+
+    status_parser = subparsers.add_parser(
+        "status",
+        help="Show recorded step state and secret store status for this node (read-only).",
+    )
+    status_parser.add_argument(
+        "--config",
+        default="cluster.yaml",
+        metavar="PATH",
+        help="Path to the cluster configuration file (default: cluster.yaml).",
+    )
+    status_parser.add_argument(
+        "--node",
+        default=None,
+        metavar="HOSTNAME",
+        help="Hostname of the local node in the cluster configuration.",
+    )
+    status_parser.add_argument(
+        "--root",
+        default=None,
+        metavar="PATH",
+        help="Root directory under which state and secrets are read (default: /).",
+    )
+    status_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Output the node status as JSON.",
+    )
+    status_parser.set_defaults(func=_status)
 
     secrets_parser = subparsers.add_parser(
         "secrets",

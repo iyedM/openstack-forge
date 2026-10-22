@@ -85,3 +85,77 @@ def test_github_workflow_yaml_files_are_valid() -> None:
         parsed = yaml.safe_load(wf.read_text(encoding="utf-8"))
         assert isinstance(parsed, dict), wf
         assert "jobs" in parsed, wf
+
+
+def test_cli_status_human_and_json(tmp_path: Path, capsys) -> None:
+    import json
+
+    from openstack_forge.cli import main
+    from openstack_forge.execution import DEFAULT_STATE_TARGET, StateStore, resolve_target
+
+    config_path = str(REPO_ROOT / "examples" / "cluster.example.yaml")
+    assert main(["secrets", "init", "--root", str(tmp_path)]) == 0
+    capsys.readouterr()
+
+    state_path, _ = resolve_target(tmp_path, DEFAULT_STATE_TARGET)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    store = StateStore(state_path)
+    store.mark_done("hosts-file")
+
+    rc = main(
+        [
+            "status",
+            "--config",
+            config_path,
+            "--node",
+            "forge-compute-01",
+            "--root",
+            str(tmp_path),
+        ]
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Status for node 'forge-compute-01' (role: compute)" in out
+    assert "16/16 present" in out
+    assert "hosts-file" in out
+    assert "1 done, 0 failed, 4 not_recorded" in out
+
+    rc_json = main(
+        [
+            "status",
+            "--config",
+            config_path,
+            "--node",
+            "forge-compute-01",
+            "--root",
+            str(tmp_path),
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert rc_json == 0
+    assert payload["node"] == "forge-compute-01"
+    assert payload["secrets"]["present"] == 16
+    assert payload["summary"] == {
+        "total": 5,
+        "done": 1,
+        "failed": 0,
+        "running": 0,
+        "not_recorded": 4,
+    }
+
+    store.mark_failed("time-sync-other", "chrony failed")
+    rc_fail = main(
+        [
+            "status",
+            "--config",
+            config_path,
+            "--node",
+            "forge-compute-01",
+            "--root",
+            str(tmp_path),
+        ]
+    )
+    out_fail = capsys.readouterr().out
+    assert rc_fail == 1
+    assert "error: chrony failed" in out_fail

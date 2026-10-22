@@ -322,6 +322,7 @@ def test_only_the_apply_handler_imports_execution() -> None:
     allowed_cli_handlers = {
         "_apply",
         "_verify",
+        "_status",
         "_secrets_init",
         "_secrets_list",
         "_secrets_path",

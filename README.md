@@ -1,5 +1,13 @@
 # OpenStack Forge
 
+[![CI](https://github.com/iyedM/openstack-forge/actions/workflows/ci.yml/badge.svg)](https://github.com/iyedM/openstack-forge/actions/workflows/ci.yml)
+[![Lint](https://github.com/iyedM/openstack-forge/actions/workflows/lint.yml/badge.svg)](https://github.com/iyedM/openstack-forge/actions/workflows/lint.yml)
+[![Security](https://github.com/iyedM/openstack-forge/actions/workflows/security.yml/badge.svg)](https://github.com/iyedM/openstack-forge/actions/workflows/security.yml)
+[![Release](https://img.shields.io/github/v/release/iyedM/openstack-forge?include_prereleases&label=release)](https://github.com/iyedM/openstack-forge/releases/tag/v0.1.0)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue.svg)](https://www.python.org/)
+[![OpenStack 2025.1](https://img.shields.io/badge/OpenStack-2025.1%20(Epoxy)-red.svg)](https://docs.openstack.org/2025.1/)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-green.svg)](LICENSE)
+
 OpenStack Forge is a Python CLI toolkit for validating, diagnosing, planning, applying, and verifying multi-node OpenStack 2025.1 (Epoxy) deployments on Ubuntu 24.04 servers following the official OpenStack Installation Guide.
 
 ## Current status
@@ -24,13 +32,26 @@ All 18 catalog steps (`hosts-file`, `time-sync-controller`, `time-sync-other`, `
 
 The project is organized into four Python subpackages under `src/openstack_forge/` plus the CLI entrypoint:
 
-- **CLI layer (`cli.py`):** user-facing commands (`init`, `config validate`, `doctor`, `plan`, `apply`, `verify`, `secrets`). Read-only commands (`init`, `config validate`, `doctor`, `plan`) never import `openstack_forge.execution`.
+- **CLI layer (`cli.py`):** user-facing commands (`init`, `config validate`, `doctor`, `plan`, `apply`, `verify`, `status`, `secrets`). Read-only planning and diagnostic commands (`init`, `config validate`, `doctor`, `plan`) never import `openstack_forge.execution`.
 - **Configuration layer (`config/`):** YAML loading (`SafeLoader` with duplicate-key rejection), JSON Schema validation (`cluster.schema.json`), and semantic network/topology checks.
 - **Diagnostics layer (`diagnostics/`):** read-only host preflight checks (`doctor`) comparing OS, CPU, RAM, virtualization flags, storage disks, and network interfaces/link state against `cluster.yaml`.
 - **Orchestration layer (`orchestration/`):** the 18-step catalog (`steps.json`) and deterministic multi-node DAG planner (`plan`).
-- **Execution layer (`execution/`):** confined file primitives, `SecretStore`, `StateStore` + `apply_lock`, `Engine`, `CommandExecutor` (`DEFAULT_REGISTRY`), and the 18 step implementations (lazy-imported only by `apply`, `verify`, and `secrets`).
+- **Execution layer (`execution/`):** confined file primitives, `SecretStore`, `StateStore` + `apply_lock`, `Engine`, `CommandExecutor` (`DEFAULT_REGISTRY`), and the 18 step implementations (lazy-imported only by `apply`, `verify`, `status`, and `secrets`).
 
-The top-level `ansible/` directory is an unused documentation placeholder retained from the initial repository scaffold; all deployment logic lives in `src/openstack_forge/execution/`.
+```mermaid
+flowchart TD
+    YAML["cluster.yaml (RFC 5737 / Cluster Model)"] --> CFG["openstack_forge.config<br/>SafeLoader + JSON Schema Draft 2020-12 + Semantic Validator"]
+    CFG --> DOC["openstack_forge.diagnostics (doctor)<br/>Read-Only Host Preflight: OS, CPU/RAM, KVM, Disks, NICs"]
+    CFG --> ORCH["openstack_forge.orchestration (plan)<br/>18-Step Catalog + Deterministic Multi-Node DAG"]
+    ORCH --> ENG["openstack_forge.execution (Engine)<br/>check() -> preview() -> apply() -> verify()"]
+    SEC["SecretStore (0600)<br/>/etc/openstack-forge/secrets.json"] --> ENG
+    STATE["StateStore + apply_lock (0600)<br/>/var/lib/openstack-forge/state.json"] <--> ENG
+    ENG --> FS["Confined File Writer (--root)<br/>O_NOFOLLOW + Atomic Replace + Redacted Diffs"]
+    ENG --> CMD["CommandExecutor (DEFAULT_REGISTRY)<br/>49 Allowlisted Commands | shell=False | AuditLog (0600)"]
+    CMD --> CTRL["Controller Node<br/>chrony, MariaDB, RabbitMQ, Memcached, etcd,<br/>Keystone, Glance, Placement, Nova, Neutron OVS, Horizon, Cinder API"]
+    CMD --> COMP["Compute Nodes<br/>chrony, Nova Compute (KVM/QEMU), Neutron OVS Agent"]
+    CMD --> BLK["Block Storage Nodes<br/>chrony, LVM (cinder-volumes), Cinder Volume + tgt"]
+```
 
 ## CLI commands
 
@@ -42,12 +63,13 @@ The CLI provides the following commands:
 - `openstack-forge plan --config PATH [--node HOSTNAME] [--json]` - show the ordered deployment steps each node would go through, without running anything (implemented, read-only; every step is currently unverified; see [`docs/plan/README.md`](docs/plan/README.md)).
 - `openstack-forge apply --config PATH (--step STEP_ID | --all) [--node HOSTNAME] [--root PATH] [--yes]` - apply either a single implemented step (`--step STEP_ID`) or all planned catalog steps for the local node in topological order (`--all`): `hosts-file`, `time-sync-controller`, `time-sync-other`, `openstack-packages`, `mariadb`, `rabbitmq`, `memcached`, `etcd`, `keystone`, `glance`, `placement`, `nova-controller`, `nova-compute`, `neutron-controller`, `neutron-compute`, `horizon`, `cinder-controller`, and `cinder-storage`. All eighteen remain marked **unverified** in the step catalog and none has ever run on a real host (dry-run by default; writes, acquires `<root>/var/lib/openstack-forge/apply.lock`, and runs commands only with `--yes`; see [`docs/engine/README.md`](docs/engine/README.md)).
 - `openstack-forge verify --config PATH [--step STEP_ID | --all] [--node HOSTNAME] [--root PATH] [--json]` - run read-only post-deployment verification (`CommandExecutor(..., read_only=True)`) for a single step or all planned steps on the local node, reporting recorded state from `state.json` and `PASS`/`FAIL` problem details in human-readable text or `--json` without modifying files, running mutating commands, or writing to `audit.log` or `state.json` (implemented; see [`docs/engine/README.md`](docs/engine/README.md)).
+- `openstack-forge status --config PATH [--node HOSTNAME] [--root PATH] [--json]` - display a read-only dashboard of recorded step states (`done`, `failed`, `running`, `not_recorded`) from `<root>/var/lib/openstack-forge/state.json` and secret store presence (`<root>/etc/openstack-forge/secrets.json`) without running any system commands.
 - `openstack-forge secrets init [--root PATH] [--file PATH]` - create missing OpenStack passwords in `<root>/etc/openstack-forge/secrets.json` (directory mode `0700`, file mode `0600`, never overwriting existing values) and print **secret names only**, never values (implemented; never run on a real host; see [`docs/engine/README.md`](docs/engine/README.md)).
 - `openstack-forge secrets list [--root PATH] [--file PATH]` - list all known secret names in canonical `SECRET_SPECS` order along with their `present` or `missing` status and description (never printing secret values).
 - `openstack-forge secrets path [--root PATH] [--file PATH]` - print the resolved filesystem path to `<root>/etc/openstack-forge/secrets.json` without reading or creating the file.
 - `openstack-forge secrets show NAME [--root PATH] [--file PATH]` - print one secret value from the local `0600` store to `stdout` and nothing else (implemented; never run on a real host).
 
-`apply` and `secrets` never use `sudo`, and multi-node secret distribution is not implemented (manual copy for now). OpenStack Forge's Python code opens no network connection, but the commands that `apply --yes` runs for `time-sync-controller`, `time-sync-other`, `openstack-packages`, `mariadb`, `rabbitmq`, `memcached`, `etcd`, `keystone`, `glance`, `placement`, `nova-controller`, `nova-compute`, `neutron-controller`, `neutron-compute`, `horizon`, `cinder-controller`, and `cinder-storage` (`apt-get update`, `apt-get install`, `add-apt-repository`) download from the node's apt sources and the Ubuntu Cloud Archive, so they use the network. `init`, `config validate`, `doctor`, `plan`, `verify`, `secrets`, and `hosts-file` open no external network repository connections.
+`apply` and `secrets` never use `sudo`, and multi-node secret distribution is not implemented (manual copy for now). OpenStack Forge's Python code opens no network connection, but the commands that `apply --yes` runs for `time-sync-controller`, `time-sync-other`, `openstack-packages`, `mariadb`, `rabbitmq`, `memcached`, `etcd`, `keystone`, `glance`, `placement`, `nova-controller`, `nova-compute`, `neutron-controller`, `neutron-compute`, `horizon`, `cinder-controller`, and `cinder-storage` (`apt-get update`, `apt-get install`, `add-apt-repository`) download from the node's apt sources and the Ubuntu Cloud Archive, so they use the network. `init`, `config validate`, `doctor`, `plan`, `verify`, `status`, `secrets`, and `hosts-file` open no external network repository connections.
 
 ## Implemented 18-Step OpenStack 2025.1 (Epoxy) Catalog
 
@@ -93,7 +115,8 @@ openstack-forge plan --config cluster.yaml
 openstack-forge secrets init --root /tmp/forge-preview
 openstack-forge apply --config cluster.yaml --node ctrl-01 --root /tmp/forge-preview --all
 
-# 6. Run read-only post-deployment verification
+# 6. Inspect recorded node state and run read-only post-deployment verification
+openstack-forge status --config cluster.yaml --node ctrl-01 --root /tmp/forge-preview
 openstack-forge verify --config cluster.yaml --node ctrl-01 --root /tmp/forge-preview --all
 ```
 
@@ -101,7 +124,6 @@ openstack-forge verify --config cluster.yaml --node ctrl-01 --root /tmp/forge-pr
 
 The repository is organized to keep project concerns separate:
 
-- `ansible/` - unused documentation placeholders from the initial repository scaffold (deployment uses `src/openstack_forge/execution/`).
 - `docs/` - architecture, installation, configuration, doctor, plan, engine, security, and troubleshooting documentation.
 - `examples/` - example deployment configuration (`examples/cluster.example.yaml`).
 - `src/openstack_forge/` - Python package with `cli`, `config`, `diagnostics`, `orchestration`, and `execution` modules. The configuration JSON Schema lives in `src/openstack_forge/config/schemas/`.
