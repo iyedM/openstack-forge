@@ -1794,5 +1794,25 @@ It runs only on `block` storage nodes (constructing it for another role raises
 | `apply()` | Precondition: loads `RABBIT_PASS`, `CINDER_DBPASS`, and `CINDER_PASS` from `SecretStore(root)` and validates `local_node["disk"]`. Installs `lvm2`, `thin-provisioning-tools`, `cinder-volume`, and `tgt`, edits `/etc/lvm/lvm.conf`, idempotently runs `pvcreate <disk>` (only if absent from `pvs`) and `vgcreate cinder-volumes <disk>` (only if absent from `vgs`), edits `/etc/cinder/cinder.conf` and `/etc/tgt/conf.d/cinder.conf`, and restarts `tgt` and `cinder-volume`. |
 | `verify()` | Checks the 3 secrets in `SecretStore(root)`, `/etc/lvm/lvm.conf`, `/etc/cinder/cinder.conf`, and `/etc/tgt/conf.d/cinder.conf`, all 4 packages installed, `tgt` and `cinder-volume` active, and the LVM physical volume `<disk>` and volume group `cinder-volumes` present in `pvs` and `vgs`. |
 
+## Full-Node Execution (`apply --all`), Read-Only Verification (`verify`), and `init`
+
+- **`openstack-forge init [--output PATH] [--force]`**: writes a starter `cluster.yaml`
+  configuration file with RFC 5737 documentation subnets (`192.0.2.0/24`, `198.51.100.0/24`,
+  `203.0.113.0/24`) and three nodes (`controller`, `compute1`, `block1`), validates it with
+  `load_config()`, and refuses symlinks or existing files unless `--force` is given.
+- **`openstack-forge apply --config PATH (--step STEP_ID | --all) [--node HOSTNAME] [--root PATH] [--yes]`**:
+  when `--all` is given, builds the node's topological step plan via `build_plan()`, previews
+  all steps in order (`=== [i/N] <step_id> ===`) in dry-run mode (default), or executes all
+  steps via `Engine(StateStore(state_path)).run(steps)` with `--yes` (skipping steps that
+  already satisfy `check()` and resuming cleanly after any mid-plan failure).
+- **`openstack-forge verify --config PATH [--step STEP_ID | --all] [--node HOSTNAME] [--root PATH] [--json]`**:
+  runs post-deployment verification using `CommandExecutor(..., dry_run=False, read_only=True)`,
+  which refuses any `CommandSpec` with `spec.mutates == True` before invoking the backend or
+  subprocess and never writes to `audit.log` or `state.json`. Reads `StateStore` if
+  `<root>/var/lib/openstack-forge/state.json` exists (`done`, `failed`, `running`, or
+  `not_recorded`) and reports `PASS`/`FAIL` and redacted problem details in human-readable text
+  or deterministic `--json` output.
+
+
 
 

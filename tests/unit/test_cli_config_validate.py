@@ -97,7 +97,11 @@ def test_installed_command_exit_codes(fixture_path) -> None:
     assert "unsupported value 'storage'" in invalid.stderr
 
 
-def test_other_commands_remain_stubs(capsys: pytest.CaptureFixture[str]) -> None:
-    for command in ("init",):
-        assert main([command]) == 0
-        assert "not implemented yet" in capsys.readouterr().out
+def test_init_command_generates_valid_starter_config(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output_file = tmp_path / "cluster.yaml"
+    assert main(["init", "--output", str(output_file)]) == 0
+    assert "Initialized starter cluster configuration" in capsys.readouterr().out
+    assert main(["config", "validate", str(output_file)]) == 0
+    assert "Configuration is valid" in capsys.readouterr().out

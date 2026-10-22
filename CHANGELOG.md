@@ -459,6 +459,25 @@ All notable changes to this project will be documented in this file.
   edits `/etc/cinder/cinder.conf` (including `[lvm]` backend settings, `enabled_backends =
   lvm`, and `glance_api_servers = http://controller:9292`) and `/etc/tgt/conf.d/cinder.conf`
   (`include /var/lib/cinder/volumes/*`), and restarts `tgt` and `cinder-volume`.
+- Read-only enforcement mode (`read_only: bool = False`) on `CommandExecutor`: when
+  `read_only=True`, `CommandExecutor.run()` refuses any `CommandSpec` with `spec.mutates ==
+  True` by raising `CommandError` before invoking the backend or subprocess, and never writes
+  to `audit.log`.
+- `openstack-forge apply --all`: runs (with `--yes`) or previews (dry-run default) all
+  planned catalog steps for the resolved local node in the topological order produced by
+  `build_plan()`, with checkpoint resume via `StateStore` (`state.json`).
+- `openstack-forge verify --config PATH [--step STEP_ID | --all] [--node HOSTNAME] [--root
+  PATH] [--json]`: read-only post-deployment verification subcommand using
+  `CommandExecutor(..., read_only=True)`, reporting each step's recorded status from
+  `state.json` (`done`, `failed`, `running`, or `not_recorded`), `PASS` / `FAIL`, and redacted
+  problem details in text or `--json` format.
+- `openstack-forge init [--output PATH] [--force]`: writes a starter `cluster.yaml`
+  configuration file (using RFC 5737 documentation subnets with `controller`, `compute`, and
+  `block` nodes), validates it with `load_config()`, refuses symlinks and existing files
+  unless `--force` is given, and removes the last `_not_implemented` CLI stub.
+- End-to-end 3-node (`controller` + `compute` + `block`) cluster convergence, second-run
+  idempotence, `verify --json`, and secret-hygiene integration test suite
+  (`tests/integration/test_full_cluster_convergence.py`).
 
 ### Changed
 

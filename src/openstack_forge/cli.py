@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
+import tempfile
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -28,20 +30,127 @@ from openstack_forge.orchestration import (
 
 Handler = Callable[[argparse.Namespace], int]
 
+STARTER_CLUSTER_YAML = """\
+# OpenStack Forge - Starter cluster definition
+# Check it with: openstack-forge config validate cluster.yaml
+# All addresses below use RFC 5737 documentation ranges (192.0.2.0/24,
+# 198.51.100.0/24, 203.0.113.0/24); replace them with your cluster's addresses.
 
-def _not_implemented_message(command: str) -> str:
-    return (
-        f"The '{command}' workflow is not implemented yet. "
-        "OpenStack Forge is currently an early-stage project scaffold."
-    )
+cluster:
+  name: "forge-demo"
+  ubuntu_version: "24.04"       # the only supported Ubuntu release
+  openstack_release: "2025.1"   # Epoxy, installed from the cloud-archive:epoxy repository
+  topology: "private-cloud"
+
+networks:
+  management:
+    subnet: "192.0.2.0/24"
+    gateway: "192.0.2.1"
+    dns:
+      - "192.0.2.10"
+    interface: "ens3"
+  storage:
+    subnet: "198.51.100.0/24"
+    gateway: "198.51.100.1"
+    interface: "ens4"
+  provider:
+    subnet: "203.0.113.0/24"
+    gateway: "203.0.113.1"
+    interface: "ens5"
+    floating_ip_range:
+      start: "203.0.113.100"
+      end: "203.0.113.199"
+    dhcp_range:
+      start: "203.0.113.200"
+      end: "203.0.113.250"
+
+nodes:
+  - role: controller
+    hostname: "controller"
+    fqdn: "controller.example.internal"
+    management_ip: "192.0.2.11"
+    vcpus: 8
+    ram_gb: 32
+    interfaces:
+      management: "ens3"
+      storage: "ens4"
+      provider: "ens5"
+    tags: ["control-plane", "identity", "network"]
+
+  - role: compute
+    hostname: "compute1"
+    fqdn: "compute1.example.internal"
+    management_ip: "192.0.2.21"
+    vcpus: 16
+    ram_gb: 64
+    interfaces:
+      management: "ens3"
+      storage: "ens4"
+      provider: "ens5"
+    tags: ["compute"]
+
+  - role: block
+    hostname: "block1"
+    fqdn: "block1.example.internal"
+    management_ip: "192.0.2.31"
+    vcpus: 4
+    ram_gb: 16
+    disk: "/dev/sdb"
+    interfaces:
+      management: "ens3"
+      storage: "ens4"
+    tags: ["cinder"]
+"""
 
 
-def _not_implemented(command: str) -> Handler:
-    def handler(args: argparse.Namespace) -> int:
-        print(_not_implemented_message(command))
-        return 0
+def _init(args: argparse.Namespace) -> int:
+    """Write a starter cluster.yaml configuration file and validate it."""
+    output_path = Path(args.output)
+    abs_output = Path(os.path.abspath(output_path))
 
-    return handler
+    for candidate in (output_path, abs_output, *abs_output.parents):
+        if candidate.is_symlink():
+            print(f"Error: Refusing to write to symlink: {output_path}", file=sys.stderr)
+            return 1
+
+    if output_path.exists():
+        if output_path.is_dir():
+            print(f"Error: Destination is a directory: {output_path}", file=sys.stderr)
+            return 1
+        if not args.force:
+            print(
+                f"Error: File already exists: {output_path} (use --force to overwrite).",
+                file=sys.stderr,
+            )
+            return 1
+
+    try:
+        abs_output.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{abs_output.name}.",
+            suffix=".tmp",
+            dir=abs_output.parent,
+        )
+        tmp_path = Path(tmp_name)
+        try:
+            os.chmod(fd, 0o644)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(STARTER_CLUSTER_YAML)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_path, abs_output)
+        except BaseException:
+            tmp_path.unlink(missing_ok=True)
+            raise
+    except OSError as exc:
+        print(f"Error: Cannot write {output_path}: {exc}", file=sys.stderr)
+        return 1
+
+    if _load_validated_config(str(abs_output)) is None:
+        return 1
+
+    print(f"Initialized starter cluster configuration: {output_path}")
+    return 0
 
 
 def _load_validated_config(path: str) -> dict[str, Any] | None:
@@ -116,8 +225,13 @@ def _plan(args: argparse.Namespace) -> int:
     return 0
 
 
-def _apply(args: argparse.Namespace) -> int:
-    """Apply a single registered step (dry-run by default; writes only with --yes)."""
+def _apply(
+    args: argparse.Namespace,
+    *,
+    backend: Any = None,
+    executor_backend: Any = None,
+) -> int:
+    """Apply a single registered step or all planned steps for the local node."""
     # Lazy import so that importing the CLI or running read-only commands never imports
     # openstack_forge.execution.
     from openstack_forge.execution import (
@@ -138,6 +252,8 @@ def _apply(args: argparse.Namespace) -> int:
         resolve_target,
     )
 
+    active_backend = backend if backend is not None else executor_backend
+
     config = _load_validated_config(args.config)
     if config is None:
         return 1
@@ -148,27 +264,29 @@ def _apply(args: argparse.Namespace) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    step_id = args.step
     implemented = ", ".join(sorted(IMPLEMENTED_STEPS))
-    try:
-        catalog_step = catalog.step(step_id)
-    except KeyError:
-        print(
-            f"Error: Step {step_id!r} is not implemented "
-            f"(unknown step id; implemented steps: {implemented}).",
-            file=sys.stderr,
-        )
-        return 1
-    if step_id not in IMPLEMENTED_STEPS:
-        print(
-            f"Error: Step {step_id!r} is not implemented yet (implemented steps: {implemented}).",
-            file=sys.stderr,
-        )
-        return 1
+    if not args.all:
+        step_id = args.step
+        try:
+            catalog_step = catalog.step(step_id)
+        except KeyError:
+            print(
+                f"Error: Step {step_id!r} is not implemented "
+                f"(unknown step id; implemented steps: {implemented}).",
+                file=sys.stderr,
+            )
+            return 1
+        if step_id not in IMPLEMENTED_STEPS:
+            print(
+                f"Error: Step {step_id!r} is not implemented yet "
+                f"(implemented steps: {implemented}).",
+                file=sys.stderr,
+            )
+            return 1
 
     root_path = Path(args.root) if args.root is not None else Path("/")
     host_root = args.root is None or (root_path.exists() and is_host_root(root_path))
-    if args.yes and host_root and os.geteuid() != 0:
+    if args.yes and host_root and os.geteuid() != 0 and active_backend is None:
         print(
             "Error: Writing to '/' with --yes requires root privileges (effective uid 0). "
             "Re-run as root, or pass --root PATH to target an alternate directory.",
@@ -182,9 +300,106 @@ def _apply(args: argparse.Namespace) -> int:
             DEFAULT_REGISTRY,
             root=root_path,
             audit_log=AuditLog(audit_path),
+            backend=active_backend,
             dry_run=not args.yes,
+            euid=(lambda: 0) if active_backend is not None else os.geteuid,
+            allow_non_host_root=active_backend is not None,
         )
         local_node = resolve_apply_node(config, root=root_path, node_hostname=args.node)
+    except ExecutionError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    if args.all:
+        try:
+            node_plan = build_plan(config, catalog, node=local_node["hostname"])
+        except OrchestrationError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+
+        missing_steps = [
+            item.step.id for item in node_plan.items if item.step.id not in IMPLEMENTED_STEPS
+        ]
+        if missing_steps:
+            missing_str = ", ".join(repr(step_name) for step_name in missing_steps)
+            print(
+                f"Error: Step(s) {missing_str} are not implemented yet "
+                f"(implemented steps: {implemented}).",
+                file=sys.stderr,
+            )
+            return 1
+
+        try:
+            steps = [
+                build_step(item.step.id, root_path, config, local_node, executor=executor)
+                for item in node_plan.items
+            ]
+            previews = [step.dry_run_preview() for step in steps]
+        except ExecutionError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+
+        if args.yes and not host_root and active_backend is None:
+            command_step = next((step for step in steps if step.declares_commands), None)
+            if command_step is not None:
+                print(
+                    f"Error: Step {command_step.id!r} runs system commands (such as package "
+                    f"installation), which would act on this host and not on {root_path}. --yes "
+                    "with --root other than '/' is refused for such steps; run without --yes to "
+                    "see the dry run.",
+                    file=sys.stderr,
+                )
+                return 1
+
+        if node_plan.unverified_count:
+            print(
+                f"WARNING: {node_plan.unverified_count} of {len(node_plan.items)} step(s) on node "
+                f"'{local_node['hostname']}' are marked UNVERIFIED in the step catalog. "
+                "Review each step's documentation before applying in production."
+            )
+
+        if not args.yes:
+            what = (
+                "no files modified and no commands run"
+                if any(preview.commands for preview in previews)
+                else "no files modified"
+            )
+            print(
+                f"Dry run for all {len(steps)} step(s) on node '{local_node['hostname']}' "
+                f"(role: {local_node['role']}): {what}."
+            )
+            for index, (step, preview) in enumerate(zip(steps, previews, strict=True), start=1):
+                print(f"\n=== [{index}/{len(steps)}] {step.id} ===")
+                _print_preview(preview, executor.registry)
+            return 0
+
+        try:
+            state_path, _ = resolve_target(root_path, DEFAULT_STATE_TARGET)
+            if state_path.is_symlink():
+                raise UnsafePathError(
+                    f"Refusing to use state file {DEFAULT_STATE_TARGET}: it is a symlink"
+                )
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            if any(step.declares_commands for step in steps):
+                audit_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            report = Engine(StateStore(state_path)).run(steps)
+        except ExecutionError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+
+        applied_ids = {
+            outcome.step_id for outcome in report.outcomes if outcome.outcome.value == "applied"
+        }
+        if report.ok:
+            for step, preview in zip(steps, previews, strict=True):
+                if step.id in applied_ids and preview.files_changed:
+                    for change in preview.file_changes:
+                        if change.changed:
+                            print(change.diff, end="" if change.diff.endswith("\n") else "\n")
+        print(format_report(report))
+        return 0 if report.ok else 1
+
+    try:
         if local_node["role"] not in catalog_step.roles:
             print(
                 f"Error: Step {step_id!r} does not apply to role {local_node['role']!r} "
@@ -198,7 +413,7 @@ def _apply(args: argparse.Namespace) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    if args.yes and step.declares_commands and not host_root:
+    if args.yes and step.declares_commands and not host_root and active_backend is None:
         print(
             f"Error: Step {step_id!r} runs system commands (such as package installation), "
             f"which would act on this host and not on {root_path}. --yes with "
@@ -243,6 +458,156 @@ def _apply(args: argparse.Namespace) -> int:
                 print(change.diff, end="" if change.diff.endswith("\n") else "\n")
     print(format_report(report))
     return 0 if report.ok else 1
+
+
+def _verify(
+    args: argparse.Namespace,
+    *,
+    backend: Any = None,
+    executor_backend: Any = None,
+) -> int:
+    """Verify one implemented step or all planned steps for the local node (read-only)."""
+    from openstack_forge.execution import (
+        DEFAULT_REGISTRY,
+        DEFAULT_STATE_TARGET,
+        IMPLEMENTED_STEPS,
+        CommandExecutor,
+        ExecutionError,
+        StateStore,
+        build_step,
+        redact_text,
+        resolve_apply_node,
+        resolve_target,
+    )
+
+    active_backend = backend if backend is not None else executor_backend
+
+    config = _load_validated_config(args.config)
+    if config is None:
+        return 1
+
+    try:
+        catalog = load_catalog()
+    except OrchestrationError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    implemented = ", ".join(sorted(IMPLEMENTED_STEPS))
+    if args.step is not None:
+        step_id = args.step
+        try:
+            catalog_step = catalog.step(step_id)
+        except KeyError:
+            print(
+                f"Error: Step {step_id!r} is not implemented "
+                f"(unknown step id; implemented steps: {implemented}).",
+                file=sys.stderr,
+            )
+            return 1
+        if step_id not in IMPLEMENTED_STEPS:
+            print(
+                f"Error: Step {step_id!r} is not implemented yet "
+                f"(implemented steps: {implemented}).",
+                file=sys.stderr,
+            )
+            return 1
+
+    root_path = Path(args.root) if args.root is not None else Path("/")
+    try:
+        executor = CommandExecutor(
+            DEFAULT_REGISTRY,
+            root=root_path,
+            backend=active_backend,
+            dry_run=False,
+            read_only=True,
+        )
+        local_node = resolve_apply_node(config, root=root_path, node_hostname=args.node)
+        state_path, _ = resolve_target(root_path, DEFAULT_STATE_TARGET)
+        recorded_states = StateStore(state_path).load() if state_path.exists() else {}
+    except ExecutionError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    if args.step is not None:
+        if local_node["role"] not in catalog_step.roles:
+            print(
+                f"Error: Step {args.step!r} does not apply to role {local_node['role']!r} "
+                f"on node {local_node['hostname']!r}.",
+                file=sys.stderr,
+            )
+            return 1
+        target_step_ids = [args.step]
+    else:
+        try:
+            node_plan = build_plan(config, catalog, node=local_node["hostname"])
+        except OrchestrationError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+        missing_steps = [
+            item.step.id for item in node_plan.items if item.step.id not in IMPLEMENTED_STEPS
+        ]
+        if missing_steps:
+            missing_str = ", ".join(repr(step_name) for step_name in missing_steps)
+            print(
+                f"Error: Step(s) {missing_str} are not implemented yet "
+                f"(implemented steps: {implemented}).",
+                file=sys.stderr,
+            )
+            return 1
+        target_step_ids = [item.step.id for item in node_plan.items]
+
+    step_entries: list[dict[str, Any]] = []
+    for step_id in target_step_ids:
+        recorded_status = (
+            recorded_states[step_id].status.value if step_id in recorded_states else "not_recorded"
+        )
+        try:
+            step = build_step(step_id, root_path, config, local_node, executor=executor)
+            result = step.verify()
+            step_ok = result.ok
+            if step_ok:
+                problems: list[str] = []
+            else:
+                detail_text = redact_text(result.details.strip())
+                problems = [detail_text] if detail_text else ["verification failed"]
+        except ExecutionError as exc:
+            step_ok = False
+            problems = [redact_text(str(exc))]
+        step_entries.append(
+            {
+                "id": step_id,
+                "recorded_status": recorded_status,
+                "ok": step_ok,
+                "problems": problems,
+            }
+        )
+
+    passed_count = sum(1 for entry in step_entries if entry["ok"])
+    failed_count = len(step_entries) - passed_count
+    all_ok = failed_count == 0
+
+    if args.json_output:
+        payload = {
+            "node": local_node["hostname"],
+            "role": local_node["role"],
+            "ok": all_ok,
+            "passed": passed_count,
+            "failed": failed_count,
+            "steps": step_entries,
+        }
+        print(json.dumps(payload, indent=2))
+    else:
+        for entry in step_entries:
+            status_label = "PASS" if entry["ok"] else "FAIL"
+            print(f"{status_label:<4}  {entry['id']} (recorded: {entry['recorded_status']})")
+            for problem in entry["problems"]:
+                print(f"      - {problem}")
+        print(
+            f"Verified {len(step_entries)} step(s) on node '{local_node['hostname']}' "
+            f"(role: {local_node['role']}): {passed_count} passed, {failed_count} failed."
+        )
+
+    return 0 if all_ok else 1
 
 
 def _print_preview(preview: Any, registry: Any) -> None:
@@ -316,8 +681,14 @@ def _secrets_show(args: argparse.Namespace) -> int:
     return 0
 
 
-def build_parser(runner: CommandRunner | None = None) -> argparse.ArgumentParser:
+def build_parser(
+    runner: CommandRunner | None = None,
+    *,
+    backend: Any = None,
+    executor_backend: Any = None,
+) -> argparse.ArgumentParser:
     """Build the CLI parser."""
+    active_backend = backend if backend is not None else executor_backend
     parser = argparse.ArgumentParser(
         prog="openstack-forge",
         description="OpenStack Forge CLI scaffold for future deployment automation.",
@@ -330,8 +701,25 @@ def build_parser(runner: CommandRunner | None = None) -> argparse.ArgumentParser
 
     subparsers = parser.add_subparsers(dest="command")
 
-    init_parser = subparsers.add_parser("init", help="Initialize a deployment workspace.")
-    init_parser.set_defaults(func=_not_implemented("init"))
+    init_parser = subparsers.add_parser(
+        "init",
+        help="Write a starter cluster.yaml configuration file.",
+    )
+    init_parser.add_argument(
+        "--output",
+        "-o",
+        default="cluster.yaml",
+        metavar="PATH",
+        help=(
+            "Path where the starter cluster configuration will be written (default: cluster.yaml)."
+        ),
+    )
+    init_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite --output if it already exists.",
+    )
+    init_parser.set_defaults(func=_init)
 
     config_parser = subparsers.add_parser("config", help="Configuration commands.")
     config_subparsers = config_parser.add_subparsers(dest="config_command")
@@ -389,7 +777,10 @@ def build_parser(runner: CommandRunner | None = None) -> argparse.ArgumentParser
 
     apply_parser = subparsers.add_parser(
         "apply",
-        help="Apply a single implemented deployment step (dry-run unless --yes is given).",
+        help=(
+            "Apply a single implemented deployment step or all planned steps for this node "
+            "(dry-run unless --yes is given)."
+        ),
     )
     apply_parser.add_argument(
         "--config",
@@ -397,9 +788,9 @@ def build_parser(runner: CommandRunner | None = None) -> argparse.ArgumentParser
         metavar="PATH",
         help="Path to the cluster configuration file (default: cluster.yaml).",
     )
-    apply_parser.add_argument(
+    apply_target = apply_parser.add_mutually_exclusive_group(required=True)
+    apply_target.add_argument(
         "--step",
-        required=True,
         metavar="STEP_ID",
         help=(
             "Catalog step id to run (implemented: hosts-file, time-sync-controller, "
@@ -408,6 +799,11 @@ def build_parser(runner: CommandRunner | None = None) -> argparse.ArgumentParser
             "neutron-controller, neutron-compute, horizon, cinder-controller, "
             "cinder-storage)."
         ),
+    )
+    apply_target.add_argument(
+        "--all",
+        action="store_true",
+        help="Run all planned catalog steps for the local node in dependency order.",
     )
     apply_parser.add_argument(
         "--node",
@@ -426,7 +822,49 @@ def build_parser(runner: CommandRunner | None = None) -> argparse.ArgumentParser
         action="store_true",
         help="Write changes to disk (default: dry-run that only prints the diff).",
     )
-    apply_parser.set_defaults(func=_apply)
+    apply_parser.set_defaults(func=lambda args: _apply(args, backend=active_backend))
+
+    verify_parser = subparsers.add_parser(
+        "verify",
+        help="Run read-only post-deployment verification for a step or all steps on this node.",
+    )
+    verify_parser.add_argument(
+        "--config",
+        default="cluster.yaml",
+        metavar="PATH",
+        help="Path to the cluster configuration file (default: cluster.yaml).",
+    )
+    verify_target = verify_parser.add_mutually_exclusive_group(required=False)
+    verify_target.add_argument(
+        "--step",
+        default=None,
+        metavar="STEP_ID",
+        help="Single catalog step id to verify (default: verify all planned steps on this node).",
+    )
+    verify_target.add_argument(
+        "--all",
+        action="store_true",
+        help="Verify all planned catalog steps for the local node in dependency order (default).",
+    )
+    verify_parser.add_argument(
+        "--node",
+        default=None,
+        metavar="HOSTNAME",
+        help="Hostname of the local node in the cluster configuration.",
+    )
+    verify_parser.add_argument(
+        "--root",
+        default=None,
+        metavar="PATH",
+        help="Root directory under which target files and state are read (default: /).",
+    )
+    verify_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Output the verification report as JSON.",
+    )
+    verify_parser.set_defaults(func=lambda args: _verify(args, backend=active_backend))
 
     secrets_parser = subparsers.add_parser(
         "secrets",
@@ -482,9 +920,15 @@ def main(
     argv: Sequence[str] | None = None,
     *,
     runner: CommandRunner | None = None,
+    backend: Any = None,
+    executor_backend: Any = None,
 ) -> int:
     """Run the CLI and return its exit status."""
-    parser = build_parser(runner=runner)
+    parser = build_parser(
+        runner=runner,
+        backend=backend,
+        executor_backend=executor_backend,
+    )
     args = parser.parse_args(argv)
 
     if not hasattr(args, "func"):

@@ -104,6 +104,7 @@ class ServiceHost:
         )
         self.lvm_pvs: set[str] = set(lvm_pvs)
         self.lvm_vgs: set[str] = set(lvm_vgs)
+        self.cloud_archive_enabled: bool = False
         self.openstack_projects: list[dict[str, Any]] = [
             dict(item) for item in (openstack_projects or ())
         ]
@@ -151,6 +152,58 @@ class ServiceHost:
             return ProcessOutput(1, "", f"dpkg-query: package '{argv[2]}' is not installed\n")
         if argv[:2] == ("/usr/bin/apt-cache", "policy"):
             package = argv[2]
+            if package == "python3-openstackclient" and package not in self.no_candidate:
+                if self.cloud_archive_enabled and package in self.installed:
+                    return ProcessOutput(
+                        0,
+                        "python3-openstackclient:\n"
+                        "  Installed: 7.4.0-0ubuntu1~cloud0\n"
+                        "  Candidate: 7.4.0-0ubuntu1~cloud0\n"
+                        "  Version table:\n"
+                        " *** 7.4.0-0ubuntu1~cloud0 500\n"
+                        "        500 http://ubuntu-cloud.archive.canonical.com/ubuntu "
+                        "noble-updates/epoxy/main amd64 Packages\n"
+                        "        100 /var/lib/dpkg/status\n"
+                        "     6.6.0-0ubuntu2 500\n"
+                        "        500 http://archive.ubuntu.com/ubuntu noble/main amd64 Packages\n",
+                        "",
+                    )
+                if self.cloud_archive_enabled:
+                    return ProcessOutput(
+                        0,
+                        "python3-openstackclient:\n"
+                        "  Installed: (none)\n"
+                        "  Candidate: 7.4.0-0ubuntu1~cloud0\n"
+                        "  Version table:\n"
+                        "     7.4.0-0ubuntu1~cloud0 500\n"
+                        "        500 http://ubuntu-cloud.archive.canonical.com/ubuntu "
+                        "noble-updates/epoxy/main amd64 Packages\n"
+                        "     6.6.0-0ubuntu2 500\n"
+                        "        500 http://archive.ubuntu.com/ubuntu noble/main amd64 Packages\n",
+                        "",
+                    )
+                if package in self.installed:
+                    return ProcessOutput(
+                        0,
+                        "python3-openstackclient:\n"
+                        "  Installed: 6.6.0-0ubuntu2\n"
+                        "  Candidate: 6.6.0-0ubuntu2\n"
+                        "  Version table:\n"
+                        " *** 6.6.0-0ubuntu2 500\n"
+                        "        500 http://archive.ubuntu.com/ubuntu noble/main amd64 Packages\n"
+                        "        100 /var/lib/dpkg/status\n",
+                        "",
+                    )
+                return ProcessOutput(
+                    0,
+                    "python3-openstackclient:\n"
+                    "  Installed: (none)\n"
+                    "  Candidate: 6.6.0-0ubuntu2\n"
+                    "  Version table:\n"
+                    "     6.6.0-0ubuntu2 500\n"
+                    "        500 http://archive.ubuntu.com/ubuntu noble/main amd64 Packages\n",
+                    "",
+                )
             installed = "3.4.30-1ubuntu0.24.04.3" if package in self.installed else "(none)"
             candidate = "(none)" if package in self.no_candidate else "3.4.30-1ubuntu0.24.04.3"
             return ProcessOutput(
@@ -159,6 +212,11 @@ class ServiceHost:
                 " Version table:\n",
                 "",
             )
+        if argv == ("/usr/bin/apt-get", "update"):
+            return ProcessOutput(0, "Hit:1 http://archive.ubuntu.com/ubuntu noble InRelease\n", "")
+        if argv[:3] == ("/usr/bin/add-apt-repository", "--yes", "--cloud"):
+            self.cloud_archive_enabled = True
+            return ProcessOutput(0, "Repository: 'deb ... noble-updates/epoxy main'\n", "")
         if argv[:3] == ("/usr/bin/apt-get", "install", "--yes"):
             package = argv[3]
             self.installed.add(package)
@@ -706,3 +764,141 @@ class ServiceHost:
                 path = self.root / rel
                 captured[rel] = path.read_text() if path.exists() else None
             self.multi_snapshots.append((event, captured))
+
+
+CLUSTER_PACKAGE_CREATES: Mapping[str, CreateEntry] = {
+    "chrony": ("etc/chrony/chrony.conf", "pool ntp.ubuntu.com iburst maxsources 4\n"),
+    "mariadb-server": ("etc/mysql/mariadb.conf.d/.placeholder", ""),
+    "memcached": (
+        "etc/memcached.conf",
+        "-d\nlogfile /var/log/memcached.log\n-m 64\n-p 11211\n-u memcache\n-l 127.0.0.1\n",
+    ),
+    "etcd-server": ("etc/default/etcd", "# etcd default settings\n"),
+    "keystone": (
+        (
+            "etc/keystone/keystone.conf",
+            "[DEFAULT]\n[database]\nconnection = sqlite:////var/lib/keystone/keystone.db\n[token]\n",
+        ),
+        (
+            "etc/apache2/apache2.conf",
+            "# Global configuration\nIncludeOptional sites-enabled/*.conf\n",
+        ),
+    ),
+    "glance": (
+        "etc/glance/glance-api.conf",
+        "[DEFAULT]\n[database]\nconnection = sqlite:////var/lib/glance/glance.sqlite\n"
+        "[keystone_authtoken]\n[paste_deploy]\n",
+    ),
+    "placement-api": (
+        "etc/placement/placement.conf",
+        "[DEFAULT]\n[placement_database]\n"
+        "connection = sqlite:////var/lib/placement/placement.sqlite\n"
+        "[api]\n[keystone_authtoken]\n",
+    ),
+    "nova-api": (
+        "etc/nova/nova.conf",
+        "[DEFAULT]\nmy_ip = 127.0.0.1\n"
+        "[api_database]\nconnection = sqlite:////var/lib/nova/nova_api.sqlite\n"
+        "[database]\nconnection = sqlite:////var/lib/nova/nova.sqlite\n"
+        "[api]\n[keystone_authtoken]\n[vnc]\n[glance]\n"
+        "[oslo_concurrency]\nlock_path = /var/lib/nova/tmp\n[placement]\n",
+    ),
+    "nova-compute": (
+        (
+            "etc/nova/nova.conf",
+            "[DEFAULT]\n[api]\n[keystone_authtoken]\n[vnc]\n[glance]\n"
+            "[oslo_concurrency]\nlock_path = /var/lib/nova/tmp\n[placement]\n",
+        ),
+        (
+            "etc/nova/nova-compute.conf",
+            "[DEFAULT]\ncompute_driver = libvirt.LibvirtDriver\n[libvirt]\nvirt_type = kvm\n",
+        ),
+    ),
+    "neutron-server": (
+        (
+            "etc/neutron/neutron.conf",
+            "[DEFAULT]\ncore_plugin = ml2\n"
+            "[database]\nconnection = sqlite:////var/lib/neutron/neutron.sqlite\n"
+            "[keystone_authtoken]\n[nova]\n"
+            "[oslo_concurrency]\nlock_path = /var/lib/neutron/tmp\n",
+        ),
+        (
+            "etc/neutron/plugins/ml2/ml2_conf.ini",
+            "[DEFAULT]\n[ml2]\n[ml2_type_flat]\n[ml2_type_vxlan]\n[securitygroup]\n",
+        ),
+    ),
+    "neutron-openvswitch-agent": (
+        (
+            "etc/neutron/neutron.conf",
+            "[DEFAULT]\n[keystone_authtoken]\n"
+            "[oslo_concurrency]\nlock_path = /var/lib/neutron/tmp\n",
+        ),
+        (
+            "etc/neutron/plugins/ml2/openvswitch_agent.ini",
+            "[DEFAULT]\n[ovs]\n[agent]\n[securitygroup]\n",
+        ),
+    ),
+    "neutron-dhcp-agent": ("etc/neutron/dhcp_agent.ini", "[DEFAULT]\n"),
+    "neutron-metadata-agent": ("etc/neutron/metadata_agent.ini", "[DEFAULT]\n"),
+    "neutron-l3-agent": ("etc/neutron/l3_agent.ini", "[DEFAULT]\n"),
+    "openstack-dashboard": (
+        (
+            "etc/openstack-dashboard/local_settings.py",
+            'OPENSTACK_HOST = "127.0.0.1"\n'
+            'OPENSTACK_KEYSTONE_URL = "http://%s:5000/identity/v3" % OPENSTACK_HOST\n'
+            'OPENSTACK_KEYSTONE_DEFAULT_ROLE = "member"\n'
+            'TIME_ZONE = "UTC"\n'
+            "ALLOWED_HOSTS = ['*']\n",
+        ),
+        (
+            "etc/apache2/conf-available/openstack-dashboard.conf",
+            "WSGIProcessGroup horizon\nWSGIApplicationGroup %{GLOBAL}\n",
+        ),
+    ),
+    "cinder-api": (
+        "etc/cinder/cinder.conf",
+        "[DEFAULT]\nrootwrap_config = /etc/cinder/rootwrap.conf\n"
+        "[database]\nconnection = sqlite:////var/lib/cinder/cinder.sqlite\n"
+        "[keystone_authtoken]\n[oslo_concurrency]\nlock_path = /var/lib/cinder/tmp\n",
+    ),
+    "lvm2": (
+        "etc/lvm/lvm.conf",
+        'config {\n\tchecks = 1\n}\ndevices {\n\tdir = "/dev"\n\t# filter = [ "a|.*|" ]\n}\n',
+    ),
+    "cinder-volume": (
+        (
+            "etc/cinder/cinder.conf",
+            "[DEFAULT]\nrootwrap_config = /etc/cinder/rootwrap.conf\n"
+            "[database]\nconnection = sqlite:////var/lib/cinder/cinder.sqlite\n"
+            "[keystone_authtoken]\n[oslo_concurrency]\nlock_path = /var/lib/cinder/tmp\n",
+        ),
+        ("etc/tgt/conf.d/cinder.conf", "# Confirm cinder_tgt.conf is loaded\n"),
+    ),
+}
+
+
+def make_node_service_host(root: Path, hostname: str) -> ServiceHost:
+    """Seed ``root`` with base OS files and return a ``ServiceHost`` for all 18 steps."""
+    (root / "etc/default").mkdir(parents=True, exist_ok=True)
+    hosts_path = root / "etc/hosts"
+    hosts_path.parent.mkdir(parents=True, exist_ok=True)
+    if not hosts_path.exists():
+        hosts_path.write_text(
+            f"127.0.0.1 localhost\n127.0.1.1 {hostname}\n",
+            encoding="utf-8",
+        )
+    cpuinfo_path = root / "proc/cpuinfo"
+    cpuinfo_path.parent.mkdir(parents=True, exist_ok=True)
+    if not cpuinfo_path.exists():
+        cpuinfo_path.write_text(
+            "processor\t: 0\n"
+            "flags\t\t: fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov "
+            "pat pse36 clflush mmx fxsr sse sse2 vmx\n",
+            encoding="utf-8",
+        )
+    return ServiceHost(
+        root,
+        installed={"software-properties-common"},
+        starts={"rabbitmq-server", "apache2"},
+        creates=CLUSTER_PACKAGE_CREATES,
+    )

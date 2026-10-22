@@ -1632,9 +1632,11 @@ class CommandExecutor:
         registry: CommandRegistry,
         *,
         root: Path,
-        audit_log: AuditLog,
+        audit_log: AuditLog | None = None,
         backend: ProcessBackend | None = None,
         dry_run: bool = False,
+        read_only: bool = False,
+        allow_non_host_root: bool = False,
         output_limit: int = DEFAULT_OUTPUT_LIMIT,
         echo: Callable[[str], None] = print,
         euid: Callable[[], int] = os.geteuid,
@@ -1642,11 +1644,17 @@ class CommandExecutor:
     ) -> None:
         if output_limit < 1:
             raise ValueError("output_limit must be positive")
+        if audit_log is None and not dry_run and not read_only:
+            raise ValueError("audit_log is required when dry_run and read_only are False")
+        if allow_non_host_root and (backend is None or isinstance(backend, SubprocessBackend)):
+            raise ValueError("allow_non_host_root requires a custom non-subprocess backend")
         self.registry = registry
         self.root = Path(root)
         self.audit_log = audit_log
         self.backend: ProcessBackend = SubprocessBackend() if backend is None else backend
         self.dry_run = dry_run
+        self.read_only = read_only
+        self._allow_non_host_root = allow_non_host_root
         self.output_limit = output_limit
         self._echo = echo
         self._euid = euid
@@ -1656,6 +1664,10 @@ class CommandExecutor:
         """Validate and run ``command_id``; raise a typed CommandError on any failure."""
         raw_params = params or {}
         spec = self.registry.get(command_id)
+        if self.read_only and spec.mutates:
+            raise CommandError(
+                f"Command {spec.id!r} mutates host state and cannot run in read-only mode"
+            )
         argv = spec.build_argv(raw_params)
         shown_argv = spec.build_shown_argv(raw_params)
         env = spec.build_env(raw_params)
@@ -1680,7 +1692,7 @@ class CommandExecutor:
 
         invocation = uuid.uuid4().hex
         base = {"invocation": invocation, "command_id": spec.id, "argv": list(shown_argv)}
-        self.audit_log.record({**base, "event": "start", "mutates": spec.mutates})
+        self._record_audit({**base, "event": "start", "mutates": spec.mutates})
         started = self._clock()
         try:
             if stdin_data is None:
@@ -1725,7 +1737,7 @@ class CommandExecutor:
         )
 
     def _refuse_unsafe_mutation(self, spec: CommandSpec) -> None:
-        if not is_host_root(self.root):
+        if not self._allow_non_host_root and not is_host_root(self.root):
             raise MutationRefusedError(
                 f"Refusing mutating command {spec.id!r}: root is {self.root}, not '/'; "
                 "mutating commands only run against the real host"
@@ -1736,11 +1748,15 @@ class CommandExecutor:
                 "(run the tool as root; sudo is never used)"
             )
 
+    def _record_audit(self, entry: Mapping[str, object]) -> None:
+        if self.audit_log is not None and not self.read_only:
+            self.audit_log.record(entry)
+
     def _finish(
         self, base: Mapping[str, object], outcome: str, returncode: int | None, started: float
     ) -> float:
         duration = round(self._clock() - started, 6)
-        self.audit_log.record(
+        self._record_audit(
             {
                 **base,
                 "event": "finish",

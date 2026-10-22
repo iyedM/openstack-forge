@@ -1116,3 +1116,97 @@ def test_executor_attaches_the_spec_failure_hint(tmp_path: Path, backend: FakeBa
     with pytest.raises(UnexpectedExitError) as excinfo:
         executor.run("test.hinted")
     assert excinfo.value.hint == "Check the thing by hand."
+
+
+@pytest.mark.parametrize(
+    ("command_id", "params"),
+    [
+        ("dpkg-query.status", {"package": "chrony"}),
+        ("systemctl.is-active", {"unit": "chrony.service"}),
+        ("mariadb.query-sql", {}),
+        ("openstack.user-list", {"admin_password": "A" * 32}),
+        ("ovs-vsctl.br-exists", {"bridge": "br-provider"}),
+        ("lvm.pvs", {}),
+    ],
+)
+def test_read_only_executor_runs_non_mutating_default_registry_commands(
+    tmp_path: Path,
+    command_id: str,
+    params: Mapping[str, str],
+) -> None:
+    from tests.unit._service_fakes import ServiceHost
+
+    host = ServiceHost(
+        tmp_path,
+        installed={"chrony"},
+        active={"chrony.service"},
+        ovs_bridges={"br-provider": ()},
+        lvm_pvs={"/dev/sdb"},
+    )
+    audit = AuditLog(tmp_path / "audit.log")
+    executor = CommandExecutor(
+        DEFAULT_REGISTRY,
+        root=tmp_path,
+        audit_log=audit,
+        backend=host,
+        read_only=True,
+    )
+    result = executor.run(command_id, params)
+    assert result.returncode == 0
+    assert len(host.calls) == 1
+    assert not audit.path.exists()
+
+
+@pytest.mark.parametrize(
+    ("command_id", "params"),
+    [
+        ("apt-get.install", {"package": "chrony"}),
+        ("systemctl.restart", {"unit": "chrony.service"}),
+        ("mariadb.execute-sql", {"sql_stdin": "CREATE DATABASE keystone;\n"}),
+    ],
+)
+def test_read_only_executor_refuses_mutating_commands_before_invoking_backend(
+    tmp_path: Path,
+    backend: FakeBackend,
+    command_id: str,
+    params: Mapping[str, str],
+) -> None:
+    executor = CommandExecutor(
+        DEFAULT_REGISTRY,
+        root=tmp_path,
+        backend=backend,
+        dry_run=False,
+        read_only=True,
+    )
+    with pytest.raises(
+        CommandError,
+        match=rf"Command {command_id!r} mutates host state and cannot run in read-only mode",
+    ):
+        executor.run(command_id, params)
+    assert backend.calls == []
+
+
+def test_read_only_executor_refuses_every_mutating_spec_in_default_registry(
+    tmp_path: Path,
+    backend: FakeBackend,
+) -> None:
+    executor = CommandExecutor(
+        DEFAULT_REGISTRY,
+        root=tmp_path,
+        backend=backend,
+        dry_run=False,
+        read_only=True,
+    )
+    mutating_specs = [
+        DEFAULT_REGISTRY.get(cmd_id)
+        for cmd_id in DEFAULT_REGISTRY.ids()
+        if DEFAULT_REGISTRY.get(cmd_id).mutates
+    ]
+    assert len(mutating_specs) >= 20
+    for spec in mutating_specs:
+        with pytest.raises(
+            CommandError,
+            match=rf"Command {spec.id!r} mutates host state and cannot run in read-only mode",
+        ):
+            executor.run(spec.id)
+    assert backend.calls == []

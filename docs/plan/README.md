@@ -5,7 +5,8 @@ each node would go through to prepare an OpenStack 2025.1 (Epoxy) deployment.
 
 It is strictly read-only. It reads the configuration file and the step catalog bundled
 with the package, and nothing else: it runs no command, opens no network connection,
-connects to no node and changes nothing. In `openstack-forge apply`, all eighteen catalog
+connects to no node and changes nothing. In `openstack-forge apply` (`--step STEP_ID` or
+`--all`) and `openstack-forge verify` (`--step STEP_ID` or `--all`), all eighteen catalog
 steps are implemented: `hosts-file` (confined file operations only, no external command,
 no network), `time-sync-controller`, `time-sync-other`, `openstack-packages`, `mariadb`,
 `rabbitmq`, `memcached`, `etcd`, `keystone`, `glance`, `placement`, `nova-controller`,
